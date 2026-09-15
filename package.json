@@ -1,0 +1,74 @@
+{
+  "name": "vespera",
+  "productName": "Vespera",
+  "version": "0.1.0",
+  "description": "Vespera (VSP) — glass terminal for Preddy MA200/MA20. Paper first.",
+  "author": "VadimChudin",
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node src/main/strategy.test.js",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder --win --mac",
+    "dist:win": "electron-builder --win nsis",
+    "dist:mac": "electron-builder --mac dmg",
+    "release": "electron-builder --win --mac --publish never"
+  },
+  "build": {
+    "appId": "trade.vespera.app",
+    "productName": "Vespera",
+    "copyright": "Copyright © Vespera",
+    "artifactName": "Vespera-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "build/icon.png",
+      "build/icon.ico",
+      "package.json"
+    ],
+    "extraMetadata": {
+      "main": "src/main/main.js"
+    },
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Vespera",
+      "uninstallDisplayName": "Vespera"
+    },
+    "mac": {
+      "icon": "build/icon.png",
+      "category": "public.app-category.finance",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["universal"]
+        }
+      ],
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false
+    },
+    "dmg": {
+      "artifactName": "Vespera-${version}-mac.${ext}"
+    }
+  },
+  "devDependencies": {
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8"
+  }
+}

@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="glass-dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-src https://s.tradingview.com https://www.tradingview.com; connect-src 'self' https://api.binance.com;"
+    />
+    <title>Vespera</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="atmosphere" aria-hidden="true"></div>
+    <div class="app">
+      <header class="chrome drag">
+        <div class="chrome-left no-drag">
+          <button class="orb" id="btnBack" title="Vespera">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7">
+              <path d="M15 18l-6-6 6-6" />
+            </svg>
+          </button>
+          <div class="brand">
+            <img class="brand-mark" src="assets/icon.png" alt="" />
+            <div>
+              <div class="brand-name" data-i18n="app">Vespera</div>
+              <div class="brand-sub" id="pairLabel" data-i18n="btc15">BTC · 15m</div>
+            </div>
+          </div>
+        </div>
+        <div class="chrome-center no-drag">
+          <div class="seg" id="modeSeg">
+            <button data-mode="paper" class="on" data-i18n="paper">Paper</button>
+            <button data-mode="auto" data-i18n="auto">Auto</button>
+          </div>
+        </div>
+        <div class="chrome-right no-drag">
+          <span class="pill" id="statusPill">stopped</span>
+          <button class="cta" id="btnRun" data-i18n="start">Start</button>
+          <button class="ghost-round" id="btnMenu" title="Menu">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+              <circle cx="6" cy="12" r="1.6" />
+              <circle cx="12" cy="12" r="1.6" />
+              <circle cx="18" cy="12" r="1.6" />
+            </svg>
+          </button>
+          <div class="win-btns" id="winBtns">
+            <button id="btnMin">–</button>
+            <button id="btnMax">□</button>
+            <button id="btnClose">×</button>
+          </div>
+        </div>
+      </header>
+
+      <main class="stage">
+        <aside class="rail glass" id="rail">
+          <button class="rail-item on" data-panel="feed">
+            <span class="ico">⌂</span><span data-i18n="feed">Feed</span>
+          </button>
+          <button class="rail-item" data-panel="stats">
+            <span class="ico">♡</span><span data-i18n="stats">Stats</span>
+          </button>
+          <button class="rail-item" data-panel="journal">
+            <span class="ico">◎</span><span data-i18n="journal">Journal</span>
+          </button>
+          <button class="rail-item" data-panel="settings">
+            <span class="ico">⚙</span><span data-i18n="settings">Settings</span>
+          </button>
+        </aside>
+
+        <section class="chart-wrap glass">
+          <div class="chart-frame" id="tvHost">
+            <iframe
+              id="tvFrame"
+              title="TradingView"
+              src="https://s.tradingview.com/widgetembed/?frameElementId=tvFrame&symbol=BINANCE%3ABTCUSDT&interval=15&hidesidetoolbar=0&symboledit=1&saveimage=0&toolbarbg=rgba(20,20,22,0.4)&studies=MASimple%40tv-basicstudies%1FMASimple%40tv-basicstudies&theme=dark&style=1&timezone=Etc%2FUTC&withdateranges=1&hideideas=1&hidevolume=0"
+              allowtransparency="true"
+            ></iframe>
+          </div>
+        </section>
+      </main>
+
+      <footer class="dock glass">
+        <div class="stat">
+          <span data-i18n="balance">Balance</span>
+          <strong id="bal">$1,000.00</strong>
+        </div>
+        <div class="stat">
+          <span data-i18n="series">Series</span>
+          <strong id="series">1/6 · $1</strong>
+        </div>
+        <div class="stat">
+          <span data-i18n="today">Today</span>
+          <strong id="pnl">$0.00</strong>
+        </div>
+        <div class="log" id="log"></div>
+      </footer>
+    </div>
+
+    <div class="sheet-backdrop" id="backdrop" hidden></div>
+    <aside class="sheet glass" id="sheet" hidden>
+      <div class="sheet-top">
+        <button class="icon-btn" data-sheet="api" title="API">▢</button>
+        <button class="icon-btn" data-sheet="pin" title="Pin">⌖</button>
+        <button class="icon-btn" data-sheet="lock" title="Lock">🔒</button>
+      </div>
+      <button class="row" data-open="api">
+        <span data-i18n="api">API</span><span class="row-ico">⌕</span>
+      </button>
+      <button class="row" data-open="theme">
+        <span data-i18n="theme">Theme</span><span class="row-ico">▦</span>
+      </button>
+      <button class="row" data-open="language">
+        <span data-i18n="language">Language</span><span class="row-ico">文</span>
+      </button>
+      <button class="row danger" id="sheetClose">
+        <span data-i18n="close">Close</span><span class="row-ico">✕</span>
+      </button>
+    </aside>
+
+    <section class="panel glass" id="panel" hidden>
+      <header class="panel-h">
+        <h2 id="panelTitle">Settings</h2>
+        <button class="orb sm" id="panelClose">✕</button>
+      </header>
+      <div id="panelBody"></div>
+    </section>
+
+    <script src="i18n.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
