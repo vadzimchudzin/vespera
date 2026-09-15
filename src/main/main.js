@@ -1,6 +1,6 @@
 "use strict";
 
-const { app, BrowserWindow, ipcMain, shell } = require("electron");
+const { app, BrowserWindow, ipcMain, shell, Notification } = require("electron");
 const path = require("path");
 const { Engine } = require("./engine");
 const { SettingsStore } = require("./settingsStore");
@@ -49,7 +49,17 @@ app.whenReady().then(() => {
     userDataDir: app.getPath("userData"),
     settings: store.value,
   });
-  engine.on((evt) => push("engine:event", evt));
+  engine.on((evt) => {
+    push("engine:event", evt);
+    if (evt.type === "notify" && evt.payload && Notification.isSupported()) {
+      const n = new Notification({
+        title: evt.payload.title || "Vespera",
+        body: evt.payload.body || "",
+        silent: false,
+      });
+      n.show();
+    }
+  });
 
   createWindow();
 
@@ -88,6 +98,11 @@ ipcMain.handle("engine:setStrategy", (_e, id) => {
   const result = engine.setStrategy(id);
   if (result.ok) store.save({ strategyId: result.strategyId });
   return { ...result, state: engine.snapshot() };
+});
+ipcMain.handle("engine:resetPaper", (_e, startingBalance) => {
+  const snap = engine.resetPaper(startingBalance);
+  store.save({ paperBalance: engine.paper.startingBalance.toFixed(2) });
+  return snap;
 });
 ipcMain.handle("settings:get", () => store.value);
 ipcMain.handle("settings:save", async (_e, patch) => {

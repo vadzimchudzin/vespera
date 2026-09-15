@@ -20,6 +20,7 @@ const DEFAULTS = {
   strategyId: "sma200_20",
   minOpeningAtr: 0,
   refreshMs: 100,
+  notificationsEnabled: true,
 };
 
 class SettingsStore {

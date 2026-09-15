@@ -2,6 +2,14 @@
 
 All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 
+## 0.4.0 — 2026-09-15
+
+- Entries fire **as soon as SMA200/20 conditions appear on the live candle**, not after the close.
+- SMA20 / SMA200 move with the live candle.
+- Paper fill: 0.5% fee, open time, hold time, strike. Balance updates on every fill/settle.
+- Notifications toggle (desktop + journal). Paper **Reset** button.
+- Max steps (2, 6, …) halt exactly after that many losses.
+
 ## 0.3.2 — 2026-09-15
 
 - Live stream host: `data-stream.binance.vision` (Binance `:9443` returns 451 in many regions). Candles move on every trade.

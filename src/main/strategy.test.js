@@ -106,7 +106,8 @@ async function paperCases() {
   });
   const win = p.settle({ close: 101 });
   assert(win.status === "win", "paper win");
-  assert(p.balance.toFixed(2) === "101.00", "paper payout 2x");
+  assert(p.balance.toFixed(2) === "100.99", `paper payout minus fee ${p.balance.toFixed(2)}`);
+  assert(win.feeUsd === "0.01", "0.5% fee");
 
   await p.marketBuy({
     side: "DOWN",

@@ -112,7 +112,7 @@ async function run() {
     assert(engine.paper.openBet.side === "UP", "UP");
     assert(engine.paper.openBet.sizeUsd === "1.00", "base size");
     assert(engine.status === "waiting_settlement", "waiting");
-    assert(engine.paper.balance.toFixed(2) === "999.00", "stake deducted");
+    assert(engine.paper.balance.toFixed(2) === "998.99", `stake+fee deducted ${engine.paper.balance.toFixed(2)}`);
 
     engine.stop();
     assert(engine.running === false, "stopped running");
@@ -128,7 +128,7 @@ async function run() {
     await next(engine, bars, 220);
     assert(!engine.paper.openBet, "settled after stop");
     assert(engine.paper.history[0].status === "win", "win");
-    assert(engine.paper.balance.toFixed(2) === "1001.00", `balance ${engine.paper.balance.toFixed(2)}`);
+    assert(engine.paper.balance.toFixed(2) === "1000.99", `balance ${engine.paper.balance.toFixed(2)}`);
     assert(engine.risk.step === 1, "win resets step");
     assert(engine.status === "stopped", "idle after settle while stopped");
   }
@@ -265,7 +265,7 @@ async function run() {
       market: fakeMarket(bars.slice(0, 220)),
     });
     assert(restored.paper.openBet, "restore open paper bet");
-    assert(restored.paper.balance.toFixed(2) === "999.00" || restored.paper.openBet.sizeUsd === "1.00", "stake remembered");
+    assert(restored.paper.openBet.sizeUsd === "1.00", "stake remembered");
     restored.running = false;
     restored.market.bars = bars.slice(0, 221);
     bars[220] = bar(bars[219].close, bars[219].close + 3, bars[219].close - 1, bars[219].close + 2, {
@@ -373,6 +373,88 @@ async function run() {
     md._applyTrade(102, 1_020);
     assert(ticks === 2, "force gap allows next tick");
     assert(md.forming.close === 102, "forming follows last trade");
+  }
+
+  {
+    const dir = tmpDir();
+    const bars = makeTrendBars({ n: 220, close: 110, trend: 0.05 });
+    paintLong(bars, 219);
+    const engine = new Engine({
+      userDataDir: dir,
+      settings: { mode: "paper", baseUsd: "1.00", maxSteps: 6, timeframe: "15m" },
+      market: fakeMarket(bars.slice(0, 219)),
+    });
+    await engine.start();
+    const forming = { ...bars[219], closed: false };
+    engine.market.forming = forming;
+    const notes = [];
+    engine.on((evt) => {
+      if (evt.type === "notify") notes.push(evt.payload);
+    });
+    await engine.onLiveTick({ forming });
+    assert(engine.paper.openBet, "live tick opens immediately");
+    assert(engine.paper.openBet.side === "UP", "live UP");
+    assert(engine.lastLiveSignalOpenTs === forming.openTs, "armed this candle");
+    assert(notes.some((n) => n.kind === "setup"), "setup notify");
+    engine.market.bars = bars.slice(0, 220);
+    await next(engine, bars, 219);
+    assert(!engine.paper.openBet, "live bet settles on this close");
+  }
+
+  {
+    const dir = tmpDir();
+    const bars = makeTrendBars({ n: 230, close: 110, trend: 0.05 });
+    const engine = new Engine({
+      userDataDir: dir,
+      settings: { mode: "paper", baseUsd: "1.00", maxSteps: 2, timeframe: "15m" },
+      market: fakeMarket(bars.slice(0, 219)),
+    });
+    await engine.applySettings({ maxSteps: 2 });
+    await engine.start();
+    assert(engine.risk.maxSteps === 2, "maxSteps 2");
+    for (let k = 0; k < 2; k += 1) {
+      const sig = 219 + k * 2;
+      const settle = sig + 1;
+      paintLong(bars, sig);
+      engine.market.bars = bars.slice(0, sig + 1);
+      await next(engine, bars, sig);
+      assert(engine.paper.openBet, `bet ${k + 1} of 2`);
+      bars[settle] = bar(
+        bars[sig].close,
+        bars[sig].close + 1,
+        bars[sig].close - 5,
+        bars[sig].close - 3,
+        { openTs: bars[settle].openTs, closeTs: bars[settle].closeTs }
+      );
+      engine.market.bars = bars.slice(0, settle + 1);
+      await next(engine, bars, settle);
+    }
+    assert(engine.risk.halted === true, "halt after 2");
+    assert(engine.status === "halt", "status halt at 2");
+  }
+
+  {
+    const dir = tmpDir();
+    const bars = makeTrendBars({ n: 220, close: 110, trend: 0.05 });
+    const engine = new Engine({
+      userDataDir: dir,
+      settings: { mode: "paper", baseUsd: "1.00", maxSteps: 6, timeframe: "15m", paperBalance: "1000.00" },
+      market: fakeMarket(bars.slice(0, 219)),
+    });
+    engine.paper.balance = require("./money").Decimal("800.00");
+    const snap = engine.resetPaper("1000.00");
+    assert(snap.paper.balance === "1000.00", "paper reset");
+    assert(engine.risk.step === 1, "series reset");
+    engine.notificationsEnabled = false;
+    const notes = [];
+    engine.on((evt) => {
+      if (evt.type === "notify") notes.push(evt.payload);
+    });
+    engine.notify("setup", "x", "y");
+    assert(notes.length === 0, "notify toggle off");
+    engine.notificationsEnabled = true;
+    engine.notify("setup", "x", "y");
+    assert(notes.length === 1, "notify toggle on");
   }
 
   console.log("paper engine tests ok");

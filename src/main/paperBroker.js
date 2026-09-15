@@ -2,16 +2,16 @@
 
 const { Decimal } = require("./money");
 
-/**
- * Paper broker — same interface as a live Preddy adapter.
- * Settles UP/DOWN against the next closed 15m candle vs the round strike (open of S+1).
- */
+const FEE_RATE = 0.005;
+
 class PaperBroker {
   constructor(options = {}) {
-    this.balance = Decimal(options.startingBalance ?? "1000.00");
+    this.startingBalance = Decimal(options.startingBalance ?? "1000.00");
+    this.balance = Decimal(this.startingBalance);
     this.openBet = null;
     this.history = [];
     this.connected = true;
+    this.feeRate = Number(options.feeRate ?? FEE_RATE);
   }
 
   async ping() {
@@ -27,35 +27,59 @@ class PaperBroker {
     return this.balance.toFixed(2);
   }
 
+  feeOn(sizeUsd) {
+    const size = Decimal(sizeUsd);
+    return Decimal(size.toNumber() * this.feeRate);
+  }
+
+  reset(startingBalance) {
+    if (startingBalance != null) this.startingBalance = Decimal(startingBalance);
+    this.balance = Decimal(this.startingBalance);
+    this.openBet = null;
+    this.history = [];
+    return this.snapshot();
+  }
+
   async marketBuy({ side, sizeUsd, clientOrderId, round }) {
     if (this.openBet) {
       throw new Error("already_open");
     }
     const size = Decimal(sizeUsd);
-    if (!this.balance.gte(size)) {
+    const fee = this.feeOn(size);
+    const cost = size.add(fee);
+    if (!this.balance.gte(cost)) {
       const err = new Error("insufficient_balance");
       err.code = "insufficient_balance";
       throw err;
     }
-    this.balance = this.balance.sub(size);
+    this.balance = this.balance.sub(cost);
+    const placedAt = Date.now();
     this.openBet = {
       clientOrderId,
-      side, // UP | DOWN
+      side,
       sizeUsd: size.toFixed(2),
+      feeUsd: fee.toFixed(2),
+      feeRate: this.feeRate,
       strike: round.strike,
+      fillPrice: round.strike,
       roundOpenTs: round.openTs,
       roundCloseTs: round.closeTs,
-      placedAt: Date.now(),
+      placedAt,
+      openedAtIso: new Date(placedAt).toISOString(),
       status: "open",
     };
-    return { ...this.openBet, accepted: true };
+    return { ...this.openBet, accepted: true, balanceAfter: this.balance.toFixed(2) };
   }
 
   /**
-   * Settle against closed next bar. Flat (close === strike) is a loss (TZ + Chainlink-style third outcome).
+   * Settle against the signal candle close (live entry) or the next bar.
+   * Flat (close === strike) is a loss (TZ + Chainlink-style third outcome).
    */
   settle(nextBar) {
     if (!this.openBet) return null;
+    if (this.openBet.roundCloseTs && nextBar.closeTs && nextBar.closeTs < this.openBet.roundCloseTs) {
+      return null;
+    }
     const strike = Number(this.openBet.strike);
     const close = Number(nextBar.close);
     let outcome = "FLAT";
@@ -64,11 +88,11 @@ class PaperBroker {
 
     const won = this.openBet.side === outcome;
     const size = Decimal(this.openBet.sizeUsd);
-    let pnl = size.mul(-1);
+    const fee = Decimal(this.openBet.feeUsd || "0");
+    let pnl = size.add(fee).mul(-1);
     if (won) {
-      // Binary paper fill at 0.50: stake returns 2x (stake + 1R). No Preddy 0.5% fee in paper.
       this.balance = this.balance.add(size.mul(2));
-      pnl = size;
+      pnl = size.sub(fee);
     }
 
     const settled = {
@@ -76,6 +100,8 @@ class PaperBroker {
       status: won ? "win" : "loss",
       outcome,
       settleClose: close,
+      settledAt: Date.now(),
+      holdMs: Date.now() - this.openBet.placedAt,
       pnl: pnl.toFixed(2),
       balanceAfter: this.balance.toFixed(2),
     };
@@ -88,10 +114,12 @@ class PaperBroker {
     return {
       venue: "paper",
       balance: this.balance.toFixed(2),
+      startingBalance: this.startingBalance.toFixed(2),
       openBet: this.openBet,
       last: this.history[0] || null,
+      feeRate: this.feeRate,
     };
   }
 }
 
-module.exports = { PaperBroker };
+module.exports = { PaperBroker, FEE_RATE };

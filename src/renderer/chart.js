@@ -165,19 +165,33 @@
     return `${closed.length}:${last.time}:${last.close}`;
   }
 
-  function paintAverages(closed) {
-    const closes = closed.map((b) => b.close);
+  function paintAverages(closed, forming) {
+    const series = forming ? closed.concat(forming) : closed;
+    const closes = series.map((b) => b.close);
     const ma20 = [];
     const ma200 = [];
-    for (let i = 0; i < closed.length; i += 1) {
+    for (let i = 0; i < series.length; i += 1) {
       const a = sma(closes, 20, i);
       const b = sma(closes, 200, i);
-      if (a != null) ma20.push({ time: closed[i].time, value: a });
-      if (b != null) ma200.push({ time: closed[i].time, value: b });
+      if (a != null) ma20.push({ time: series[i].time, value: a });
+      if (b != null) ma200.push({ time: series[i].time, value: b });
     }
     ma20Series.setData(ma20);
     ma200Series.setData(ma200);
   }
+
+  function updateLiveAverages(closed, forming) {
+    if (!forming) return;
+    const series = closed.concat(forming);
+    const closes = series.map((b) => b.close);
+    const i = series.length - 1;
+    const a = sma(closes, 20, i);
+    const b = sma(closes, 200, i);
+    if (a != null) ma20Series.update({ time: forming.time, value: a });
+    if (b != null) ma200Series.update({ time: forming.time, value: b });
+  }
+
+  let lastClosedCandles = [];
 
   function paintPending() {
     raf = 0;
@@ -186,6 +200,7 @@
     if (!c) return;
     try {
       candleSeries.update(c);
+      updateLiveAverages(lastClosedCandles, c);
     } catch {
       return;
     }
@@ -225,9 +240,10 @@
     const closedCount = closed.length;
     const prevCount = lastClosedHash ? Number(lastClosedHash.split(":")[0]) : 0;
     const needReseed = !seeded || closedCount + 2 < prevCount;
+    lastClosedCandles = closed;
     if (needReseed) {
       candleSeries.setData(candles);
-      paintAverages(closed);
+      paintAverages(closed, forming);
       lastClosedHash = hash;
       lastBarIndex = candles.length - 1;
       seeded = true;
@@ -242,7 +258,7 @@
     } else if (hash !== lastClosedHash) {
       const newestClosed = closed[closed.length - 1];
       if (newestClosed) candleSeries.update(newestClosed);
-      paintAverages(closed);
+      paintAverages(closed, forming);
       lastClosedHash = hash;
       lastBarIndex = candles.length - 1;
       if (forming) candleSeries.update(forming);

@@ -88,6 +88,9 @@
     } else if (type === "auto_blocked") {
       title = t("logError");
       detail = reasonText(row.reason);
+    } else if (type === "paper_reset") {
+      title = t("logReset");
+      detail = row.balance ? `$${row.balance}` : "";
     }
     return { when, title, detail, kind: type };
   }
@@ -351,7 +354,17 @@
           </div>
           <p class="hint">${t("refreshHint")}</p>
         </div>
-        <button class="ok" id="saveSet">${t("save")}</button>
+        <div class="field toggle-row">
+          <label>${t("notify")}</label>
+          <button type="button" class="toggle ${s.notificationsEnabled !== false ? "on" : ""}" id="notifyToggle" aria-pressed="${s.notificationsEnabled !== false}">
+            <span class="knob"></span>
+          </button>
+        </div>
+        <p class="hint">${t("notifyHint")}</p>
+        <div class="btn-row">
+          <button class="ok" id="saveSet">${t("save")}</button>
+          <button class="ghost" id="resetPaper">${t("resetPaper")}</button>
+        </div>
       `;
       const symSel = buildSelect("sym", symbols.length ? symbols : [{ value: "BTCUSDT", label: "BTC/USDT" }], s.symbol || "BTCUSDT");
       const tfSel = buildSelect("tf", tfs, s.timeframe || "15m");
@@ -378,9 +391,22 @@
           if (window.vespera) window.vespera.saveSettings({ refreshMs: ms });
         }, 80);
       };
+      const notifyBtn = $("notifyToggle");
+      notifyBtn.onclick = async () => {
+        const on = !notifyBtn.classList.contains("on");
+        notifyBtn.classList.toggle("on", on);
+        notifyBtn.setAttribute("aria-pressed", String(on));
+        if (window.vespera) await window.vespera.saveSettings({ notificationsEnabled: on });
+      };
+      $("resetPaper").onclick = async () => {
+        if (!window.vespera || !window.vespera.resetPaper) return;
+        const snap = await window.vespera.resetPaper(s.paperBalance || "1000.00");
+        renderSnap(snap);
+      };
       $("saveSet").onclick = async () => {
         const baseUsd = $("base").value;
         const minOpeningAtr = Number($("opening").value) / 20;
+        const notifyOn = $("notifyToggle").classList.contains("on");
         await window.vespera.saveSettings({
           symbol: $("symField").querySelector(".v-select").dataset.value,
           timeframe: $("tfField").querySelector(".v-select").dataset.value,
@@ -388,6 +414,7 @@
           baseUsd,
           minOpeningAtr,
           refreshMs: Number($("refresh").value),
+          notificationsEnabled: notifyOn,
         });
         await window.vespera.confirmLot(baseUsd);
         const snap = await window.vespera.snapshot();
@@ -444,6 +471,22 @@
         if (evt.type === "tick" && evt.payload && window.VesperaChart) {
           window.VesperaChart.updateForming(evt.payload.forming);
           return;
+        }
+        if (evt.type === "notify" && evt.payload) {
+          const log = $("log");
+          if (log) {
+            const div = document.createElement("div");
+            div.className = `log-row log-notify log-${evt.payload.kind || "setup"}`;
+            const time = document.createElement("span");
+            time.className = "log-time";
+            time.textContent = new Date(evt.payload.at || Date.now()).toISOString().slice(11, 19);
+            const body = document.createElement("span");
+            body.className = "log-body";
+            body.textContent = [evt.payload.title, evt.payload.body].filter(Boolean).join(" · ");
+            div.appendChild(time);
+            div.appendChild(body);
+            log.prepend(div);
+          }
         }
         if (evt.state) renderSnap(evt.state);
       });
