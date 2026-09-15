@@ -315,6 +315,27 @@ async function run() {
     assert(ev.signal === "UP", ev.reason);
   }
 
+  {
+    const dir = tmpDir();
+    const bars = makeTrendBars({ n: 221, close: 110, trend: 0.05 });
+    paintLong(bars, 219);
+    const engine = new Engine({
+      userDataDir: dir,
+      settings: { mode: "paper", baseUsd: "1.00", maxSteps: 6, timeframe: "15m" },
+      market: fakeMarket(bars.slice(0, 219)),
+    });
+    assert(engine.strategyId === "sma200_20", "default SMA200/20");
+    assert(engine.strategy().name === "SMA200/20", "display name");
+    assert(engine.snapshot().strategies.some((s) => s.id === "sma200_20"), "listed");
+    const same = engine.setStrategy("sma200_20");
+    assert(same.ok === true, "reselect ok");
+    await engine.start();
+    engine.market.bars = bars.slice(0, 220);
+    await next(engine, bars, 219);
+    const blocked = engine.setStrategy("sma200_20");
+    assert(blocked.ok === true, "same id while open is ok");
+  }
+
   console.log("paper engine tests ok");
 }
 

@@ -1,6 +1,6 @@
 "use strict";
 
-const { evaluateBar } = require("./strategy");
+const { getStrategy, listStrategies, DEFAULT_STRATEGY_ID } = require("./strategies/catalog");
 const { Risk } = require("./risk");
 const { MarketData, INTERVAL_MS } = require("./marketData");
 const { PaperBroker } = require("./paperBroker");
@@ -52,7 +52,35 @@ class Engine {
     this.pingResult = null;
     this.todayPnl = Decimal("0");
     this.lastHandledOpenTs = null;
+    this.strategyId = this.settings.strategyId || DEFAULT_STRATEGY_ID;
     this._bindMarket();
+  }
+
+  strategy() {
+    return getStrategy(this.strategyId);
+  }
+
+  setStrategy(id) {
+    const next = getStrategy(id);
+    if (!next || next.enabled === false) {
+      this.emit("log", { level: "warn", message: "strategy_unknown" });
+      return { ok: false, reason: "unknown" };
+    }
+    if (next.id === this.strategyId) {
+      return { ok: true, strategyId: this.strategyId };
+    }
+    if (this.paper.openBet) {
+      this.emit("log", { level: "warn", message: "strategy_blocked_open_bet" });
+      return { ok: false, reason: "open_bet" };
+    }
+    this.strategyId = next.id;
+    this.settings.strategyId = next.id;
+    this.markers = [];
+    this.lastEval = null;
+    this._replayMarkers();
+    this.journal.write({ type: "strategy", strategyId: next.id });
+    this.emit("strategy", { strategyId: next.id });
+    return { ok: true, strategyId: next.id };
   }
 
   broker() {
@@ -111,7 +139,7 @@ class Engine {
     if (this.markers.length) return;
     const bars = this.market.bars;
     for (let i = 199; i < bars.length; i += 1) {
-      const ev = evaluateBar(bars, i, {
+      const ev = this.strategy().evaluate(bars, i, {
         requirePriorPenetration: this.settings.requirePriorPenetration,
       });
       if (ev.signal) {
@@ -249,7 +277,7 @@ class Engine {
       return;
     }
 
-    const ev = evaluateBar(bars, index, {
+    const ev = this.strategy().evaluate(bars, index, {
       requirePriorPenetration: this.settings.requirePriorPenetration,
     });
     this.lastEval = { ...ev, bar };
@@ -332,6 +360,9 @@ class Engine {
       running: this.running,
       status: this.status,
       mode: this.mode,
+      strategyId: this.strategyId,
+      strategyName: this.strategy().name,
+      strategies: listStrategies(),
       settings: {
         symbol: this.settings.symbol || "BTCUSDT",
         timeframe: this.settings.timeframe || "15m",
@@ -339,6 +370,7 @@ class Engine {
         maxSteps: this.risk.maxSteps,
         theme: this.settings.theme || "glass-dark",
         locale: this.settings.locale || "en",
+        strategyId: this.strategyId,
       },
       risk: this.risk.snapshot(),
       paper: this.paper.snapshot(),

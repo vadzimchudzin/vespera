@@ -205,6 +205,54 @@ body.win .win-btns {
   background: rgba(255, 255, 255, 0.14);
   color: var(--ink);
 }
+.rail-sep {
+  height: 1px;
+  background: var(--hair);
+  margin: 10px 8px 8px;
+}
+.rail-label {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 4px 14px 8px;
+}
+.strategy-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.strategy-chip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: 999px;
+  color: var(--muted);
+  text-align: left;
+  border: 1px solid transparent;
+}
+.strategy-chip:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--ink);
+}
+.strategy-chip.active {
+  background: rgba(124, 255, 154, 0.16);
+  border-color: rgba(124, 255, 154, 0.55);
+  color: var(--accent);
+  box-shadow: 0 0 18px rgba(124, 255, 154, 0.18);
+  font-weight: 650;
+}
+.strategy-chip.soon {
+  opacity: 0.45;
+  cursor: default;
+}
+html[data-theme="glass-light"] .strategy-chip.active {
+  background: rgba(31, 138, 76, 0.14);
+  border-color: rgba(31, 138, 76, 0.45);
+  color: var(--accent);
+}
 .ico {
   width: 18px;
   opacity: 0.9;

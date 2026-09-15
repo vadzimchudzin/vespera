@@ -80,6 +80,11 @@ ipcMain.handle("engine:ping", (_e, apiKey) => {
   store.save({ apiKey });
   return engine.pingApi(apiKey);
 });
+ipcMain.handle("engine:setStrategy", (_e, id) => {
+  const result = engine.setStrategy(id);
+  if (result.ok) store.save({ strategyId: result.strategyId });
+  return { ...result, state: engine.snapshot() };
+});
 ipcMain.handle("settings:get", () => store.value);
 ipcMain.handle("settings:save", (_e, patch) => {
   const next = store.save(patch);

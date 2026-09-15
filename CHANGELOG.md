@@ -2,6 +2,12 @@
 
 All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 
+## 0.1.2 — 2026-09-15
+
+- Strategy catalog in the left rail. Active **SMA200/20** lights green.
+- New strategies register in `src/main/strategies/catalog.js` and show up in the list.
+- Cannot switch strategy while a paper bet is open.
+
 ## 0.1.1 — 2026-09-15
 
 - Paper: Stop does not kill an open virtual bet; it settles on the next close.

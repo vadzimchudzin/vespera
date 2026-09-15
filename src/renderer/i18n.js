@@ -43,6 +43,8 @@ window.VSP_I18N = {
     win: "Win",
     loss: "Loss",
     btc15: "BTC · 15m",
+    strategies: "Strategies",
+    strategyBlocked: "Finish the open paper bet first",
   },
   ru: {
     app: "Vespera",
@@ -88,5 +90,7 @@ window.VSP_I18N = {
     win: "Заход",
     loss: "Минус",
     btc15: "BTC · 15м",
+    strategies: "Стратегии",
+    strategyBlocked: "Сначала дождись расчёта ставки",
   },
 };

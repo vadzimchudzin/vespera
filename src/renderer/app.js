@@ -52,6 +52,7 @@
     document.querySelectorAll("#modeSeg button").forEach((b) => {
       b.classList.toggle("on", b.dataset.mode === snap.mode);
     });
+    renderStrategies(snap);
     const log = $("log");
     log.innerHTML = "";
     const rows = snap.log || [];
@@ -66,6 +67,34 @@
         row.side ? " · " + row.side : ""
       }${row.sizeUsd ? " · $" + row.sizeUsd : ""}`;
       log.appendChild(div);
+    });
+  }
+
+  function renderStrategies(snap) {
+    const host = $("strategyList");
+    if (!host) return;
+    const list = snap.strategies || [];
+    const active = snap.strategyId;
+    host.innerHTML = "";
+    list.forEach((s) => {
+      const btn = document.createElement("button");
+      btn.className = "strategy-chip";
+      btn.dataset.id = s.id;
+      btn.textContent = s.name;
+      if (s.id === active) btn.classList.add("active");
+      if (s.enabled === false) btn.classList.add("soon");
+      btn.onclick = async () => {
+        if (!window.vespera || s.enabled === false) return;
+        const res = await window.vespera.setStrategy(s.id);
+        if (res && res.state) renderSnap(res.state);
+        if (res && res.ok === false && res.reason === "open_bet") {
+          const log = $("log");
+          const div = document.createElement("div");
+          div.textContent = t("strategyBlocked");
+          log.prepend(div);
+        }
+      };
+      host.appendChild(btn);
     });
   }
 
