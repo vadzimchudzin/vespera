@@ -4,8 +4,7 @@ const { getStrategy, listStrategies, DEFAULT_STRATEGY_ID } = require("./strategi
 const { Risk } = require("./risk");
 const { MarketData } = require("./marketData");
 const { INTERVAL_MS, SYMBOLS, TIMEFRAMES, HISTORY_BARS, clampRefreshMs, symbolLabel, fallbackTick, fetchExchangeSymbols } = require("./markets");
-const { PaperBroker } = require("./paperBroker");
-const { PreddyAdapter } = require("./predicAdapter");
+const { createVenue } = require("./brokers");
 const { Journal } = require("./journal");
 const { Decimal } = require("./money");
 
@@ -36,9 +35,9 @@ class Engine {
     this.risk.consecutiveLosses = restored.consecutiveLosses;
     this.risk.halted = restored.halted;
     if (restored.halted) this.risk.lotConfirmed = false;
-    this.paper = new PaperBroker({ startingBalance: this.settings.paperBalance || "1000.00" });
+    this.paper = createVenue("paper", { startingBalance: this.settings.paperBalance || "1000.00" });
     this._restorePaper();
-    this.live = new PreddyAdapter({
+    this.live = createVenue("auto", {
       apiKey: this.settings.apiKey || "",
       baseUrl: this.settings.apiBase || "https://preddy.trade",
     });
@@ -583,7 +582,7 @@ class Engine {
         ? this.market.bars[this.market.bars.length - 1].close
         : null;
     return {
-      version: "0.6.0",
+      version: "0.7.0",
       running: this.running,
       status: this.status,
       mode: this.mode,
@@ -614,7 +613,7 @@ class Engine {
       liveBalance: this.liveBalance,
       ping: this.pingResult,
       lastEval: this.lastEval,
-      markers: this.running ? this.markers.slice(-80) : [],
+      markers: this.markers.slice(-200),
       todayPnl: this.todayPnl.toFixed(2),
       barsReady: this.market.bars.length,
       bars: this.market.bars.map((b) => ({

@@ -576,10 +576,11 @@ html[data-theme="glass-light"] .row:hover {
   max-height: calc(100vh - 80px);
   overflow: visible;
   border-radius: 28px;
-  z-index: 7;
-  padding: 18px 18px 22px;
+  z-index: 20;
+  padding: 18px 18px 16px;
   display: flex;
   flex-direction: column;
+  pointer-events: auto;
 }
 #panelClose {
   position: relative;
@@ -591,10 +592,85 @@ html[data-theme="glass-light"] .row:hover {
   overflow-x: hidden;
   min-height: 0;
   flex: 1 1 auto;
-  max-height: calc(100vh - 160px);
+  max-height: calc(100vh - 220px);
   padding-right: 4px;
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+}
+.panel-foot {
+  flex-shrink: 0;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding-top: 14px;
+  margin-top: 4px;
+  position: relative;
+  z-index: 21;
+  pointer-events: auto;
+}
+.panel-foot[hidden] {
+  display: none !important;
+}
+.panel-foot .ok,
+.panel-foot .ghost {
+  pointer-events: auto;
+  cursor: pointer;
+}
+.help {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  margin-left: 6px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.14);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  vertical-align: middle;
+  position: relative;
+  cursor: help;
+}
+html[data-theme="glass-light"] .help {
+  background: rgba(60, 60, 67, 0.12);
+}
+.help:hover,
+.help:focus {
+  color: var(--ink);
+  background: rgba(10, 132, 255, 0.22);
+}
+.help::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 8px);
+  transform: translateX(-50%);
+  width: min(280px, 70vw);
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: var(--select-bg);
+  color: var(--ink);
+  border: 1px solid var(--hair);
+  box-shadow: var(--shadow);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.35;
+  text-align: left;
+  white-space: normal;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 30;
+}
+.help:hover::after,
+.help:focus::after {
+  opacity: 1;
+}
+.field-label {
+  display: flex;
+  align-items: center;
+  color: var(--muted);
+  font-size: 12px;
 }
 #panelBody::-webkit-scrollbar {
   width: 6px;
@@ -629,7 +705,8 @@ html[data-theme="glass-light"] .row:hover {
   gap: 6px;
   margin: 12px 0;
 }
-.field label {
+.field label,
+.field-label {
   color: var(--muted);
   font-size: 12px;
 }
@@ -769,6 +846,9 @@ html[data-theme="glass-light"] .v-select-btn {
   border-radius: 999px;
   padding: 10px 18px;
   font-weight: 650;
+  cursor: pointer;
+  pointer-events: auto;
+  z-index: 22;
 }
 .ghost {
   background: rgba(255, 255, 255, 0.1);

@@ -2,7 +2,7 @@
 
 Glass desktop terminal for BTC 15m Preddy / Polymarket-style up-down.
 
-**v0.6.0 is Paper.** SMA200/20 on a **closed** candle `S`, bet on **S+1**. No live money.
+**v0.7.0 is Paper.** SMA200/20 on a **closed** candle `S`, bet on **S+1**. No live money.
 
 Repo: private [`VadimChudin/vespera`](https://github.com/VadimChudin/vespera)
 
@@ -64,7 +64,7 @@ src/renderer/    glass UI, i18n EN/RU, TradingView host
 build/           app icon (.png / .ico)
 ```
 
-`Strategy` does not know Preddy. `Broker` does not know MAs.
+`Strategy` does not know Preddy. `Broker` does not know MAs. Live venues implement `src/main/brokers/spi.js` (`ping`, `getBalance`, `marketBuy`).
 
 ## Spec
 

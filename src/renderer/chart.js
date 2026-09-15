@@ -14,6 +14,10 @@
   let pendingForming = null;
   let raf = 0;
   let seeded = false;
+  let refreshMs = 100;
+  let lastPaintAt = 0;
+  let pendingMarkers = [];
+  let lastTheme = "";
 
   function sma(closes, period, index) {
     if (index + 1 < period) return null;
@@ -44,16 +48,40 @@
     btn.hidden = !show;
   }
 
-  function goToLive() {
+  function setRefreshMs(ms) {
+    const n = Number(ms);
+    refreshMs = Number.isFinite(n) ? Math.min(2000, Math.max(1, Math.round(n))) : 100;
+  }
+
+  function centerLive() {
     followLive = true;
-    ignoreRangeUntil = Date.now() + 250;
+    ignoreRangeUntil = Date.now() + 500;
     setLiveBtn(false);
-    if (!chart) return;
+    if (!chart || lastBarIndex < 0) return;
+    const visible = 72;
+    const to = lastBarIndex + 3;
+    const from = Math.max(-2, to - visible);
     try {
-      chart.timeScale().scrollToRealTime();
+      chart.timeScale().setVisibleLogicalRange({ from, to });
     } catch {
-      /* ignore */
+      try {
+        chart.timeScale().scrollToRealTime();
+      } catch {
+        /* ignore */
+      }
     }
+  }
+
+  function goToLive() {
+    centerLive();
+  }
+
+  function applyMarkers(list) {
+    if (!candleSeries) return;
+    pendingMarkers = list || [];
+    const key = JSON.stringify(pendingMarkers);
+    candleSeries.setMarkers(pendingMarkers);
+    lastMarkerKey = key;
   }
 
   function ensure() {
@@ -127,7 +155,11 @@
 
   function applyTheme() {
     if (!chart) return;
+    const light = document.documentElement.getAttribute("data-theme") === "glass-light";
+    const theme = light ? "light" : "dark";
     const c = themeColors();
+    if (theme === lastTheme) return;
+    lastTheme = theme;
     chart.applyOptions({
       layout: { textColor: c.text },
       grid: { vertLines: { color: c.grid }, horzLines: { color: c.grid } },
@@ -138,6 +170,7 @@
       wickUpColor: c.up,
       wickDownColor: c.down,
     });
+    if (pendingMarkers.length) candleSeries.setMarkers(pendingMarkers);
   }
 
   function toCandle(b) {
@@ -182,6 +215,12 @@
   function paintPending() {
     raf = 0;
     if (!candleSeries || !pendingForming) return;
+    const now = Date.now();
+    if (now - lastPaintAt < refreshMs) {
+      raf = requestAnimationFrame(paintPending);
+      return;
+    }
+    lastPaintAt = now;
     const c = toCandle(pendingForming);
     if (!c) return;
     try {
@@ -191,7 +230,11 @@
     }
     if (followLive && chart) {
       ignoreRangeUntil = Date.now() + 80;
-      chart.timeScale().scrollToRealTime();
+      try {
+        chart.timeScale().scrollToRealTime();
+      } catch {
+        /* ignore */
+      }
     }
   }
 
@@ -231,14 +274,9 @@
       lastClosedHash = hash;
       lastBarIndex = candles.length - 1;
       seeded = true;
-      ignoreRangeUntil = Date.now() + 200;
-      if (followLive) {
-        try {
-          chart.timeScale().scrollToRealTime();
-        } catch {
-          chart.timeScale().fitContent();
-        }
-      }
+      lastMarkerKey = "";
+      ignoreRangeUntil = Date.now() + 400;
+      centerLive();
     } else if (hash !== lastClosedHash) {
       const newestClosed = closed[closed.length - 1];
       if (newestClosed) candleSeries.update(newestClosed);
@@ -246,10 +284,7 @@
       lastClosedHash = hash;
       lastBarIndex = candles.length - 1;
       if (forming) candleSeries.update(forming);
-      if (followLive) {
-        ignoreRangeUntil = Date.now() + 80;
-        chart.timeScale().scrollToRealTime();
-      }
+      if (followLive) centerLive();
     } else if (forming) {
       pendingForming = snap.forming;
       if (!raf) raf = requestAnimationFrame(paintPending);
@@ -272,11 +307,7 @@
         text: `${m.side}${sizeLabel}${res}`,
       };
     });
-    const key = JSON.stringify(markers);
-    if (key !== lastMarkerKey) {
-      candleSeries.setMarkers(markers);
-      lastMarkerKey = key;
-    }
+    if (JSON.stringify(markers) !== lastMarkerKey) applyMarkers(markers);
   }
 
   function reset() {
@@ -285,9 +316,11 @@
     lastBarIndex = 0;
     seeded = false;
     pendingForming = null;
+    pendingMarkers = [];
+    lastTheme = "";
     followLive = true;
     setLiveBtn(false);
   }
 
-  window.VesperaChart = { render, ensure, updateForming, applyTheme, goToLive, reset };
+  window.VesperaChart = { render, ensure, updateForming, applyTheme, goToLive, reset, setRefreshMs, centerLive };
 })();

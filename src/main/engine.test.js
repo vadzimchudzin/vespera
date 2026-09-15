@@ -356,7 +356,7 @@ async function run() {
     assert(blocked.ok === true, "same id while open is ok");
     assert(engine.snapshot().markers.length > 0, "markers while running");
     engine.stop();
-    assert(engine.snapshot().markers.length === 0, "idle chart has no trade markers");
+    assert(engine.snapshot().markers.length > 0, "idle chart keeps setup arrows");
   }
 
   {

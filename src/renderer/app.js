@@ -167,7 +167,10 @@
       state.pairLabel = snap.pairLabel;
     }
     renderStrategies(snap);
-    if (window.VesperaChart) window.VesperaChart.render(snap);
+    if (window.VesperaChart) {
+      if (window.VesperaChart.setRefreshMs) window.VesperaChart.setRefreshMs(snap.settings?.refreshMs);
+      window.VesperaChart.render(snap);
+    }
     renderLog(snap);
   }
 
@@ -248,12 +251,32 @@
     return wrap;
   }
 
+  function helpBtn(hintKey) {
+    const tip = String(t(hintKey) || "").replace(/"/g, "&quot;");
+    return `<button type="button" class="help" data-tip="${tip}" aria-label="${tip}">?</button>`;
+  }
+
+  function closePanel() {
+    $("panel").hidden = true;
+    $("backdrop").hidden = true;
+    const foot = $("panelFoot");
+    if (foot) {
+      foot.hidden = true;
+      foot.innerHTML = "";
+    }
+    closeMenus();
+  }
+
   function debounceSave(patch, ms = 80) {
     clearTimeout(state.saveTimer);
     state.saveTimer = setTimeout(async () => {
       if (!window.vespera) return;
       const snap = await window.vespera.saveSettings(patch);
-      if (snap && snap.settings) renderSnap(snap);
+      if (!snap || !snap.settings) return;
+      state.snapshot = snap;
+      if (window.VesperaChart && window.VesperaChart.setRefreshMs) {
+        window.VesperaChart.setRefreshMs(snap.settings.refreshMs);
+      }
     }, ms);
   }
 
@@ -293,8 +316,13 @@
   function openPanel(kind) {
     const body = $("panelBody");
     const title = $("panelTitle");
+    const foot = $("panelFoot");
     $("panel").hidden = false;
     $("backdrop").hidden = false;
+    if (foot) {
+      foot.hidden = true;
+      foot.innerHTML = "";
+    }
     closeMenus();
 
     if (kind === "api") {
@@ -365,44 +393,43 @@
       title.textContent = t("settings");
       const s = state.snapshot?.settings || {};
       body.innerHTML = `
-        <div class="field"><label>${t("base")}</label><input id="base" value="${s.baseUsd || "1.00"}" /></div>
-        <div class="field"><label>${t("maxSteps")}</label><input id="steps" value="${s.maxSteps || 6}" /></div>
+        <div class="field"><span class="field-label">${t("base")}</span><input id="base" value="${s.baseUsd || "1.00"}" /></div>
+        <div class="field"><span class="field-label">${t("maxSteps")}</span><input id="steps" value="${s.maxSteps || 6}" /></div>
         <div class="field">
-          <label>${t("minOpening")}</label>
+          <span class="field-label">${t("minOpening")}${helpBtn("minOpeningHint")}</span>
           <div class="range-row">
             <input id="opening" type="range" min="0" max="40" step="1" />
             <span class="range-val" id="openingVal">0.00 ATR</span>
           </div>
-          <p class="hint">${t("minOpeningHint")}</p>
         </div>
         <div class="field">
-          <label>${t("minCross")}</label>
+          <span class="field-label">${t("minCross")}${helpBtn("minCrossHint")}</span>
           <div class="range-row">
             <input id="crossTicks" type="range" min="0" max="50" step="1" />
             <span class="range-val" id="crossVal">0 ${t("minCrossUnit")}</span>
           </div>
-          <p class="hint">${t("minCrossHint")}</p>
         </div>
         <div class="field">
-          <label>${t("refresh")}</label>
+          <span class="field-label">${t("refresh")}${helpBtn("refreshHint")}</span>
           <div class="range-row">
             <input id="refresh" type="range" min="1" max="1000" step="1" />
             <span class="range-val" id="refreshVal">100 ${t("refreshUnit")}</span>
           </div>
-          <p class="hint">${t("refreshHint")}</p>
         </div>
         <div class="field toggle-row">
-          <label>${t("notify")}</label>
+          <span class="field-label">${t("notify")}${helpBtn("notifyHint")}</span>
           <button type="button" class="toggle ${s.notificationsEnabled !== false ? "on" : ""}" id="notifyToggle" aria-pressed="${s.notificationsEnabled !== false}">
             <span class="knob"></span>
           </button>
         </div>
-        <p class="hint">${t("notifyHint")}</p>
-        <div class="btn-row">
-          <button class="ok" id="saveSet">${t("save")}</button>
-          <button class="ghost" id="resetPaper">${t("resetPaper")}</button>
-        </div>
       `;
+      if (foot) {
+        foot.hidden = false;
+        foot.innerHTML = `
+          <button type="button" class="ok" id="saveSet">${t("save")}</button>
+          <button type="button" class="ghost" id="resetPaper">${t("resetPaper")}</button>
+        `;
+      }
       const opening = Math.round(Number(s.minOpeningAtr || 0) * 20);
       $("opening").value = String(opening);
       const paintOpening = () => {
@@ -429,7 +456,9 @@
       paintRefresh();
       $("refresh").oninput = () => {
         paintRefresh();
-        debounceSave({ refreshMs: Number($("refresh").value) });
+        const ms = Number($("refresh").value);
+        if (window.VesperaChart && window.VesperaChart.setRefreshMs) window.VesperaChart.setRefreshMs(ms);
+        debounceSave({ refreshMs: ms });
       };
       const notifyBtn = $("notifyToggle");
       notifyBtn.onclick = async () => {
@@ -443,24 +472,31 @@
         const snap = await window.vespera.resetPaper(s.paperBalance || "1000.00");
         renderSnap(snap);
       };
-      $("saveSet").onclick = async () => {
-        const baseUsd = $("base").value;
-        const minOpeningAtr = Number($("opening").value) / 20;
-        const minCrossTicks = Number($("crossTicks").value);
-        const notifyOn = $("notifyToggle").classList.contains("on");
-        await window.vespera.saveSettings({
-          maxSteps: Number($("steps").value),
-          baseUsd,
-          minOpeningAtr,
-          minCrossTicks,
-          refreshMs: Number($("refresh").value),
-          notificationsEnabled: notifyOn,
-        });
-        await window.vespera.confirmLot(baseUsd);
-        const snap = await window.vespera.snapshot();
-        renderSnap(snap);
-        $("panel").hidden = true;
-        $("backdrop").hidden = true;
+      $("saveSet").onclick = async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!window.vespera) return;
+        const btn = $("saveSet");
+        if (btn) btn.disabled = true;
+        try {
+          const baseUsd = $("base").value;
+          const minOpeningAtr = Number($("opening").value) / 20;
+          const minCrossTicks = Number($("crossTicks").value);
+          const notifyOn = $("notifyToggle").classList.contains("on");
+          const snap = await window.vespera.saveSettings({
+            maxSteps: Number($("steps").value),
+            baseUsd,
+            minOpeningAtr,
+            minCrossTicks,
+            refreshMs: Number($("refresh").value),
+            notificationsEnabled: notifyOn,
+          });
+          await window.vespera.confirmLot(baseUsd);
+          renderSnap(snap || (await window.vespera.snapshot()));
+          closePanel();
+        } finally {
+          if (btn) btn.disabled = false;
+        }
       };
     }
 
@@ -540,15 +576,9 @@
     $("sheetClose").onclick = () => openSheet(false);
     $("backdrop").onclick = () => {
       openSheet(false);
-      $("panel").hidden = true;
-      $("backdrop").hidden = true;
-      closeMenus();
+      closePanel();
     };
-    $("panelClose").onclick = () => {
-      $("panel").hidden = true;
-      $("backdrop").hidden = true;
-      closeMenus();
-    };
+    $("panelClose").onclick = () => closePanel();
     document.querySelectorAll("[data-open]").forEach((btn) => {
       btn.onclick = () => {
         openSheet(false);
@@ -560,8 +590,7 @@
         document.querySelectorAll(".rail-item").forEach((b) => b.classList.remove("on"));
         btn.classList.add("on");
         if (btn.dataset.panel === "chart") {
-          $("panel").hidden = true;
-          $("backdrop").hidden = true;
+          closePanel();
         } else {
           openPanel(btn.dataset.panel);
         }

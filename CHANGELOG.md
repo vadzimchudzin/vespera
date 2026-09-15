@@ -2,6 +2,14 @@
 
 All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 
+## 0.7.0 — 2026-09-15
+
+- Settings **Save** sits outside the scroll area and always closes the panel.
+- Setting hints hide behind a **?** — hover shows the text.
+- Chart refresh is applied in the renderer (1 ms vs 1000 ms is visible). **Last candle** / TF / pair **center** the live bar.
+- Theme / language no longer wipe entry arrows. Markers stay on the chart while idle.
+- Venue SPI (`src/main/brokers`) so a live signer can plug in without touching Engine.
+
 ## 0.6.0 — 2026-09-15
 
 - **Min cross** uses the pair’s exchange tick (XRP `0.0001`, not `$1`). 5 ticks = skip 3-tick and 4-tick touches; enter when the **closed** candle is ≥ 5 ticks past SMA20.
