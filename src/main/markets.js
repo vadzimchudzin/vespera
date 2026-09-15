@@ -63,7 +63,47 @@ function clampRefreshMs(value) {
 
 function symbolLabel(id) {
   const row = SYMBOLS.find((s) => s.id === id);
-  return row ? row.label : id;
+  return row ? row.label : String(id || "").replace(/USDT$/, "/USDT");
+}
+
+async function fetchExchangeSymbols(fetchJson) {
+  const hosts = ["https://api.binance.com", "https://api.binance.us"];
+  let info;
+  let tickers;
+  for (const host of hosts) {
+    try {
+      info = await fetchJson(`${host}/api/v3/exchangeInfo`);
+      if (info && Array.isArray(info.symbols)) break;
+    } catch {
+      info = null;
+    }
+  }
+  if (!info || !Array.isArray(info.symbols)) return SYMBOLS.slice();
+  const usdt = info.symbols.filter(
+    (s) => s.status === "TRADING" && s.quoteAsset === "USDT" && s.isSpotTradingAllowed !== false
+  );
+  try {
+    for (const host of hosts) {
+      try {
+        tickers = await fetchJson(`${host}/api/v3/ticker/24hr`);
+        if (Array.isArray(tickers)) break;
+      } catch {
+        tickers = null;
+      }
+    }
+  } catch {
+    tickers = null;
+  }
+  const vol = new Map();
+  if (Array.isArray(tickers)) {
+    for (const t of tickers) vol.set(t.symbol, Number(t.quoteVolume) || 0);
+  }
+  usdt.sort((a, b) => (vol.get(b.symbol) || 0) - (vol.get(a.symbol) || 0));
+  const list = usdt.slice(0, 80).map((s) => ({
+    id: s.symbol,
+    label: `${s.baseAsset}/USDT`,
+  }));
+  return list.length ? list : SYMBOLS.slice();
 }
 
 module.exports = {
@@ -73,4 +113,5 @@ module.exports = {
   TF_LABELS,
   clampRefreshMs,
   symbolLabel,
+  fetchExchangeSymbols,
 };

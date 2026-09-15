@@ -3,7 +3,7 @@
 const { getStrategy, listStrategies, DEFAULT_STRATEGY_ID } = require("./strategies/catalog");
 const { Risk } = require("./risk");
 const { MarketData } = require("./marketData");
-const { INTERVAL_MS, SYMBOLS, TIMEFRAMES, clampRefreshMs, symbolLabel } = require("./markets");
+const { INTERVAL_MS, SYMBOLS, TIMEFRAMES, clampRefreshMs, symbolLabel, fetchExchangeSymbols } = require("./markets");
 const { PaperBroker } = require("./paperBroker");
 const { PreddyAdapter } = require("./predicAdapter");
 const { Journal } = require("./journal");
@@ -61,6 +61,7 @@ class Engine {
     this.todayPnl = Decimal("0");
     this.lastHandledOpenTs = null;
     this.strategyId = this.settings.strategyId || DEFAULT_STRATEGY_ID;
+    this.symbols = SYMBOLS.slice();
     this._bindMarket();
   }
 
@@ -115,9 +116,7 @@ class Engine {
       }
       if (event === "bar_close") {
         this.onBarClose(payload);
-        if (!this.running) {
-          this.emit("history", { bars: this.market.bars, forming: this.market.forming });
-        }
+        this.emit("bar", payload);
       }
       if (event === "tick") {
         this.emit("tick", payload);
@@ -224,6 +223,13 @@ class Engine {
       this._replayMarkers(true);
       this._ensureMarket();
       this.emit("history", { bars: this.market.bars, forming: this.market.forming });
+      if (typeof this.market.fetchJson === "function") {
+        try {
+          this.symbols = await fetchExchangeSymbols(this.market.fetchJson);
+        } catch {
+          this.symbols = SYMBOLS.slice();
+        }
+      }
     } catch (err) {
       this.journal.write({ type: "data_error", message: String(err.message || err) });
       this.emit("log", { level: "error", message: String(err.message || err) });
@@ -503,14 +509,14 @@ class Engine {
         ? this.market.bars[this.market.bars.length - 1].close
         : null;
     return {
-      version: "0.3.0",
+      version: "0.3.1",
       running: this.running,
       status: this.status,
       mode: this.mode,
       strategyId: this.strategyId,
       strategyName: this.strategy().name,
       strategies: listStrategies(),
-      symbols: SYMBOLS,
+      symbols: this.symbols && this.symbols.length ? this.symbols : SYMBOLS,
       timeframes: TIMEFRAMES,
       settings: {
         symbol: this.settings.symbol || "BTCUSDT",

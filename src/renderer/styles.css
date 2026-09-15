@@ -352,6 +352,32 @@ html[data-theme="glass-light"] .strategy-chip.active {
 .chart-legend .ma20::before { background: #ff5a6a; }
 .chart-legend .up::before { background: #7cff9a; }
 .chart-legend .down::before { background: #ff8b8b; }
+.live-btn {
+  position: absolute;
+  right: 72px;
+  bottom: 18px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(10, 132, 255, 0.92);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: 0 8px 24px rgba(10, 132, 255, 0.28);
+}
+.live-btn[hidden] {
+  display: none;
+}
+.live-arrow {
+  font-size: 14px;
+  line-height: 1;
+}
+html[data-theme="glass-light"] .live-btn {
+  background: var(--apple);
+}
 .dock {
   border-radius: 24px;
   display: grid;

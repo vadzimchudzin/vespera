@@ -149,28 +149,37 @@ class MarketData {
   start() {
     this._wanted = true;
     this.stop({ keepWanted: true });
-    const tick = async () => {
+    const reconcile = async () => {
       if (this._busy) return;
       this._busy = true;
       try {
-        const prevLast = this.bars[this.bars.length - 1];
-        const prevTs = prevLast ? prevLast.openTs : null;
+        const prevTs = this.bars.length ? this.bars[this.bars.length - 1].openTs : null;
+        const liveForming = this.forming && this.ws ? { ...this.forming } : null;
         const initial = this.bars.length === 0;
         await this.loadHistory(500, { emitHistory: initial });
+        if (liveForming) {
+          if (this.forming && this.forming.openTs === liveForming.openTs) {
+            this.forming.close = liveForming.close;
+            this.forming.high = Math.max(this.forming.high, liveForming.high);
+            this.forming.low = Math.min(this.forming.low, liveForming.low);
+          } else if (!this.forming) {
+            this.forming = liveForming;
+          }
+        }
         if (prevTs != null) {
           for (const bar of this.bars) {
             if (bar.openTs > prevTs) this.emit("bar_close", bar);
           }
         }
-        this._emitTick(true);
+        if (!this.ws) this._emitTick(true);
       } catch (err) {
         this.emit("error", String(err.message || err));
       } finally {
         this._busy = false;
       }
     };
-    tick();
-    this.timer = setInterval(tick, 8000);
+    if (this.bars.length === 0) reconcile();
+    this.timer = setInterval(reconcile, 20000);
     this._openWs();
   }
 

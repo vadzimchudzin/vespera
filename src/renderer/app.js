@@ -9,6 +9,7 @@
     mode: "paper",
     snapshot: null,
     openMenu: null,
+    pairLabel: "",
   };
 
   function applyI18n() {
@@ -18,6 +19,8 @@
     document.documentElement.lang = state.locale;
     const menu = $("btnMenu");
     if (menu) menu.title = t("menu");
+    const back = $("btnBack");
+    if (back) back.title = t("goLive");
   }
 
   function applyTheme() {
@@ -149,7 +152,13 @@
     document.querySelectorAll("#modeSeg button").forEach((b) => {
       b.classList.toggle("on", b.dataset.mode === snap.mode);
     });
-    if (snap.pairLabel) $("pairLabel").textContent = snap.pairLabel;
+    if (snap.pairLabel && snap.pairLabel !== state.pairLabel) {
+      if (window.VesperaChart && window.VesperaChart.reset) window.VesperaChart.reset();
+      state.pairLabel = snap.pairLabel;
+      $("pairLabel").textContent = snap.pairLabel;
+    } else if (snap.pairLabel) {
+      $("pairLabel").textContent = snap.pairLabel;
+    }
     renderStrategies(snap);
     if (window.VesperaChart) window.VesperaChart.render(snap);
     renderLog(snap);
@@ -360,7 +369,15 @@
         $("refreshVal").textContent = `${$("refresh").value} ${t("refreshUnit")}`;
       };
       paintRefresh();
-      $("refresh").oninput = paintRefresh;
+      let refreshTimer = 0;
+      $("refresh").oninput = () => {
+        paintRefresh();
+        const ms = Number($("refresh").value);
+        clearTimeout(refreshTimer);
+        refreshTimer = setTimeout(() => {
+          if (window.vespera) window.vespera.saveSettings({ refreshMs: ms });
+        }, 80);
+      };
       $("saveSet").onclick = async () => {
         const baseUsd = $("base").value;
         const minOpeningAtr = Number($("opening").value) / 20;
@@ -425,7 +442,6 @@
       }
       window.vespera.onEvent((evt) => {
         if (evt.type === "tick" && evt.payload && window.VesperaChart) {
-          if (evt.payload.last) window.VesperaChart.updateForming(evt.payload.last);
           window.VesperaChart.updateForming(evt.payload.forming);
           return;
         }
@@ -489,6 +505,9 @@
     $("btnMin").onclick = () => window.vespera?.minimize();
     $("btnMax").onclick = () => window.vespera?.maximize();
     $("btnClose").onclick = () => window.vespera?.close();
+    const goLive = () => window.VesperaChart && window.VesperaChart.goToLive && window.VesperaChart.goToLive();
+    $("btnBack").onclick = goLive;
+    $("btnLive").onclick = goLive;
     document.addEventListener("click", () => closeMenus());
   }
 

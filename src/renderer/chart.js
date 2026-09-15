@@ -6,9 +6,14 @@
   let candleSeries;
   let ma20Series;
   let ma200Series;
-  let lastBarCount = 0;
   let lastMarkerKey = "";
   let lastClosedHash = "";
+  let lastBarIndex = 0;
+  let followLive = true;
+  let ignoreRangeUntil = 0;
+  let pendingForming = null;
+  let raf = 0;
+  let seeded = false;
 
   function sma(closes, period, index) {
     if (index + 1 < period) return null;
@@ -27,6 +32,28 @@
       ma20: "#ff5a6a",
       ma200: "#5aa7ff",
     };
+  }
+
+  function liveBtn() {
+    return document.getElementById("btnLive");
+  }
+
+  function setLiveBtn(show) {
+    const btn = liveBtn();
+    if (!btn) return;
+    btn.hidden = !show;
+  }
+
+  function goToLive() {
+    followLive = true;
+    ignoreRangeUntil = Date.now() + 250;
+    setLiveBtn(false);
+    if (!chart) return;
+    try {
+      chart.timeScale().scrollToRealTime();
+    } catch {
+      /* ignore */
+    }
   }
 
   function ensure() {
@@ -49,9 +76,17 @@
         borderVisible: false,
         timeVisible: true,
         secondsVisible: false,
+        rightOffset: 6,
+        shiftVisibleRangeOnNewBar: true,
       },
       crosshair: { mode: LC.CrosshairMode.Normal },
       autoSize: true,
+      handleScroll: {
+        mouseWheel: true,
+        pressedMouseMove: true,
+        horzTouchDrag: true,
+        vertTouchDrag: true,
+      },
     });
     candleSeries = chart.addCandlestickSeries({
       upColor: c.up,
@@ -74,9 +109,19 @@
       lastValueVisible: true,
       title: "SMA200",
     });
+    chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+      if (!range || Date.now() < ignoreRangeUntil) return;
+      if (lastBarIndex <= 0) return;
+      const atLive = range.to >= lastBarIndex - 2;
+      if (!atLive && followLive) {
+        followLive = false;
+        setLiveBtn(true);
+      }
+    });
     window.addEventListener("resize", () => {
       if (!chart) return;
       chart.applyOptions({ width: el.clientWidth, height: el.clientHeight });
+      if (followLive) goToLive();
     });
   }
 
@@ -97,9 +142,21 @@
 
   function toCandle(b) {
     if (!b) return null;
-    const time = b.time != null ? b.time : Math.floor(Number(b.openTs) / 1000);
+    let time = b.time != null ? Number(b.time) : Math.floor(Number(b.openTs) / 1000);
     if (!Number.isFinite(time)) return null;
-    return { time, open: b.open, high: b.high, low: b.low, close: b.close };
+    if (time > 1e12) time = Math.floor(time / 1000);
+    const open = Number(b.open);
+    const high = Number(b.high);
+    const low = Number(b.low);
+    const close = Number(b.close);
+    if (![open, high, low, close].every(Number.isFinite)) return null;
+    return {
+      time,
+      open,
+      high: Math.max(high, open, close),
+      low: Math.min(low, open, close),
+      close,
+    };
   }
 
   function closedHash(closed) {
@@ -122,32 +179,80 @@
     ma200Series.setData(ma200);
   }
 
+  function paintPending() {
+    raf = 0;
+    if (!candleSeries || !pendingForming) return;
+    const c = toCandle(pendingForming);
+    if (!c) return;
+    try {
+      candleSeries.update(c);
+    } catch {
+      return;
+    }
+    if (followLive && chart) {
+      ignoreRangeUntil = Date.now() + 80;
+      chart.timeScale().scrollToRealTime();
+    }
+  }
+
   function updateForming(forming) {
     ensure();
-    if (!candleSeries) return;
-    const c = toCandle(forming);
-    if (c) candleSeries.update(c);
+    if (!forming) return;
+    pendingForming = forming;
+    if (!seeded && candleSeries) {
+      const c = toCandle(forming);
+      if (c) {
+        try {
+          candleSeries.update(c);
+        } catch {
+          /* empty series — wait for setData */
+        }
+      }
+    }
+    if (!raf) raf = requestAnimationFrame(paintPending);
   }
 
   function render(snap) {
     ensure();
     if (!chart || !snap) return;
     applyTheme();
-    const closed = snap.bars || [];
-    const bars = [...closed];
-    if (snap.forming) bars.push(snap.forming);
-    if (!bars.length) return;
+    const closed = (snap.bars || []).map(toCandle).filter(Boolean);
+    const forming = toCandle(snap.forming);
+    const candles = forming ? closed.concat(forming) : closed.slice();
+    if (!candles.length) return;
 
-    const candles = bars.map(toCandle).filter(Boolean);
     const hash = closedHash(closed);
-    if (hash !== lastClosedHash) {
+    const closedCount = closed.length;
+    const prevCount = lastClosedHash ? Number(lastClosedHash.split(":")[0]) : 0;
+    const needReseed = !seeded || closedCount + 2 < prevCount;
+    if (needReseed) {
       candleSeries.setData(candles);
       paintAverages(closed);
       lastClosedHash = hash;
-      lastBarCount = closed.length;
-    } else if (snap.forming) {
-      const c = toCandle(snap.forming);
-      if (c) candleSeries.update(c);
+      lastBarIndex = candles.length - 1;
+      seeded = true;
+      ignoreRangeUntil = Date.now() + 200;
+      if (followLive) {
+        try {
+          chart.timeScale().scrollToRealTime();
+        } catch {
+          chart.timeScale().fitContent();
+        }
+      }
+    } else if (hash !== lastClosedHash) {
+      const newestClosed = closed[closed.length - 1];
+      if (newestClosed) candleSeries.update(newestClosed);
+      paintAverages(closed);
+      lastClosedHash = hash;
+      lastBarIndex = candles.length - 1;
+      if (forming) candleSeries.update(forming);
+      if (followLive) {
+        ignoreRangeUntil = Date.now() + 80;
+        chart.timeScale().scrollToRealTime();
+      }
+    } else if (forming) {
+      pendingForming = snap.forming;
+      if (!raf) raf = requestAnimationFrame(paintPending);
     }
 
     const markers = (snap.markers || []).map((m) => {
@@ -174,5 +279,15 @@
     }
   }
 
-  window.VesperaChart = { render, ensure, updateForming, applyTheme };
+  function reset() {
+    lastClosedHash = "";
+    lastMarkerKey = "";
+    lastBarIndex = 0;
+    seeded = false;
+    pendingForming = null;
+    followLive = true;
+    setLiveBtn(false);
+  }
+
+  window.VesperaChart = { render, ensure, updateForming, applyTheme, goToLive, reset };
 })();

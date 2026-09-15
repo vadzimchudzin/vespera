@@ -2,7 +2,7 @@
 
 Glass desktop terminal for BTC 15m Preddy / Polymarket-style up-down.
 
-**v0.3.0 is Paper.** Same strategy as the spec, no live money. The chart streams even when you are not trading.
+**v0.3.1 is Paper.** Same strategy as the spec, no live money. The chart streams even when you are not trading.
 
 Repo: private [`VadimChudin/vespera`](https://github.com/VadimChudin/vespera)
 

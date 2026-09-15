@@ -2,6 +2,13 @@
 
 All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 
+## 0.3.1 — 2026-09-15
+
+- Chart stays pinned to the last candle. Pan left → **Last candle** button (and the header arrow) snaps back.
+- Live candle is painted on every animation frame from Binance trades. REST no longer overwrites the forming bar every few seconds.
+- Instrument list loads from Binance exchangeInfo (top USDT by volume). Preddy instruments later, same menu.
+- SMA200/20 rules unchanged.
+
 ## 0.3.0 — 2026-09-15
 
 - Chart is always live. Start/Stop only arms the strategy. Idle = candles, no trade arrows.

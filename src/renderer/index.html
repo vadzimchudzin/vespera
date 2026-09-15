@@ -14,9 +14,10 @@
     <div class="app">
       <header class="chrome drag">
         <div class="chrome-left no-drag">
-          <button class="orb" id="btnBack" title="Vespera">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7">
-              <path d="M15 18l-6-6 6-6" />
+          <button class="orb" id="btnBack" data-i18n-title="goLive" title="Go to last candle">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8">
+              <path d="M4 12h14" />
+              <path d="M12 6l6 6-6 6" />
             </svg>
           </button>
           <div class="brand">
@@ -78,6 +79,10 @@
               <span class="lg up">UP</span>
               <span class="lg down">DOWN</span>
             </div>
+            <button class="live-btn" id="btnLive" hidden type="button">
+              <span class="live-arrow">→</span>
+              <span data-i18n="goLive">Last candle</span>
+            </button>
             <div id="chart"></div>
           </div>
         </section>
