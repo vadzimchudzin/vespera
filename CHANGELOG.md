@@ -2,6 +2,10 @@
 
 All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 
+## 0.3.2 — 2026-09-15
+
+- Live stream host: `data-stream.binance.vision` (Binance `:9443` returns 451 in many regions). Candles move on every trade.
+
 ## 0.3.1 — 2026-09-15
 
 - Chart stays pinned to the last candle. Pan left → **Last candle** button (and the header arrow) snaps back.

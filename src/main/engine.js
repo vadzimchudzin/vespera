@@ -509,7 +509,7 @@ class Engine {
         ? this.market.bars[this.market.bars.length - 1].close
         : null;
     return {
-      version: "0.3.1",
+      version: "0.3.2",
       running: this.running,
       status: this.status,
       mode: this.mode,

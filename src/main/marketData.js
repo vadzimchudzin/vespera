@@ -55,7 +55,12 @@ function wsUrl(host, symbol, timeframe) {
   return `${host}/stream?streams=${s}@kline_${tf}/${s}@aggTrade`;
 }
 
-const WS_HOSTS = ["wss://stream.binance.com:9443", "wss://stream.binance.vision"];
+const WS_HOSTS = [
+  "wss://data-stream.binance.vision",
+  "wss://stream.binance.com:443",
+  "wss://stream.binance.us:9443",
+  "wss://stream.binance.com:9443",
+];
 
 function clampRefreshMs(value) {
   const n = Number(value);
