@@ -11,7 +11,7 @@ const INTERVAL_MS = {
   "1d": 86_400_000,
 };
 
-function fetchJson(url) {
+function defaultFetchJson(url) {
   return new Promise((resolve, reject) => {
     const req = https.get(url, { headers: { "User-Agent": "Vespera/0.1" } }, (res) => {
       const chunks = [];
@@ -46,12 +46,15 @@ function parseKlines(raw) {
 }
 
 class MarketData {
-  constructor({ symbol = "BTCUSDT", timeframe = "15m" } = {}) {
+  constructor({ symbol = "BTCUSDT", timeframe = "15m", fetchJson } = {}) {
     this.symbol = symbol;
     this.timeframe = timeframe;
+    this.fetchJson = fetchJson || defaultFetchJson;
     this.bars = [];
+    this.forming = null;
     this.listeners = new Set();
     this.timer = null;
+    this._busy = false;
   }
 
   on(fn) {
@@ -67,13 +70,12 @@ class MarketData {
     for (const fn of this.listeners) fn(event, payload);
   }
 
-  async loadHistory(limit = 500) {
+  async loadHistory(limit = 500, { emitHistory = true } = {}) {
     const url =
       `https://api.binance.com/api/v3/klines?symbol=${this.symbol}` +
       `&interval=${this.timeframe}&limit=${limit}`;
-    const raw = await fetchJson(url);
+    const raw = await this.fetchJson(url);
     const bars = parseKlines(raw);
-    // last kline may still be forming
     const last = bars[bars.length - 1];
     const interval = INTERVAL_MS[this.timeframe] || 900_000;
     if (last && Date.now() < last.openTs + interval) {
@@ -84,23 +86,32 @@ class MarketData {
       this.forming = null;
       this.bars = bars;
     }
-    this.emit("history", { bars: this.bars, forming: this.forming });
+    if (emitHistory) {
+      this.emit("history", { bars: this.bars, forming: this.forming });
+    }
     return this.bars;
   }
 
   start() {
     this.stop();
     const tick = async () => {
+      if (this._busy) return;
+      this._busy = true;
       try {
         const prevLast = this.bars[this.bars.length - 1];
-        await this.loadHistory(500);
-        const last = this.bars[this.bars.length - 1];
-        if (last && (!prevLast || last.openTs !== prevLast.openTs)) {
-          this.emit("bar_close", last);
+        const prevTs = prevLast ? prevLast.openTs : null;
+        const initial = this.bars.length === 0;
+        await this.loadHistory(500, { emitHistory: initial });
+        if (prevTs != null) {
+          for (const bar of this.bars) {
+            if (bar.openTs > prevTs) this.emit("bar_close", bar);
+          }
         }
-        this.emit("tick", { forming: this.forming, last });
+        this.emit("tick", { forming: this.forming, last: this.bars[this.bars.length - 1] });
       } catch (err) {
         this.emit("error", String(err.message || err));
+      } finally {
+        this._busy = false;
       }
     };
     tick();
@@ -115,4 +126,4 @@ class MarketData {
   }
 }
 
-module.exports = { MarketData, INTERVAL_MS };
+module.exports = { MarketData, INTERVAL_MS, parseKlines };

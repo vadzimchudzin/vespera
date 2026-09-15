@@ -9,7 +9,7 @@
   "main": "src/main/main.js",
   "scripts": {
     "start": "electron .",
-    "test": "node src/main/strategy.test.js",
+    "test": "node src/main/strategy.test.js && node src/main/engine.test.js",
     "pack": "electron-builder --dir",
     "dist": "electron-builder --win --mac",
     "dist:win": "electron-builder --win nsis",

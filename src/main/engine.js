@@ -18,36 +18,40 @@ const STATUSES = [
 ];
 
 class Engine {
-  constructor({ userDataDir, settings }) {
+  constructor({ userDataDir, settings, market } = {}) {
     this.userDataDir = userDataDir;
-    this.settings = settings;
+    this.settings = settings || {};
     this.running = false;
     this.status = "stopped";
-    this.mode = settings.mode || "paper"; // paper | auto
+    this.mode = this.settings.mode || "paper";
     this.listeners = new Set();
     this.journal = new Journal(`${userDataDir}/journal.jsonl`);
     this.risk = new Risk({
-      baseUsd: settings.baseUsd || "1.00",
-      maxSteps: settings.maxSteps || 6,
+      baseUsd: this.settings.baseUsd || "1.00",
+      maxSteps: this.settings.maxSteps || 6,
     });
     const restored = this.journal.restoreRisk();
     this.risk.step = restored.step;
     this.risk.consecutiveLosses = restored.consecutiveLosses;
     this.risk.halted = restored.halted;
     if (restored.halted) this.risk.lotConfirmed = false;
-    this.paper = new PaperBroker({ startingBalance: settings.paperBalance || "1000.00" });
+    this.paper = new PaperBroker({ startingBalance: this.settings.paperBalance || "1000.00" });
+    this._restorePaper();
     this.live = new PreddyAdapter({
-      apiKey: settings.apiKey || "",
-      baseUrl: settings.apiBase || "https://preddy.trade",
+      apiKey: this.settings.apiKey || "",
+      baseUrl: this.settings.apiBase || "https://preddy.trade",
     });
-    this.market = new MarketData({
-      symbol: settings.symbol || "BTCUSDT",
-      timeframe: settings.timeframe || "15m",
-    });
+    this.market =
+      market ||
+      new MarketData({
+        symbol: this.settings.symbol || "BTCUSDT",
+        timeframe: this.settings.timeframe || "15m",
+      });
     this.markers = [];
     this.lastEval = null;
     this.pingResult = null;
     this.todayPnl = Decimal("0");
+    this.lastHandledOpenTs = null;
     this._bindMarket();
   }
 
@@ -83,8 +87,28 @@ class Engine {
     });
   }
 
+  _restorePaper() {
+    const lastSettled = [...this.journal.entries].reverse().find((e) => e.type === "settled");
+    if (lastSettled && lastSettled.balanceAfter) {
+      this.paper.balance = Decimal(lastSettled.balanceAfter);
+    }
+    const open = this.journal.lastOpenBet();
+    if (open && open.side && open.sizeUsd) {
+      this.paper.openBet = {
+        clientOrderId: open.clientOrderId,
+        side: open.side,
+        sizeUsd: open.sizeUsd,
+        strike: open.strike,
+        roundOpenTs: open.roundOpenTs,
+        roundCloseTs: open.roundCloseTs,
+        placedAt: open.placedAt || Date.now(),
+        status: "open",
+      };
+    }
+  }
+
   _replayMarkers() {
-    this.markers = [];
+    if (this.markers.length) return;
     const bars = this.market.bars;
     for (let i = 199; i < bars.length; i += 1) {
       const ev = evaluateBar(bars, i, {
@@ -101,22 +125,33 @@ class Engine {
     }
   }
 
+  _ensureMarket() {
+    if (!this.market.timer && typeof this.market.start === "function") {
+      this.market.start();
+    }
+  }
+
   async start() {
-    if (this.running) return;
-    this.running = true;
-    if (this.risk.halted) {
+    if (this.risk.halted || !this.risk.lotConfirmed) {
+      this.running = false;
       this.status = "halt";
       this.emit("status", this.status);
       return;
     }
+    if (this.running) return;
+    this.running = true;
     this.status = "warming_up";
     this.emit("status", this.status);
-    await this.market.loadHistory(500);
-    this.market.start();
+    if (typeof this.market.loadHistory === "function") {
+      await this.market.loadHistory(500);
+    }
+    const last = this.market.bars[this.market.bars.length - 1];
+    if (last) this.lastHandledOpenTs = last.openTs;
+    this._ensureMarket();
     if (this.market.bars.length < 200) {
       this.status = "warming_up";
     } else {
-      this.status = "watching";
+      this.status = this.paper.openBet ? "waiting_settlement" : "watching";
     }
     this.journal.write({ type: "start", mode: this.mode });
     this.emit("status", this.status);
@@ -124,14 +159,20 @@ class Engine {
 
   stop() {
     this.running = false;
-    this.market.stop();
-    this.status = "stopped";
+    if (!this.paper.openBet && typeof this.market.stop === "function") {
+      this.market.stop();
+    }
+    this.status = this.paper.openBet ? "waiting_settlement" : "stopped";
     this.journal.write({ type: "stop" });
     this.emit("status", this.status);
   }
 
   setMode(mode) {
     if (mode === this.mode) return;
+    if (this.paper.openBet) {
+      this.emit("log", { level: "warn", message: "mode_blocked_open_bet" });
+      return;
+    }
     this.mode = mode;
     this.risk.step = 1;
     this.risk.consecutiveLosses = 0;
@@ -143,7 +184,10 @@ class Engine {
     this.risk.confirmLot(baseUsd);
     this.settings.baseUsd = Decimal(baseUsd).toFixed(2);
     this.journal.write({ type: "lot_confirmed", baseUsd: this.settings.baseUsd });
-    if (this.running) this.status = "watching";
+    if (this.running) {
+      this.status = this.paper.openBet ? "waiting_settlement" : "watching";
+      this._ensureMarket();
+    }
     this.emit("status", this.status);
   }
 
@@ -160,8 +204,17 @@ class Engine {
 
   async onBarClose(bar) {
     const bars = this.market.bars;
-    const index = bars.findIndex((b) => b.openTs === bar.openTs);
-    if (index < 0) return;
+    let index = bars.findIndex((b) => b.openTs === bar.openTs);
+    if (index < 0) {
+      bars.push(bar);
+      bars.sort((a, b) => a.openTs - b.openTs);
+      index = bars.findIndex((b) => b.openTs === bar.openTs);
+    }
+
+    if (this.lastHandledOpenTs != null && bar.openTs <= this.lastHandledOpenTs) {
+      return;
+    }
+    this.lastHandledOpenTs = bar.openTs;
 
     if (this.paper.openBet) {
       const settled = this.paper.settle(bar);
@@ -171,11 +224,15 @@ class Engine {
         else this.risk.onLoss();
         this.journal.write({ type: "settled", ...settled });
         this._markResult(settled);
-        this.status = this.risk.halted ? "halt" : "watching";
+        this.status = this.risk.halted ? "halt" : this.running ? "watching" : "stopped";
         this.emit("settled", settled);
         if (this.risk.halted) {
+          this.running = false;
           this.journal.write({ type: "halt" });
           this.emit("halt", this.risk.snapshot());
+        }
+        if (!this.running && typeof this.market.stop === "function") {
+          this.market.stop();
         }
       }
     }
@@ -226,10 +283,10 @@ class Engine {
     const interval = INTERVAL_MS[this.settings.timeframe || "15m"];
     const round = {
       strike: bar.close,
-      openTs: bar.closeTs + 1,
-      closeTs: bar.closeTs + interval,
+      openTs: (bar.closeTs || bar.openTs + interval) + 1,
+      closeTs: (bar.closeTs || bar.openTs + interval) + interval,
     };
-    const clientOrderId = `${new Date(bar.openTs).toISOString().slice(0, 10)}-${this.settings.timeframe}-${bar.openTs}-${ev.signal}-${this.risk.step}`;
+    const clientOrderId = `${new Date(bar.openTs).toISOString().slice(0, 10)}-${this.settings.timeframe || "15m"}-${bar.openTs}-${ev.signal}-${this.risk.step}`;
 
     this.markers.push({
       time: Math.floor(bar.openTs / 1000),
