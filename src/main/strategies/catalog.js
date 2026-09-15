@@ -13,7 +13,7 @@ function catalog() {
     {
       id: "sma200_20",
       name: "SMA200/20",
-      description: "SMA200 trend filter, SMA20 cross, next-candle paper bet",
+      description: "SMA200 trend, SMA20 pullback + close, bet on S+1",
       enabled: true,
       evaluate(bars, index, options) {
         return evaluateBar(bars, index, options);

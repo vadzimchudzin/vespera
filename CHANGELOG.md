@@ -2,6 +2,13 @@
 
 All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 
+## 0.5.0 — 2026-09-15
+
+- Checklist entry: trend SMA200, pullback through SMA20, confirm on **closed** `S`, bet on **S+1**.
+- Settings **Min cross**: skip unless close is at least X ticks beyond SMA20. `0` = any cross.
+- Settings close (✕) is no longer clipped by the panel.
+- Dead `requirePriorPenetration` flag removed; pullback on `S-1` is part of the rule.
+
 ## 0.4.1 — 2026-09-15
 
 - TZ restored: signal only on **closed** candle `S`. Bet is on **S+1**. Forming candle never enters.

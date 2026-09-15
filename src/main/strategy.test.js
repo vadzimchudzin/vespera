@@ -27,15 +27,44 @@ function assert(cond, msg) {
   assert(sma(values, 20, 19) === 10, "sma flat");
 }
 
-{
-  const bars = makeBars({ n: 220, close: 110, trend: 0.05 });
-  const i = bars.length - 1;
+function paintLong(bars, i) {
+  const ma20Prev = sma(
+    bars.map((b) => b.close),
+    20,
+    i - 1
+  );
+  bars[i - 1] = bar(ma20Prev + 1, ma20Prev + 1.5, ma20Prev - 2, ma20Prev - 1, {
+    openTs: bars[i - 1].openTs,
+  });
   const ma20 = sma(
     bars.map((b) => b.close),
     20,
     i
   );
-  bars[i] = bar(ma20 - 2, ma20 + 3, ma20 - 4, ma20 + 2);
+  bars[i] = bar(ma20 - 2, ma20 + 3, ma20 - 4, ma20 + 2, { openTs: bars[i].openTs });
+}
+
+function paintShort(bars, i) {
+  const ma20Prev = sma(
+    bars.map((b) => b.close),
+    20,
+    i - 1
+  );
+  bars[i - 1] = bar(ma20Prev - 1, ma20Prev + 2, ma20Prev - 1.5, ma20Prev + 1, {
+    openTs: bars[i - 1].openTs,
+  });
+  const ma20 = sma(
+    bars.map((b) => b.close),
+    20,
+    i
+  );
+  bars[i] = bar(ma20 + 2, ma20 + 4, ma20 - 3, ma20 - 2, { openTs: bars[i].openTs });
+}
+
+{
+  const bars = makeBars({ n: 220, close: 110, trend: 0.05 });
+  const i = bars.length - 1;
+  paintLong(bars, i);
   const ev = evaluateBar(bars, i);
   assert(ev.signal === "UP", `expected UP got ${ev.signal} ${ev.reason}`);
 }
@@ -43,12 +72,7 @@ function assert(cond, msg) {
 {
   const bars = makeBars({ n: 220, close: 80, trend: -0.05 });
   const i = bars.length - 1;
-  const ma20 = sma(
-    bars.map((b) => b.close),
-    20,
-    i
-  );
-  bars[i] = bar(ma20 + 2, ma20 + 4, ma20 - 3, ma20 - 2);
+  paintShort(bars, i);
   const ev = evaluateBar(bars, i);
   assert(ev.signal === "DOWN", `expected DOWN got ${ev.signal} ${ev.reason}`);
 }
@@ -67,19 +91,60 @@ function assert(cond, msg) {
 }
 
 {
-  const bars = makeBars({ n: 220, close: 110, trend: 0.0001 });
+  const bars = makeBars({ n: 220, close: 110, trend: 0.05 });
   const i = bars.length - 1;
+  const ma20Prev = sma(
+    bars.map((b) => b.close),
+    20,
+    i - 1
+  );
+  bars[i - 1] = bar(ma20Prev + 3, ma20Prev + 4, ma20Prev + 2, ma20Prev + 3, {
+    openTs: bars[i - 1].openTs,
+  });
   const ma20 = sma(
     bars.map((b) => b.close),
     20,
     i
   );
-  bars[i] = bar(ma20 - 2, ma20 + 3, ma20 - 4, ma20 + 2);
+  bars[i] = bar(ma20 - 2, ma20 + 3, ma20 - 4, ma20 + 2, { openTs: bars[i].openTs });
+  const ev = evaluateBar(bars, i);
+  assert(ev.signal === null, `no long without prior pullback got ${ev.signal} ${ev.reason}`);
+  assert(ev.reason === "no_pullback_down", ev.reason);
+}
+
+{
+  const bars = makeBars({ n: 220, close: 110, trend: 0.0001 });
+  const i = bars.length - 1;
+  paintLong(bars, i);
   const open = evaluateBar(bars, i);
   assert(open.signal === "UP", "default still fires");
   const filtered = evaluateBar(bars, i, { minOpeningAtr: 3 });
   assert(filtered.signal === null, "tight MAs skipped");
   assert(filtered.reason === "ma_opening_too_small", filtered.reason);
+}
+
+{
+  const bars = makeBars({ n: 220, close: 110, trend: 0.05 });
+  const i = bars.length - 1;
+  const ma20Prev = sma(
+    bars.map((b) => b.close),
+    20,
+    i - 1
+  );
+  bars[i - 1] = bar(ma20Prev + 1, ma20Prev + 1, ma20Prev - 2, ma20Prev - 1, {
+    openTs: bars[i - 1].openTs,
+  });
+  const ma20 = sma(
+    bars.map((b) => b.close),
+    20,
+    i
+  );
+  bars[i] = bar(ma20 - 0.2, ma20 + 0.4, ma20 - 0.3, ma20 + 0.2, { openTs: bars[i].openTs });
+  const shallow = evaluateBar(bars, i, { minCrossTicks: 1 });
+  assert(shallow.signal === null, "shallow cross skipped");
+  assert(shallow.reason === "cross_too_shallow", shallow.reason);
+  const any = evaluateBar(bars, i, { minCrossTicks: 0 });
+  assert(any.signal === "UP", `zero ticks still fires ${any.reason}`);
 }
 
 {

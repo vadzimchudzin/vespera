@@ -15,10 +15,10 @@ const DEFAULTS = {
   locale: "en",
   apiKey: "",
   apiBase: "https://preddy.trade",
-  requirePriorPenetration: false,
   maType: "SMA",
   strategyId: "sma200_20",
   minOpeningAtr: 0,
+  minCrossTicks: 0,
   refreshMs: 100,
   notificationsEnabled: true,
 };

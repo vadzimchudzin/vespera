@@ -118,6 +118,9 @@ html[data-theme="glass-light"] .atmosphere {
   color: #fff;
   display: grid;
   place-items: center;
+  flex-shrink: 0;
+  overflow: visible;
+  line-height: 1;
 }
 html[data-theme="glass-light"] .orb {
   background: rgba(255, 255, 255, 0.86);
@@ -505,6 +508,12 @@ html[data-theme="glass-light"] .row:hover {
 .row.danger {
   color: var(--danger);
 }
+.panel[hidden],
+.sheet[hidden],
+.sheet-backdrop[hidden],
+.live-btn[hidden] {
+  display: none !important;
+}
 .panel {
   position: fixed;
   left: 50%;
@@ -519,9 +528,16 @@ html[data-theme="glass-light"] .row:hover {
   display: flex;
   flex-direction: column;
 }
+#panelClose {
+  position: relative;
+  z-index: 9;
+  font-size: 15px;
+}
 #panelBody {
   overflow-y: auto;
   overflow-x: hidden;
+  min-height: 0;
+  flex: 1 1 auto;
   max-height: calc(100vh - 160px);
   padding-right: 4px;
   scrollbar-width: thin;
@@ -543,6 +559,11 @@ html[data-theme="glass-light"] .row:hover {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 12px;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 8;
+  overflow: visible;
+  gap: 12px;
 }
 .panel h2 {
   margin: 0;

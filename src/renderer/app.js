@@ -345,6 +345,14 @@
           <p class="hint">${t("minOpeningHint")}</p>
         </div>
         <div class="field">
+          <label>${t("minCross")}</label>
+          <div class="range-row">
+            <input id="crossTicks" type="range" min="0" max="50" step="1" />
+            <span class="range-val" id="crossVal">0 ${t("minCrossUnit")}</span>
+          </div>
+          <p class="hint">${t("minCrossHint")}</p>
+        </div>
+        <div class="field">
           <label>${t("refresh")}</label>
           <div class="range-row">
             <input id="refresh" type="range" min="1" max="1000" step="1" />
@@ -375,6 +383,12 @@
       };
       paintOpening();
       $("opening").oninput = paintOpening;
+      $("crossTicks").value = String(Math.max(0, Number(s.minCrossTicks || 0)));
+      const paintCross = () => {
+        $("crossVal").textContent = `${$("crossTicks").value} ${t("minCrossUnit")}`;
+      };
+      paintCross();
+      $("crossTicks").oninput = paintCross;
       $("refresh").value = String(s.refreshMs || 100);
       const paintRefresh = () => {
         $("refreshVal").textContent = `${$("refresh").value} ${t("refreshUnit")}`;
@@ -404,6 +418,7 @@
       $("saveSet").onclick = async () => {
         const baseUsd = $("base").value;
         const minOpeningAtr = Number($("opening").value) / 20;
+        const minCrossTicks = Number($("crossTicks").value);
         const notifyOn = $("notifyToggle").classList.contains("on");
         await window.vespera.saveSettings({
           symbol: $("symField").querySelector(".v-select").dataset.value,
@@ -411,6 +426,7 @@
           maxSteps: Number($("steps").value),
           baseUsd,
           minOpeningAtr,
+          minCrossTicks,
           refreshMs: Number($("refresh").value),
           notificationsEnabled: notifyOn,
         });

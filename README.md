@@ -2,7 +2,7 @@
 
 Glass desktop terminal for BTC 15m Preddy / Polymarket-style up-down.
 
-**v0.4.1 is Paper.** SMA200/20 on a **closed** candle `S`, bet on **S+1**. No live money.
+**v0.5.0 is Paper.** SMA200/20 on a **closed** candle `S`, bet on **S+1**. No live money.
 
 Repo: private [`VadimChudin/vespera`](https://github.com/VadimChudin/vespera)
 
@@ -10,12 +10,12 @@ Repo: private [`VadimChudin/vespera`](https://github.com/VadimChudin/vespera)
 
 - SMA 200 (trend) + SMA 20 (trigger) on **closed** Binance candles. Default `BTCUSDT` 15m; pick any listed pair / timeframe.
 - Above 200 → only UP. Below 200 → only DOWN.
-- Entry: candle crosses MA20 and closes with the trend.
-- Bet is on **the next** candle.
+- Entry: prior bar pulls through SMA20, signal bar crosses back and closes with the trend.
+- Bet is on **the next** candle (`S+1`). Forming candle never signals.
 - Paper martingale ×2, max 6. Win resets to base. Six losses → halt until **Start** and **confirm lot**.
 - Chart is always live (Binance WebSocket + REST fallback). SMA lines use **closed** candles only.
 - Trade arrows appear only while Paper/Auto is **started**. Idle = clean chart.
-- Settings **Chart refresh**: 1–1000 ms. **Min opening**: skip when SMA20 and SMA200 are stuck together (`0` = every cross).
+- Settings **Chart refresh**: 1–1000 ms. **Min opening**: skip when SMA20 and SMA200 are stuck together. **Min cross**: close must be X ticks beyond SMA20 (`0` = any cross).
 
 ## Modes
 

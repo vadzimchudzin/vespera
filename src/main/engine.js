@@ -155,8 +155,8 @@ class Engine {
     const bars = this.market.bars;
     for (let i = 199; i < bars.length; i += 1) {
       const ev = this.strategy().evaluate(bars, i, {
-        requirePriorPenetration: this.settings.requirePriorPenetration,
         minOpeningAtr: this.settings.minOpeningAtr,
+        minCrossTicks: this.settings.minCrossTicks,
       });
       if (ev.signal) {
         this.markers.push({
@@ -184,6 +184,9 @@ class Engine {
       if (typeof this.market.setRefreshMs === "function") {
         this.market.setRefreshMs(next.refreshMs);
       }
+    }
+    if (patch.minCrossTicks != null) {
+      next.minCrossTicks = Math.max(0, Number(patch.minCrossTicks) || 0);
     }
     if (patch.minOpeningAtr != null) {
       next.minOpeningAtr = Number(patch.minOpeningAtr);
@@ -213,7 +216,7 @@ class Engine {
       this.lastHandledOpenTs = null;
       this._replayMarkers(true);
       this.emit("history", { bars: this.market.bars, forming: this.market.forming });
-    } else if (patch.minOpeningAtr != null) {
+    } else if (patch.minOpeningAtr != null || patch.minCrossTicks != null) {
       this._replayMarkers(true);
       this.emit("history", { bars: this.market.bars, forming: this.market.forming });
     }
@@ -399,8 +402,8 @@ class Engine {
 
   _evalOptions() {
     return {
-      requirePriorPenetration: this.settings.requirePriorPenetration,
       minOpeningAtr: this.settings.minOpeningAtr,
+      minCrossTicks: this.settings.minCrossTicks,
     };
   }
 
@@ -570,7 +573,7 @@ class Engine {
         ? this.market.bars[this.market.bars.length - 1].close
         : null;
     return {
-      version: "0.4.1",
+      version: "0.5.0",
       running: this.running,
       status: this.status,
       mode: this.mode,
@@ -588,6 +591,7 @@ class Engine {
         locale: this.settings.locale || "en",
         strategyId: this.strategyId,
         minOpeningAtr: Number(this.settings.minOpeningAtr || 0),
+        minCrossTicks: Number(this.settings.minCrossTicks || 0),
         refreshMs: clampRefreshMs(this.settings.refreshMs || 100),
         notificationsEnabled: this.notificationsEnabled !== false,
         paperBalance: this.settings.paperBalance || "1000.00",

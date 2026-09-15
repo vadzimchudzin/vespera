@@ -32,6 +32,17 @@ function makeTrendBars({ n = 220, close = 110, trend = 0.05 }) {
 }
 
 function paintLong(bars, index) {
+  if (!bars[index] || !bars[index - 1]) return;
+  const ma20Prev = sma(
+    bars.map((b) => b.close),
+    20,
+    index - 1
+  );
+  const prevTs = bars[index - 1].openTs;
+  bars[index - 1] = bar(ma20Prev + 1, ma20Prev + 1.5, ma20Prev - 2, ma20Prev - 1, {
+    openTs: prevTs,
+    closeTs: prevTs + 899_999,
+  });
   const ma20 = sma(
     bars.map((b) => b.close),
     20,
@@ -45,6 +56,17 @@ function paintLong(bars, index) {
 }
 
 function paintShort(bars, index) {
+  if (!bars[index] || !bars[index - 1]) return;
+  const ma20Prev = sma(
+    bars.map((b) => b.close),
+    20,
+    index - 1
+  );
+  const prevTs = bars[index - 1].openTs;
+  bars[index - 1] = bar(ma20Prev - 1, ma20Prev + 2, ma20Prev - 1.5, ma20Prev + 1, {
+    openTs: prevTs,
+    closeTs: prevTs + 899_999,
+  });
   const ma20 = sma(
     bars.map((b) => b.close),
     20,
@@ -167,9 +189,6 @@ async function run() {
     assert(engine.risk.canOpen() === false, "no 7th");
     assert(engine.status === "halt", "status halt");
 
-    paintLong(bars, 231);
-    const extra = bar(1, 2, 0, 3, { openTs: 231 * 900_000, closeTs: 231 * 900_000 + 899999 });
-    paintLong([].concat(bars, extra), 0);
     engine.running = true;
     engine.market.bars = bars;
     const before = engine.journal.entries.filter((e) => e.type === "order_sent").length;
