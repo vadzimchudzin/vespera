@@ -8,6 +8,7 @@
   let ma200Series;
   let lastBarCount = 0;
   let lastMarkerKey = "";
+  let lastClosedHash = "";
 
   function sma(closes, period, index) {
     if (index + 1 < period) return null;
@@ -19,9 +20,8 @@
   function themeColors() {
     const light = document.documentElement.getAttribute("data-theme") === "glass-light";
     return {
-      bg: "transparent",
-      text: light ? "rgba(20,18,16,0.7)" : "rgba(255,255,255,0.62)",
-      grid: light ? "rgba(20,18,16,0.08)" : "rgba(255,255,255,0.06)",
+      text: light ? "rgba(60,60,67,0.72)" : "rgba(255,255,255,0.62)",
+      grid: light ? "rgba(60,60,67,0.08)" : "rgba(255,255,255,0.06)",
       up: "#26a69a",
       down: "#ef5350",
       ma20: "#ff5a6a",
@@ -96,7 +96,37 @@
   }
 
   function toCandle(b) {
-    return { time: b.time, open: b.open, high: b.high, low: b.low, close: b.close };
+    if (!b) return null;
+    const time = b.time != null ? b.time : Math.floor(Number(b.openTs) / 1000);
+    if (!Number.isFinite(time)) return null;
+    return { time, open: b.open, high: b.high, low: b.low, close: b.close };
+  }
+
+  function closedHash(closed) {
+    if (!closed.length) return "0";
+    const last = closed[closed.length - 1];
+    return `${closed.length}:${last.time}:${last.close}`;
+  }
+
+  function paintAverages(closed) {
+    const closes = closed.map((b) => b.close);
+    const ma20 = [];
+    const ma200 = [];
+    for (let i = 0; i < closed.length; i += 1) {
+      const a = sma(closes, 20, i);
+      const b = sma(closes, 200, i);
+      if (a != null) ma20.push({ time: closed[i].time, value: a });
+      if (b != null) ma200.push({ time: closed[i].time, value: b });
+    }
+    ma20Series.setData(ma20);
+    ma200Series.setData(ma200);
+  }
+
+  function updateForming(forming) {
+    ensure();
+    if (!candleSeries) return;
+    const c = toCandle(forming);
+    if (c) candleSeries.update(c);
   }
 
   function render(snap) {
@@ -108,24 +138,16 @@
     if (snap.forming) bars.push(snap.forming);
     if (!bars.length) return;
 
-    const candles = bars.map(toCandle);
-    const closedCount = closed.length;
-    if (closedCount !== lastBarCount) {
+    const candles = bars.map(toCandle).filter(Boolean);
+    const hash = closedHash(closed);
+    if (hash !== lastClosedHash) {
       candleSeries.setData(candles);
-      const closes = closed.map((b) => b.close);
-      const ma20 = [];
-      const ma200 = [];
-      for (let i = 0; i < closed.length; i += 1) {
-        const a = sma(closes, 20, i);
-        const b = sma(closes, 200, i);
-        if (a != null) ma20.push({ time: closed[i].time, value: a });
-        if (b != null) ma200.push({ time: closed[i].time, value: b });
-      }
-      ma20Series.setData(ma20);
-      ma200Series.setData(ma200);
-      lastBarCount = closedCount;
+      paintAverages(closed);
+      lastClosedHash = hash;
+      lastBarCount = closed.length;
     } else if (snap.forming) {
-      candleSeries.update(toCandle(snap.forming));
+      const c = toCandle(snap.forming);
+      if (c) candleSeries.update(c);
     }
 
     const markers = (snap.markers || []).map((m) => {
@@ -152,5 +174,5 @@
     }
   }
 
-  window.VesperaChart = { render, ensure };
+  window.VesperaChart = { render, ensure, updateForming, applyTheme };
 })();

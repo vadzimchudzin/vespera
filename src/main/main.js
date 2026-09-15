@@ -59,7 +59,10 @@ app.whenReady().then(() => {
 });
 
 app.on("window-all-closed", () => {
-  if (engine) engine.stop();
+  if (engine) {
+    engine.stop();
+    if (engine.market && typeof engine.market.stop === "function") engine.market.stop();
+  }
   if (process.platform !== "darwin") app.quit();
 });
 
@@ -67,9 +70,9 @@ ipcMain.handle("engine:snapshot", () => engine.snapshot());
 ipcMain.handle("engine:warmChart", () => engine.warmChart());
 ipcMain.handle("engine:start", () => engine.start());
 ipcMain.handle("engine:stop", () => engine.stop());
-ipcMain.handle("engine:setMode", (_e, mode) => {
-  store.save({ mode });
-  engine.setMode(mode);
+ipcMain.handle("engine:setMode", async (_e, mode) => {
+  await engine.setMode(mode);
+  store.save({ mode: engine.mode });
   return engine.snapshot();
 });
 ipcMain.handle("engine:confirmLot", (_e, baseUsd) => {
@@ -87,16 +90,9 @@ ipcMain.handle("engine:setStrategy", (_e, id) => {
   return { ...result, state: engine.snapshot() };
 });
 ipcMain.handle("settings:get", () => store.value);
-ipcMain.handle("settings:save", (_e, patch) => {
+ipcMain.handle("settings:save", async (_e, patch) => {
   const next = store.save(patch);
-  if (patch.locale) engine.settings.locale = patch.locale;
-  if (patch.theme) engine.settings.theme = patch.theme;
-  if (patch.timeframe) engine.settings.timeframe = patch.timeframe;
-  if (patch.symbol) engine.settings.symbol = patch.symbol;
-  if (patch.minOpeningAtr != null) {
-    engine.settings.minOpeningAtr = Number(patch.minOpeningAtr);
-    engine._replayMarkers(true);
-  }
+  await engine.applySettings(patch);
   return next;
 });
 ipcMain.handle("window:minimize", () => win.minimize());

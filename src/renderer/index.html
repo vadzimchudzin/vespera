@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' https://api.binance.com;"
+      content="default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' https://api.binance.com wss://stream.binance.com:9443 wss://stream.binance.vision;"
     />
     <title>Vespera</title>
     <link rel="stylesheet" href="styles.css" />
@@ -23,7 +23,7 @@
             <img class="brand-mark" src="assets/icon.png" alt="" />
             <div>
               <div class="brand-name" data-i18n="app">Vespera</div>
-              <div class="brand-sub" id="pairLabel" data-i18n="btc15">BTC · 15m</div>
+              <div class="brand-sub" id="pairLabel">BTC/USDT · 15m</div>
             </div>
           </div>
         </div>
@@ -34,7 +34,7 @@
           </div>
         </div>
         <div class="chrome-right no-drag">
-          <span class="pill" id="statusPill">stopped</span>
+          <span class="pill" id="statusPill">Idle</span>
           <button class="cta" id="btnRun" data-i18n="start">Start</button>
           <button class="ghost-round" id="btnMenu" title="Menu">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
@@ -53,8 +53,8 @@
 
       <main class="stage">
         <aside class="rail glass" id="rail">
-          <button class="rail-item on" data-panel="feed">
-            <span class="ico">⌂</span><span data-i18n="feed">Feed</span>
+          <button class="rail-item on" data-panel="chart">
+            <span class="ico">⌂</span><span data-i18n="app">Vespera</span>
           </button>
           <button class="rail-item" data-panel="stats">
             <span class="ico">♡</span><span data-i18n="stats">Stats</span>
@@ -86,7 +86,7 @@
       <footer class="dock glass">
         <div class="stat">
           <span data-i18n="balance">Balance</span>
-          <strong id="bal">$1,000.00</strong>
+          <strong id="bal" class="bal">$1,000.00</strong>
         </div>
         <div class="stat">
           <span data-i18n="series">Series</span>
@@ -103,15 +103,15 @@
     <div class="sheet-backdrop" id="backdrop" hidden></div>
     <aside class="sheet glass" id="sheet" hidden>
       <div class="sheet-top">
-        <button class="icon-btn" data-sheet="api" title="API">▢</button>
-        <button class="icon-btn" data-sheet="pin" title="Pin">⌖</button>
-        <button class="icon-btn" data-sheet="lock" title="Lock">🔒</button>
+        <button class="icon-btn" data-open="api" title="API">▣</button>
+        <button class="icon-btn" data-open="theme" title="Theme">▤</button>
+        <button class="icon-btn" data-open="language" title="Language">文</button>
       </div>
       <button class="row" data-open="api">
         <span data-i18n="api">API</span><span class="row-ico">⌕</span>
       </button>
       <button class="row" data-open="theme">
-        <span data-i18n="theme">Theme</span><span class="row-ico">▦</span>
+        <span data-i18n="theme">Theme</span><span class="row-ico">▤</span>
       </button>
       <button class="row" data-open="language">
         <span data-i18n="language">Language</span><span class="row-ico">文</span>

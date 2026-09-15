@@ -2,6 +2,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { clampRefreshMs } = require("./markets");
 
 const DEFAULTS = {
   symbol: "BTCUSDT",
@@ -18,12 +19,14 @@ const DEFAULTS = {
   maType: "SMA",
   strategyId: "sma200_20",
   minOpeningAtr: 0,
+  refreshMs: 100,
 };
 
 class SettingsStore {
   constructor(userDataDir) {
     this.file = path.join(userDataDir, "settings.json");
     this.value = { ...DEFAULTS, ...this._read() };
+    this.value.refreshMs = clampRefreshMs(this.value.refreshMs);
   }
 
   _read() {
@@ -36,6 +39,7 @@ class SettingsStore {
 
   save(patch = {}) {
     this.value = { ...this.value, ...patch };
+    if (patch.refreshMs != null) this.value.refreshMs = clampRefreshMs(patch.refreshMs);
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
     const safe = { ...this.value };
     fs.writeFileSync(this.file, JSON.stringify(safe, null, 2));

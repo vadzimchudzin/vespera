@@ -2,7 +2,8 @@
 
 const { getStrategy, listStrategies, DEFAULT_STRATEGY_ID } = require("./strategies/catalog");
 const { Risk } = require("./risk");
-const { MarketData, INTERVAL_MS } = require("./marketData");
+const { MarketData } = require("./marketData");
+const { INTERVAL_MS, SYMBOLS, TIMEFRAMES, clampRefreshMs, symbolLabel } = require("./markets");
 const { PaperBroker } = require("./paperBroker");
 const { PreddyAdapter } = require("./predicAdapter");
 const { Journal } = require("./journal");
@@ -46,10 +47,17 @@ class Engine {
       new MarketData({
         symbol: this.settings.symbol || "BTCUSDT",
         timeframe: this.settings.timeframe || "15m",
+        refreshMs: this.settings.refreshMs || 100,
       });
     this.markers = [];
     this.lastEval = null;
     this.pingResult = null;
+    this.liveBalance = {
+      ok: true,
+      value: this.paper.balance.toFixed(2),
+      source: "paper",
+      pulsing: false,
+    };
     this.todayPnl = Decimal("0");
     this.lastHandledOpenTs = null;
     this.strategyId = this.settings.strategyId || DEFAULT_STRATEGY_ID;
@@ -93,7 +101,10 @@ class Engine {
   }
 
   emit(type, payload) {
-    for (const fn of this.listeners) fn({ type, payload, state: this.snapshot() });
+    const light = type === "tick";
+    const msg = { type, payload };
+    if (!light) msg.state = this.snapshot();
+    for (const fn of this.listeners) fn(msg);
   }
 
   _bindMarket() {
@@ -104,6 +115,9 @@ class Engine {
       }
       if (event === "bar_close") {
         this.onBarClose(payload);
+        if (!this.running) {
+          this.emit("history", { bars: this.market.bars, forming: this.market.forming });
+        }
       }
       if (event === "tick") {
         this.emit("tick", payload);
@@ -137,6 +151,7 @@ class Engine {
 
   _replayMarkers(force = false) {
     if (this.markers.length && !force) return;
+    this.markers = [];
     const bars = this.market.bars;
     for (let i = 199; i < bars.length; i += 1) {
       const ev = this.strategy().evaluate(bars, i, {
@@ -155,9 +170,50 @@ class Engine {
   }
 
   _ensureMarket() {
-    if (!this.market.timer && typeof this.market.start === "function") {
+    if (typeof this.market.start === "function" && !this.market.timer && !this.market.ws) {
+      this.market.start();
+    } else if (typeof this.market.start === "function" && !this.market._wanted) {
       this.market.start();
     }
+  }
+
+  async applySettings(patch = {}) {
+    const next = { ...this.settings, ...patch };
+    if (patch.refreshMs != null) {
+      next.refreshMs = clampRefreshMs(patch.refreshMs);
+      if (typeof this.market.setRefreshMs === "function") {
+        this.market.setRefreshMs(next.refreshMs);
+      }
+    }
+    if (patch.minOpeningAtr != null) {
+      next.minOpeningAtr = Number(patch.minOpeningAtr);
+    }
+    if (patch.maxSteps != null) {
+      this.risk.maxSteps = Number(patch.maxSteps);
+    }
+    if (patch.baseUsd != null) {
+      this.settings.baseUsd = Decimal(patch.baseUsd).toFixed(2);
+    }
+    const symbol = next.symbol || this.settings.symbol || "BTCUSDT";
+    const timeframe = next.timeframe || this.settings.timeframe || "15m";
+    const marketChanged = symbol !== (this.settings.symbol || "BTCUSDT") || timeframe !== (this.settings.timeframe || "15m");
+    this.settings = next;
+    if (marketChanged && typeof this.market.configure === "function") {
+      await this.market.configure({
+        symbol,
+        timeframe,
+        refreshMs: next.refreshMs,
+      });
+      this.markers = [];
+      this.lastEval = null;
+      this.lastHandledOpenTs = null;
+      this._replayMarkers(true);
+      this.emit("history", { bars: this.market.bars, forming: this.market.forming });
+    } else if (patch.minOpeningAtr != null) {
+      this._replayMarkers(true);
+      this.emit("history", { bars: this.market.bars, forming: this.market.forming });
+    }
+    return this.snapshot();
   }
 
   async warmChart() {
@@ -166,6 +222,7 @@ class Engine {
         await this.market.loadHistory(500);
       }
       this._replayMarkers(true);
+      this._ensureMarket();
       this.emit("history", { bars: this.market.bars, forming: this.market.forming });
     } catch (err) {
       this.journal.write({ type: "data_error", message: String(err.message || err) });
@@ -185,7 +242,7 @@ class Engine {
     this.running = true;
     this.status = "warming_up";
     this.emit("status", this.status);
-    if (typeof this.market.loadHistory === "function") {
+    if (typeof this.market.loadHistory === "function" && this.market.bars.length < 200) {
       await this.market.loadHistory(500);
     }
     const last = this.market.bars[this.market.bars.length - 1];
@@ -202,25 +259,36 @@ class Engine {
 
   stop() {
     this.running = false;
-    if (!this.paper.openBet && typeof this.market.stop === "function") {
-      this.market.stop();
-    }
     this.status = this.paper.openBet ? "waiting_settlement" : "stopped";
     this.journal.write({ type: "stop" });
     this.emit("status", this.status);
   }
 
-  setMode(mode) {
-    if (mode === this.mode) return;
+  async setMode(mode) {
+    if (mode === this.mode) {
+      if (mode === "auto") await this.refreshLiveBalance();
+      return this.snapshot();
+    }
     if (this.paper.openBet) {
       this.emit("log", { level: "warn", message: "mode_blocked_open_bet" });
-      return;
+      return this.snapshot();
     }
     this.mode = mode;
     this.risk.step = 1;
     this.risk.consecutiveLosses = 0;
     this.journal.write({ type: "mode", mode });
+    if (mode === "auto") {
+      await this.refreshLiveBalance();
+    } else {
+      this.liveBalance = {
+        ok: true,
+        value: this.paper.balance.toFixed(2),
+        source: "paper",
+        pulsing: false,
+      };
+    }
     this.emit("mode", mode);
+    return this.snapshot();
   }
 
   confirmLot(baseUsd) {
@@ -241,8 +309,59 @@ class Engine {
     const live = await this.live.ping();
     this.pingResult = { paper, live, at: Date.now() };
     this.journal.write({ type: "api_ping", paper, live: { ...live, apiKey: undefined } });
+    if (this.mode === "auto") await this.refreshLiveBalance();
     this.emit("ping", this.pingResult);
     return this.pingResult;
+  }
+
+  async refreshLiveBalance() {
+    if (this.mode !== "auto") {
+      this.liveBalance = {
+        ok: true,
+        value: this.paper.balance.toFixed(2),
+        source: "paper",
+        pulsing: false,
+      };
+      return this.liveBalance;
+    }
+    this.liveBalance = { ok: false, value: "0.00", source: "live", pulsing: true, reason: "checking" };
+    this.emit("balance", this.liveBalance);
+    try {
+      const live = await this.live.ping();
+      this.pingResult = { ...(this.pingResult || {}), live, at: Date.now() };
+      if (!live.ok) {
+        this.liveBalance = {
+          ok: false,
+          value: "0.00",
+          source: "live",
+          pulsing: true,
+          reason: live.message || "unreachable",
+        };
+      } else {
+        const bal = typeof this.live.getBalance === "function" ? await this.live.getBalance() : null;
+        if (bal == null || bal === "") {
+          this.liveBalance = {
+            ok: false,
+            value: "0.00",
+            source: "live",
+            pulsing: true,
+            reason: "no_balance",
+          };
+        } else {
+          this.liveBalance = { ok: true, value: String(bal), source: "live", pulsing: false };
+        }
+      }
+    } catch (err) {
+      this.liveBalance = {
+        ok: false,
+        value: "0.00",
+        source: "live",
+        pulsing: true,
+        reason: String(err.message || err),
+      };
+    }
+    this.emit("balance", this.liveBalance);
+    return this.liveBalance;
   }
 
   async onBarClose(bar) {
@@ -274,9 +393,6 @@ class Engine {
           this.journal.write({ type: "halt" });
           this.emit("halt", this.risk.snapshot());
         }
-        if (!this.running && typeof this.market.stop === "function") {
-          this.market.stop();
-        }
       }
     }
 
@@ -307,6 +423,7 @@ class Engine {
       c: bar.close,
       ma20: ev.ma20,
       ma200: ev.ma200,
+      signal: ev.signal,
     });
 
     if (!ev.signal) {
@@ -371,14 +488,30 @@ class Engine {
   }
 
   snapshot() {
+    const forming = this.market.forming
+      ? {
+          time: Math.floor(this.market.forming.openTs / 1000),
+          open: this.market.forming.open,
+          high: this.market.forming.high,
+          low: this.market.forming.low,
+          close: this.market.forming.close,
+        }
+      : null;
+    const lastClose = forming
+      ? forming.close
+      : this.market.bars.length
+        ? this.market.bars[this.market.bars.length - 1].close
+        : null;
     return {
-      version: "0.1.0",
+      version: "0.3.0",
       running: this.running,
       status: this.status,
       mode: this.mode,
       strategyId: this.strategyId,
       strategyName: this.strategy().name,
       strategies: listStrategies(),
+      symbols: SYMBOLS,
+      timeframes: TIMEFRAMES,
       settings: {
         symbol: this.settings.symbol || "BTCUSDT",
         timeframe: this.settings.timeframe || "15m",
@@ -388,12 +521,16 @@ class Engine {
         locale: this.settings.locale || "en",
         strategyId: this.strategyId,
         minOpeningAtr: Number(this.settings.minOpeningAtr || 0),
+        refreshMs: clampRefreshMs(this.settings.refreshMs || 100),
       },
+      pairLabel: `${symbolLabel(this.settings.symbol || "BTCUSDT")} · ${this.settings.timeframe || "15m"}`,
+      lastPrice: lastClose,
       risk: this.risk.snapshot(),
       paper: this.paper.snapshot(),
+      liveBalance: this.liveBalance,
       ping: this.pingResult,
       lastEval: this.lastEval,
-      markers: this.markers.slice(-80),
+      markers: this.running ? this.markers.slice(-80) : [],
       todayPnl: this.todayPnl.toFixed(2),
       barsReady: this.market.bars.length,
       bars: this.market.bars.slice(-400).map((b) => ({
@@ -403,15 +540,7 @@ class Engine {
         low: b.low,
         close: b.close,
       })),
-      forming: this.market.forming
-        ? {
-            time: Math.floor(this.market.forming.openTs / 1000),
-            open: this.market.forming.open,
-            high: this.market.forming.high,
-            low: this.market.forming.low,
-            close: this.market.forming.close,
-          }
-        : null,
+      forming,
       log: this.journal.tail(40),
     };
   }

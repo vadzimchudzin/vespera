@@ -3,16 +3,16 @@
 const https = require("https");
 
 /**
- * Live Preddy adapter is a stub in v0.1.0.
- * Preddy has no public API key. Ping checks that preddy.trade is reachable.
- * Auto mode refuses to send orders until a real CLOB signer exists.
+ * Live Preddy adapter is a stub until a public CLOB signer exists.
+ * Ping checks that preddy.trade is reachable. getBalance returns null
+ * so Auto mode can show pulsing zeros when the live book is not wired.
  */
 function request(url, timeoutMs = 8000) {
   return new Promise((resolve, reject) => {
     const started = Date.now();
     const req = https.get(
       url,
-      { headers: { "User-Agent": "Vespera/0.1" }, timeout: timeoutMs },
+      { headers: { "User-Agent": "Vespera/0.3" }, timeout: timeoutMs },
       (res) => {
         res.resume();
         resolve({
@@ -54,6 +54,10 @@ class PreddyAdapter {
     } catch (err) {
       return { ok: false, venue: "preddy", message: String(err.message || err) };
     }
+  }
+
+  async getBalance() {
+    return null;
   }
 
   async marketBuy() {

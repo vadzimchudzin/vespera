@@ -8,6 +8,7 @@
     running: false,
     mode: "paper",
     snapshot: null,
+    openMenu: null,
   };
 
   function applyI18n() {
@@ -15,10 +16,15 @@
       el.textContent = t(el.dataset.i18n);
     });
     document.documentElement.lang = state.locale;
+    const menu = $("btnMenu");
+    if (menu) menu.title = t("menu");
   }
 
   function applyTheme() {
     document.documentElement.setAttribute("data-theme", state.theme);
+    if (window.VesperaChart && window.VesperaChart.applyTheme) {
+      window.VesperaChart.applyTheme();
+    }
   }
 
   function statusLabel(status) {
@@ -34,15 +40,106 @@
     );
   }
 
+  function money(n) {
+    return Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+
+  function reasonText(reason) {
+    if (!reason) return "";
+    return t(`reason_${reason}`) !== `reason_${reason}` ? t(`reason_${reason}`) : String(reason).replace(/_/g, " ");
+  }
+
+  function logLine(row) {
+    const when = (row.ts || "").slice(11, 19);
+    const type = row.type;
+    let title = type;
+    let detail = "";
+    if (type === "start") title = t("logStart");
+    else if (type === "stop") title = t("logStop");
+    else if (type === "mode") {
+      title = t("logMode");
+      detail = row.mode === "auto" ? t("auto") : t("paper");
+    } else if (type === "skip") {
+      title = t("logSkip");
+      detail = reasonText(row.reason);
+    } else if (type === "setup") {
+      title = t("logSetup");
+      detail = [row.signal || row.side, reasonText(row.reason)].filter(Boolean).join(" · ");
+    } else if (type === "order_sent") {
+      title = t("logOrder");
+      detail = `${row.side || ""} · $${row.sizeUsd || ""}`.trim();
+    } else if (type === "settled") {
+      title = row.status === "win" ? t("logWin") : t("logLoss");
+      detail = `${row.side || ""} · $${row.pnl || ""}`.trim();
+    } else if (type === "halt") title = t("logHalt");
+    else if (type === "lot_confirmed") {
+      title = t("logLot");
+      detail = row.baseUsd ? `$${row.baseUsd}` : "";
+    } else if (type === "api_ping") title = t("logPing");
+    else if (type === "data_error" || type === "order_error") {
+      title = t("logError");
+      detail = row.message || "";
+    } else if (type === "strategy") {
+      title = t("logStrategy");
+      detail = row.strategyId || "";
+    } else if (type === "auto_blocked") {
+      title = t("logError");
+      detail = reasonText(row.reason);
+    }
+    return { when, title, detail, kind: type };
+  }
+
+  function renderLog(snap) {
+    const log = $("log");
+    log.innerHTML = "";
+    const rows = snap.log || [];
+    if (!rows.length) {
+      log.textContent = t("logEmpty");
+      return;
+    }
+    rows.slice(0, 16).forEach((row) => {
+      const line = logLine(row);
+      const div = document.createElement("div");
+      div.className = `log-row log-${line.kind}`;
+      const time = document.createElement("span");
+      time.className = "log-time";
+      time.textContent = line.when;
+      const body = document.createElement("span");
+      body.className = "log-body";
+      body.textContent = line.detail ? `${line.title} · ${line.detail}` : line.title;
+      div.appendChild(time);
+      div.appendChild(body);
+      log.appendChild(div);
+    });
+  }
+
+  function paintBalance(snap) {
+    const el = $("bal");
+    el.classList.remove("pulse", "bad");
+    if (snap.mode === "auto") {
+      const live = snap.liveBalance || {};
+      if (!live.ok) {
+        el.textContent = "$0.00";
+        el.classList.add("pulse", "bad");
+        el.title = live.reason === "checking" ? t("checkingBalance") : t("noBalance");
+        return;
+      }
+      el.textContent = `$${money(live.value)}`;
+      el.title = "";
+      return;
+    }
+    el.textContent = `$${money(snap.paper.balance)}`;
+    el.title = "";
+  }
+
   function renderSnap(snap) {
     if (!snap) return;
     state.snapshot = snap;
     state.running = snap.running;
     state.mode = snap.mode;
     $("statusPill").textContent = statusLabel(snap.status);
-    $("bal").textContent = `$${Number(snap.paper.balance).toLocaleString(undefined, {
-      minimumFractionDigits: 2,
-    })}`;
+    $("statusPill").dataset.status = snap.status;
+    paintBalance(snap);
     $("series").textContent = `${snap.risk.step}/${snap.risk.maxSteps} · $${snap.risk.size}`;
     const pnl = Number(snap.todayPnl);
     $("pnl").textContent = `${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)}`;
@@ -52,23 +149,10 @@
     document.querySelectorAll("#modeSeg button").forEach((b) => {
       b.classList.toggle("on", b.dataset.mode === snap.mode);
     });
+    if (snap.pairLabel) $("pairLabel").textContent = snap.pairLabel;
     renderStrategies(snap);
     if (window.VesperaChart) window.VesperaChart.render(snap);
-    const log = $("log");
-    log.innerHTML = "";
-    const rows = snap.log || [];
-    if (!rows.length) {
-      log.textContent = t("logEmpty");
-      return;
-    }
-    rows.slice(0, 12).forEach((row) => {
-      const div = document.createElement("div");
-      const when = (row.ts || "").slice(11, 19);
-      div.textContent = `${when}  ${row.type}${row.reason ? " · " + row.reason : ""}${
-        row.side ? " · " + row.side : ""
-      }${row.sizeUsd ? " · $" + row.sizeUsd : ""}`;
-      log.appendChild(div);
-    });
+    renderLog(snap);
   }
 
   function renderStrategies(snap) {
@@ -91,12 +175,61 @@
         if (res && res.ok === false && res.reason === "open_bet") {
           const log = $("log");
           const div = document.createElement("div");
+          div.className = "log-row";
           div.textContent = t("strategyBlocked");
           log.prepend(div);
         }
       };
       host.appendChild(btn);
     });
+  }
+
+  function closeMenus() {
+    document.querySelectorAll(".v-menu.open").forEach((m) => m.classList.remove("open"));
+    state.openMenu = null;
+  }
+
+  function buildSelect(id, options, value, onChange) {
+    const wrap = document.createElement("div");
+    wrap.className = "v-select";
+    wrap.dataset.id = id;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "v-select-btn";
+    const current = options.find((o) => o.value === value) || options[0];
+    btn.innerHTML = `<span>${current ? current.label : ""}</span><span class="chev">▾</span>`;
+    const menu = document.createElement("div");
+    menu.className = "v-menu";
+    options.forEach((opt) => {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "v-opt";
+      item.textContent = opt.label;
+      if (opt.value === value) item.classList.add("on");
+      item.onclick = (e) => {
+        e.stopPropagation();
+        btn.querySelector("span").textContent = opt.label;
+        wrap.dataset.value = opt.value;
+        menu.querySelectorAll(".v-opt").forEach((n) => n.classList.remove("on"));
+        item.classList.add("on");
+        closeMenus();
+        if (onChange) onChange(opt.value);
+      };
+      menu.appendChild(item);
+    });
+    wrap.dataset.value = current ? current.value : "";
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const open = menu.classList.contains("open");
+      closeMenus();
+      if (!open) {
+        menu.classList.add("open");
+        state.openMenu = wrap;
+      }
+    };
+    wrap.appendChild(btn);
+    wrap.appendChild(menu);
+    return wrap;
   }
 
   function openSheet(show) {
@@ -109,6 +242,8 @@
     const title = $("panelTitle");
     $("panel").hidden = false;
     $("backdrop").hidden = false;
+    closeMenus();
+
     if (kind === "api") {
       title.textContent = t("api");
       const ping = state.snapshot?.ping;
@@ -131,63 +266,64 @@
           ok ? t("reachable") : live.message === "missing_key" ? t("missingKey") : t("unreachable")
         }${live.latencyMs ? " · " + live.latencyMs + "ms" : ""}`;
       };
-      if (ping?.live) {
-        $("pingOut").textContent = ping.live.message || "";
-      }
+      if (ping?.live) $("pingOut").textContent = ping.live.message || "";
     }
+
     if (kind === "theme") {
       title.textContent = t("theme");
-      body.innerHTML = `
-        <div class="field">
-          <label>${t("theme")}</label>
-          <select id="themeSel">
-            <option value="glass-dark">${t("glassDark")}</option>
-            <option value="glass-light">${t("glassLight")}</option>
-          </select>
-        </div>
-        <button class="ok" id="saveTheme">${t("ping")}</button>
-      `;
-      $("themeSel").value = state.theme;
-      $("saveTheme").onclick = async () => {
-        state.theme = $("themeSel").value;
-        applyTheme();
-        await window.vespera.saveSettings({ theme: state.theme });
-        $("panel").hidden = true;
-        $("backdrop").hidden = true;
-      };
+      body.innerHTML = `<div class="field" id="themeField"><label>${t("theme")}</label></div>`;
+      const field = $("themeField");
+      const sel = buildSelect(
+        "themeSel",
+        [
+          { value: "glass-dark", label: t("glassDark") },
+          { value: "glass-light", label: t("glassLight") },
+        ],
+        state.theme,
+        async (value) => {
+          state.theme = value;
+          applyTheme();
+          await window.vespera.saveSettings({ theme: state.theme });
+        }
+      );
+      field.appendChild(sel);
     }
+
     if (kind === "language") {
       title.textContent = t("language");
-      body.innerHTML = `
-        <div class="field">
-          <label>${t("language")}</label>
-          <select id="langSel">
-            <option value="en">English</option>
-            <option value="ru">Русский</option>
-          </select>
-        </div>
-        <button class="ok" id="saveLang">${t("ping")}</button>
-      `;
-      $("langSel").value = state.locale;
-      $("saveLang").onclick = async () => {
-        state.locale = $("langSel").value;
-        applyI18n();
-        await window.vespera.saveSettings({ locale: state.locale });
-        renderSnap(state.snapshot);
-        $("panel").hidden = true;
-        $("backdrop").hidden = true;
-      };
+      body.innerHTML = `<div class="field" id="langField"><label>${t("language")}</label></div>`;
+      const field = $("langField");
+      const sel = buildSelect(
+        "langSel",
+        [
+          { value: "en", label: "English" },
+          { value: "ru", label: "Русский" },
+        ],
+        state.locale,
+        async (value) => {
+          state.locale = value;
+          applyI18n();
+          await window.vespera.saveSettings({ locale: state.locale });
+          renderSnap(state.snapshot);
+        }
+      );
+      field.appendChild(sel);
     }
+
     if (kind === "settings") {
       title.textContent = t("settings");
       const s = state.snapshot?.settings || {};
+      const symbols = (state.snapshot?.symbols || []).map((x) => ({
+        value: x.id,
+        label: x.label,
+      }));
+      const tfs = (state.snapshot?.timeframes || ["1m", "5m", "15m", "1h", "4h", "1d"]).map((tf) => ({
+        value: tf,
+        label: tf,
+      }));
       body.innerHTML = `
-        <div class="field"><label>${t("symbol")}</label><input id="sym" value="${s.symbol || "BTCUSDT"}" /></div>
-        <div class="field"><label>${t("timeframe")}</label>
-          <select id="tf">
-            <option>15m</option><option>5m</option><option>1h</option>
-          </select>
-        </div>
+        <div class="field" id="symField"><label>${t("symbol")}</label></div>
+        <div class="field" id="tfField"><label>${t("timeframe")}</label></div>
         <div class="field"><label>${t("base")}</label><input id="base" value="${s.baseUsd || "1.00"}" /></div>
         <div class="field"><label>${t("maxSteps")}</label><input id="steps" value="${s.maxSteps || 6}" /></div>
         <div class="field">
@@ -198,9 +334,20 @@
           </div>
           <p class="hint">${t("minOpeningHint")}</p>
         </div>
-        <button class="ok" id="saveSet">${t("confirmLot")}</button>
+        <div class="field">
+          <label>${t("refresh")}</label>
+          <div class="range-row">
+            <input id="refresh" type="range" min="1" max="1000" step="1" />
+            <span class="range-val" id="refreshVal">100 ${t("refreshUnit")}</span>
+          </div>
+          <p class="hint">${t("refreshHint")}</p>
+        </div>
+        <button class="ok" id="saveSet">${t("save")}</button>
       `;
-      $("tf").value = s.timeframe || "15m";
+      const symSel = buildSelect("sym", symbols.length ? symbols : [{ value: "BTCUSDT", label: "BTC/USDT" }], s.symbol || "BTCUSDT");
+      const tfSel = buildSelect("tf", tfs, s.timeframe || "15m");
+      $("symField").appendChild(symSel);
+      $("tfField").appendChild(tfSel);
       const opening = Math.round(Number(s.minOpeningAtr || 0) * 20);
       $("opening").value = String(opening);
       const paintOpening = () => {
@@ -208,41 +355,55 @@
       };
       paintOpening();
       $("opening").oninput = paintOpening;
+      $("refresh").value = String(s.refreshMs || 100);
+      const paintRefresh = () => {
+        $("refreshVal").textContent = `${$("refresh").value} ${t("refreshUnit")}`;
+      };
+      paintRefresh();
+      $("refresh").oninput = paintRefresh;
       $("saveSet").onclick = async () => {
         const baseUsd = $("base").value;
         const minOpeningAtr = Number($("opening").value) / 20;
         await window.vespera.saveSettings({
-          symbol: $("sym").value,
-          timeframe: $("tf").value,
+          symbol: $("symField").querySelector(".v-select").dataset.value,
+          timeframe: $("tfField").querySelector(".v-select").dataset.value,
           maxSteps: Number($("steps").value),
           baseUsd,
           minOpeningAtr,
+          refreshMs: Number($("refresh").value),
         });
         await window.vespera.confirmLot(baseUsd);
+        const snap = await window.vespera.snapshot();
+        renderSnap(snap);
         $("panel").hidden = true;
         $("backdrop").hidden = true;
       };
     }
+
     if (kind === "stats") {
       title.textContent = t("stats");
       const r = state.snapshot?.risk || {};
-      body.innerHTML = `<p>${t("series")}: ${r.step}/${r.maxSteps}</p>
+      body.innerHTML = `
+        <p class="hint">${t("statsHint")}</p>
+        <p>${t("series")}: ${r.step}/${r.maxSteps}</p>
         <p>${t("today")}: $${state.snapshot?.todayPnl}</p>
-        <p>${t("balance")}: $${state.snapshot?.paper?.balance}</p>`;
+        <p>${t("balance")}: $${state.snapshot?.paper?.balance}</p>
+      `;
     }
+
     if (kind === "journal") {
       title.textContent = t("journal");
-      const rows = (state.snapshot?.log || []).slice(0, 30);
-      body.innerHTML = rows
-        .map((row) => `<div class="hint">${row.ts} · ${row.type} ${row.reason || row.side || ""}</div>`)
-        .join("") || `<p class="hint">${t("logEmpty")}</p>`;
-    }
-    if (kind === "feed") {
-      title.textContent = t("feed");
-      const ev = state.snapshot?.lastEval;
-      body.innerHTML = ev
-        ? `<p>${ev.reason}</p><p>MA20 ${ev.ma20?.toFixed?.(2) || "—"} · MA200 ${ev.ma200?.toFixed?.(2) || "—"}</p>`
-        : `<p class="hint">${t("logEmpty")}</p>`;
+      const rows = (state.snapshot?.log || []).slice(0, 40);
+      body.innerHTML =
+        `<p class="hint">${t("journalHint")}</p>` +
+        (rows
+          .map((row) => {
+            const line = logLine(row);
+            return `<div class="hint journal-line"><span class="log-time">${line.when}</span> ${line.title}${
+              line.detail ? " · " + line.detail : ""
+            }</div>`;
+          })
+          .join("") || `<p class="hint">${t("logEmpty")}</p>`);
     }
   }
 
@@ -263,6 +424,11 @@
         renderSnap(await window.vespera.snapshot());
       }
       window.vespera.onEvent((evt) => {
+        if (evt.type === "tick" && evt.payload && window.VesperaChart) {
+          if (evt.payload.last) window.VesperaChart.updateForming(evt.payload.last);
+          window.VesperaChart.updateForming(evt.payload.forming);
+          return;
+        }
         if (evt.state) renderSnap(evt.state);
       });
     } else {
@@ -276,12 +442,14 @@
       openSheet(false);
       $("panel").hidden = true;
       $("backdrop").hidden = true;
+      closeMenus();
     };
     $("panelClose").onclick = () => {
       $("panel").hidden = true;
       $("backdrop").hidden = true;
+      closeMenus();
     };
-    document.querySelectorAll(".row[data-open]").forEach((btn) => {
+    document.querySelectorAll("[data-open]").forEach((btn) => {
       btn.onclick = () => {
         openSheet(false);
         openPanel(btn.dataset.open);
@@ -291,20 +459,25 @@
       btn.onclick = () => {
         document.querySelectorAll(".rail-item").forEach((b) => b.classList.remove("on"));
         btn.classList.add("on");
-        if (btn.dataset.panel !== "feed") openPanel(btn.dataset.panel);
-        else {
+        if (btn.dataset.panel === "chart") {
           $("panel").hidden = true;
           $("backdrop").hidden = true;
+        } else {
+          openPanel(btn.dataset.panel);
         }
       };
     });
     document.querySelectorAll("#modeSeg button").forEach((btn) => {
       btn.onclick = async () => {
-        if (window.vespera) await window.vespera.setMode(btn.dataset.mode);
-        state.mode = btn.dataset.mode;
-        document.querySelectorAll("#modeSeg button").forEach((b) =>
-          b.classList.toggle("on", b.dataset.mode === state.mode)
-        );
+        if (window.vespera) {
+          const snap = await window.vespera.setMode(btn.dataset.mode);
+          renderSnap(snap);
+        } else {
+          state.mode = btn.dataset.mode;
+          document.querySelectorAll("#modeSeg button").forEach((b) =>
+            b.classList.toggle("on", b.dataset.mode === state.mode)
+          );
+        }
       };
     });
     $("btnRun").onclick = async () => {
@@ -316,6 +489,7 @@
     $("btnMin").onclick = () => window.vespera?.minimize();
     $("btnMax").onclick = () => window.vespera?.maximize();
     $("btnClose").onclick = () => window.vespera?.close();
+    document.addEventListener("click", () => closeMenus());
   }
 
   boot();

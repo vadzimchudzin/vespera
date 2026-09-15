@@ -118,6 +118,7 @@ async function run() {
     assert(engine.running === false, "stopped running");
     assert(engine.paper.openBet, "stop keeps open bet");
     assert(engine.status === "waiting_settlement", "stop does not kill round");
+    assert(engine.market.timer === 1, "chart keeps streaming after stop");
 
     engine.market.bars = bars.slice(0, 221);
     bars[220] = bar(bars[219].close, bars[219].close + 5, bars[219].close - 1, bars[219].close + 4, {
@@ -242,7 +243,7 @@ async function run() {
     await engine.start();
     engine.market.bars = bars.slice(0, 220);
     await next(engine, bars, 219);
-    engine.setMode("auto");
+    await engine.setMode("auto");
     assert(engine.mode === "paper", "cannot switch mode with open bet");
   }
 
@@ -334,6 +335,44 @@ async function run() {
     await next(engine, bars, 219);
     const blocked = engine.setStrategy("sma200_20");
     assert(blocked.ok === true, "same id while open is ok");
+    assert(engine.snapshot().markers.length > 0, "markers while running");
+    engine.stop();
+    assert(engine.snapshot().markers.length === 0, "idle chart has no trade markers");
+  }
+
+  {
+    const dir = tmpDir();
+    const bars = makeTrendBars({ n: 220, close: 110, trend: 0.05 });
+    const engine = new Engine({
+      userDataDir: dir,
+      settings: { mode: "paper", baseUsd: "1.00", maxSteps: 6, timeframe: "15m" },
+      market: fakeMarket(bars.slice(0, 219)),
+    });
+    await engine.setMode("auto");
+    assert(engine.mode === "auto", "auto selected");
+    assert(engine.liveBalance.ok === false, "live balance missing");
+    assert(engine.liveBalance.value === "0.00", "zeros when unavailable");
+    assert(engine.liveBalance.pulsing === true, "pulse zeros");
+    await engine.setMode("paper");
+    assert(engine.liveBalance.source === "paper", "paper balance restored");
+  }
+
+  {
+    const md = new MarketData({
+      refreshMs: 250,
+      fetchJson: async () => [[0, "1", "1", "1", "1", "1", 1]],
+    });
+    let ticks = 0;
+    md.on((event) => {
+      if (event === "tick") ticks += 1;
+    });
+    md._applyTrade(100, 1_000);
+    md._applyTrade(101, 1_010);
+    assert(ticks === 1, `throttled ticks ${ticks}`);
+    md._lastTickEmit = 0;
+    md._applyTrade(102, 1_020);
+    assert(ticks === 2, "force gap allows next tick");
+    assert(md.forming.close === 102, "forming follows last trade");
   }
 
   console.log("paper engine tests ok");

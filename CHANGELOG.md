@@ -2,6 +2,17 @@
 
 All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 
+## 0.3.0 — 2026-09-15
+
+- Chart is always live. Start/Stop only arms the strategy. Idle = candles, no trade arrows.
+- Live candle follows Binance trades over WebSocket. Settings **Chart refresh** 1–1000 ms (default 100).
+- Instrument and timeframe are full searchable lists (20 pairs, 1m…1d). Custom menus, not native OS dropdowns.
+- Light theme is Apple-like: `#F2F2F7`, system blue `#007AFF`, homogeneous glass. Dark theme unchanged.
+- Window buttons are traffic-light dots. Range thumbs are round. Log scrollbar has no up/down arrows.
+- Auto immediately pings Preddy. If live balance is missing, the figure shows pulsing red `$0.00`.
+- Journal lines are readable: «Setup · UP», «Bet placed», «Win», not raw `mode` / `skip`.
+- Feed rail item removed. Chart, Stats, Journal, Settings.
+
 ## 0.2.0 — 2026-09-15
 
 - Chart SMA20/SMA200 use **closed candles only**. The live bar still draws; it does not move the averages or create a signal.
