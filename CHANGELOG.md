@@ -2,6 +2,13 @@
 
 All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 
+## 0.4.1 — 2026-09-15
+
+- TZ restored: signal only on **closed** candle `S`. Bet is on **S+1**. Forming candle never enters.
+- Switching instrument (ETH) no longer crashes on WebSocket close.
+- Theme / language are pill switches, not a clipped native dropdown.
+- Min-opening hint: closed-candle confirmation, not “don’t enter while MAs overlap”.
+
 ## 0.4.0 — 2026-09-15
 
 - Entries fire **as soon as SMA200/20 conditions appear on the live candle**, not after the close.

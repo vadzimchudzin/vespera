@@ -72,8 +72,8 @@ class PaperBroker {
   }
 
   /**
-   * Settle against the signal candle close (live entry) or the next bar.
-   * Flat (close === strike) is a loss (TZ + Chainlink-style third outcome).
+   * TZ: signal on closed S, bet on S+1. Settle when S+1 closes vs strike (close of S).
+   * Flat (close === strike) is a loss.
    */
   settle(nextBar) {
     if (!this.openBet) return null;

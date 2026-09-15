@@ -60,7 +60,6 @@ class Engine {
     };
     this.todayPnl = Decimal("0");
     this.lastHandledOpenTs = null;
-    this.lastLiveSignalOpenTs = null;
     this.notificationsEnabled = this.settings.notificationsEnabled !== false;
     this.strategyId = this.settings.strategyId || DEFAULT_STRATEGY_ID;
     this.symbols = SYMBOLS.slice();
@@ -122,7 +121,6 @@ class Engine {
       }
       if (event === "tick") {
         this.emit("tick", payload);
-        this.onLiveTick(payload);
       }
       if (event === "error") {
         this.journal.write({ type: "data_error", message: payload });
@@ -431,21 +429,6 @@ class Engine {
     return settled;
   }
 
-  async onLiveTick(payload) {
-    if (!this.running || this.risk.halted || this.paper.openBet) return;
-    const forming = payload && payload.forming;
-    if (!forming || !forming.openTs) return;
-    if (this.lastLiveSignalOpenTs === forming.openTs) return;
-    const closed = this.market.bars || [];
-    if (closed.length < 199) return;
-    const bars = closed.concat([{ ...forming, closed: false }]);
-    const index = bars.length - 1;
-    const ev = this.strategy().evaluate(bars, index, this._evalOptions());
-    this.lastEval = { ...ev, bar: forming, live: true };
-    if (!ev.signal) return;
-    await this._openFromSignal(ev, forming, { live: true });
-  }
-
   async onBarClose(bar) {
     const bars = this.market.bars;
     let index = bars.findIndex((b) => b.openTs === bar.openTs);
@@ -472,7 +455,6 @@ class Engine {
       this.emit("status", this.status);
       return;
     }
-    if (this.lastLiveSignalOpenTs === bar.openTs) return;
     if (this.paper.openBet) return;
 
     const ev = this.strategy().evaluate(bars, index, this._evalOptions());
@@ -495,10 +477,10 @@ class Engine {
       this.emit("skip", this.lastEval);
       return;
     }
-    await this._openFromSignal(ev, bar, { live: false });
+    await this._openFromSignal(ev, bar);
   }
 
-  async _openFromSignal(ev, bar, { live }) {
+  async _openFromSignal(ev, bar) {
     if (this.paper.openBet) return null;
     if (!this.risk.canOpen()) {
       this.status = this.risk.halted ? "halt" : "watching";
@@ -507,20 +489,18 @@ class Engine {
     }
     const size = this.risk.size().toFixed(2);
     const interval = INTERVAL_MS[this.settings.timeframe || "15m"] || 900_000;
-    const closeTs = bar.closeTs || bar.openTs + interval - 1;
+    const sClose = bar.closeTs || bar.openTs + interval - 1;
     const round = {
       strike: bar.close,
-      openTs: bar.openTs,
-      closeTs,
+      openTs: sClose + 1,
+      closeTs: sClose + interval,
     };
     const clientOrderId = `${new Date(bar.openTs).toISOString().slice(0, 10)}-${this.settings.timeframe || "15m"}-${bar.openTs}-${ev.signal}-${this.risk.step}`;
-    this.lastLiveSignalOpenTs = bar.openTs;
     this.markers.push({
       time: Math.floor(bar.openTs / 1000),
       side: ev.signal,
       size,
       virtual: this.mode !== "auto",
-      live: Boolean(live),
     });
     this.journal.write({
       type: "setup",
@@ -533,9 +513,8 @@ class Engine {
       ma20: ev.ma20,
       ma200: ev.ma200,
       signal: ev.signal,
-      live: Boolean(live),
     });
-    this.notify("setup", `${ev.signal} setup`, `SMA200/20 · $${size}${live ? " · live" : ""}`);
+    this.notify("setup", `${ev.signal} setup`, `SMA200/20 · $${size} · S+1`);
 
     if (this.mode === "auto") {
       this.journal.write({ type: "auto_blocked", reason: "auto_not_wired" });
@@ -591,7 +570,7 @@ class Engine {
         ? this.market.bars[this.market.bars.length - 1].close
         : null;
     return {
-      version: "0.4.0",
+      version: "0.4.1",
       running: this.running,
       status: this.status,
       mode: this.mode,

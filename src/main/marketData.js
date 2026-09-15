@@ -199,13 +199,30 @@ class MarketData {
       this._reconnectTimer = null;
     }
     if (this.ws) {
-      try {
-        this.ws.removeAllListeners();
-        this.ws.close();
-      } catch {
-        /* ignore */
-      }
+      this._safeClose(this.ws);
       this.ws = null;
+    }
+  }
+
+  _safeClose(ws) {
+    if (!ws) return;
+    try {
+      ws.removeAllListeners();
+    } catch {
+      /* ignore */
+    }
+    try {
+      const connecting = WebSocketImpl && ws.readyState === WebSocketImpl.CONNECTING;
+      const open = WebSocketImpl && ws.readyState === WebSocketImpl.OPEN;
+      if (connecting && typeof ws.terminate === "function") {
+        ws.terminate();
+      } else if (open) {
+        ws.close();
+      } else if (typeof ws.terminate === "function") {
+        ws.terminate();
+      }
+    } catch {
+      /* ws throws if close() runs before the handshake — ignore */
     }
   }
 
@@ -228,11 +245,8 @@ class MarketData {
       this._scheduleReconnect();
     });
     ws.on("error", () => {
-      try {
-        ws.close();
-      } catch {
-        /* ignore */
-      }
+      this._safeClose(ws);
+      if (this.ws === ws) this.ws = null;
     });
   }
 

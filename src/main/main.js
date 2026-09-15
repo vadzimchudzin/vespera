@@ -9,6 +9,17 @@ let win;
 let engine;
 let store;
 
+process.on("uncaughtException", (err) => {
+  const msg = String((err && err.message) || err);
+  if (/WebSocket was closed before the connection was established/i.test(msg)) return;
+  console.error(err);
+});
+process.on("unhandledRejection", (err) => {
+  const msg = String((err && err.message) || err);
+  if (/WebSocket was closed before the connection was established/i.test(msg)) return;
+  console.error(err);
+});
+
 function createWindow() {
   win = new BrowserWindow({
     width: 1440,

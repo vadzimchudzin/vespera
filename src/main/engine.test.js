@@ -377,28 +377,31 @@ async function run() {
 
   {
     const dir = tmpDir();
-    const bars = makeTrendBars({ n: 220, close: 110, trend: 0.05 });
+    const bars = makeTrendBars({ n: 222, close: 110, trend: 0.05 });
     paintLong(bars, 219);
     const engine = new Engine({
       userDataDir: dir,
       settings: { mode: "paper", baseUsd: "1.00", maxSteps: 6, timeframe: "15m" },
       market: fakeMarket(bars.slice(0, 219)),
     });
-    await engine.start();
-    const forming = { ...bars[219], closed: false };
-    engine.market.forming = forming;
     const notes = [];
     engine.on((evt) => {
       if (evt.type === "notify") notes.push(evt.payload);
     });
-    await engine.onLiveTick({ forming });
-    assert(engine.paper.openBet, "live tick opens immediately");
-    assert(engine.paper.openBet.side === "UP", "live UP");
-    assert(engine.lastLiveSignalOpenTs === forming.openTs, "armed this candle");
-    assert(notes.some((n) => n.kind === "setup"), "setup notify");
+    await engine.start();
     engine.market.bars = bars.slice(0, 220);
     await next(engine, bars, 219);
-    assert(!engine.paper.openBet, "live bet settles on this close");
+    assert(engine.paper.openBet, "TZ: bet opens on closed S");
+    assert(engine.paper.openBet.side === "UP", "UP");
+    assert(Number(engine.paper.openBet.roundOpenTs) > bars[219].closeTs, "bet is on S+1");
+    assert(notes.some((n) => n.kind === "setup"), "setup notify");
+    engine.market.bars = bars.slice(0, 221);
+    bars[220] = bar(bars[219].close, bars[219].close + 5, bars[219].close - 1, bars[219].close + 4, {
+      openTs: bars[220].openTs,
+      closeTs: bars[220].closeTs,
+    });
+    await next(engine, bars, 220);
+    assert(!engine.paper.openBet, "TZ: settles on S+1 close");
   }
 
   {

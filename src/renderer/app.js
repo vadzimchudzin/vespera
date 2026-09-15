@@ -283,43 +283,41 @@
 
     if (kind === "theme") {
       title.textContent = t("theme");
-      body.innerHTML = `<div class="field" id="themeField"><label>${t("theme")}</label></div>`;
-      const field = $("themeField");
-      const sel = buildSelect(
-        "themeSel",
-        [
-          { value: "glass-dark", label: t("glassDark") },
-          { value: "glass-light", label: t("glassLight") },
-        ],
-        state.theme,
-        async (value) => {
-          state.theme = value;
+      body.innerHTML = `<div class="field"><label>${t("theme")}</label><div class="seg" id="themeSeg">
+        <button data-theme="glass-dark">${t("glassDark")}</button>
+        <button data-theme="glass-light">${t("glassLight")}</button>
+      </div></div>`;
+      document.querySelectorAll("#themeSeg button").forEach((b) => {
+        b.classList.toggle("on", b.dataset.theme === state.theme);
+        b.onclick = async () => {
+          state.theme = b.dataset.theme;
           applyTheme();
-          await window.vespera.saveSettings({ theme: state.theme });
-        }
-      );
-      field.appendChild(sel);
+          document.querySelectorAll("#themeSeg button").forEach((x) =>
+            x.classList.toggle("on", x.dataset.theme === state.theme)
+          );
+          if (window.vespera) await window.vespera.saveSettings({ theme: state.theme });
+        };
+      });
     }
 
     if (kind === "language") {
       title.textContent = t("language");
-      body.innerHTML = `<div class="field" id="langField"><label>${t("language")}</label></div>`;
-      const field = $("langField");
-      const sel = buildSelect(
-        "langSel",
-        [
-          { value: "en", label: "English" },
-          { value: "ru", label: "Русский" },
-        ],
-        state.locale,
-        async (value) => {
-          state.locale = value;
+      body.innerHTML = `<div class="field"><label>${t("language")}</label><div class="seg" id="langSeg">
+        <button data-lang="en">English</button>
+        <button data-lang="ru">Русский</button>
+      </div></div>`;
+      document.querySelectorAll("#langSeg button").forEach((b) => {
+        b.classList.toggle("on", b.dataset.lang === state.locale);
+        b.onclick = async () => {
+          state.locale = b.dataset.lang;
           applyI18n();
-          await window.vespera.saveSettings({ locale: state.locale });
+          document.querySelectorAll("#langSeg button").forEach((x) =>
+            x.classList.toggle("on", x.dataset.lang === state.locale)
+          );
+          if (window.vespera) await window.vespera.saveSettings({ locale: state.locale });
           renderSnap(state.snapshot);
-        }
-      );
-      field.appendChild(sel);
+        };
+      });
     }
 
     if (kind === "settings") {

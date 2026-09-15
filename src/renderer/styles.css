@@ -512,11 +512,31 @@ html[data-theme="glass-light"] .row:hover {
   transform: translate(-50%, -50%);
   width: min(520px, calc(100vw - 48px));
   max-height: calc(100vh - 80px);
-  overflow: auto;
+  overflow: visible;
   border-radius: 28px;
   z-index: 7;
   padding: 18px 18px 22px;
+  display: flex;
+  flex-direction: column;
+}
+#panelBody {
+  overflow-y: auto;
+  overflow-x: hidden;
+  max-height: calc(100vh - 160px);
+  padding-right: 4px;
   scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+}
+#panelBody::-webkit-scrollbar {
+  width: 6px;
+}
+#panelBody::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.22);
+  border-radius: 99px;
+}
+#panelBody::-webkit-scrollbar-button {
+  display: none;
+  height: 0;
 }
 .panel-h {
   display: flex;
@@ -626,9 +646,21 @@ html[data-theme="glass-light"] .v-select-btn {
   border: 1px solid var(--hair);
   border-radius: 16px;
   box-shadow: 0 18px 50px rgba(0, 0, 0, 0.28);
-  z-index: 20;
+  z-index: 40;
   padding: 6px;
   scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+}
+.v-menu::-webkit-scrollbar {
+  width: 6px;
+}
+.v-menu::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.22);
+  border-radius: 99px;
+}
+.v-menu::-webkit-scrollbar-button {
+  display: none;
+  height: 0;
 }
 .v-menu.open {
   display: block;
