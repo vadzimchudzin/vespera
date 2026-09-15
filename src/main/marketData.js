@@ -54,9 +54,13 @@ class MarketData {
     this.timer = null;
   }
 
-  onBar(fn) {
+  on(fn) {
     this.listeners.add(fn);
     return () => this.listeners.delete(fn);
+  }
+
+  onBar(fn) {
+    return this.on(fn);
   }
 
   emit(event, payload) {
