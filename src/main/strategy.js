@@ -54,9 +54,20 @@ function clampTicks(value) {
   return n;
 }
 
+function tickSizeOf(options) {
+  const n = Number(options.tickSize);
+  if (Number.isFinite(n) && n > 0) return n;
+  return 0.0001;
+}
+
+function ticksBeyond(close, ma20, tickSize) {
+  return Math.abs(close - ma20) / tickSize;
+}
+
 function evaluateBar(bars, index, options = {}) {
   const minOpeningAtr = Number(options.minOpeningAtr || 0);
   const minCrossTicks = clampTicks(options.minCrossTicks);
+  const tickSize = tickSizeOf(options);
   if (index < 199) {
     return { signal: null, reason: "warming_up", ma20: null, ma200: null };
   }
@@ -75,8 +86,9 @@ function evaluateBar(bars, index, options = {}) {
 
   const pulledDown = prev.low < ma20Prev;
   const pulledUp = prev.high > ma20Prev;
-  const tickLong = bar.close - ma20 >= minCrossTicks;
-  const tickShort = ma20 - bar.close >= minCrossTicks;
+  const beyond = ticksBeyond(bar.close, ma20, tickSize);
+  const tickLong = beyond >= minCrossTicks;
+  const tickShort = beyond >= minCrossTicks;
 
   const longOk =
     bar.close > ma200 &&
@@ -111,7 +123,8 @@ function evaluateBar(bars, index, options = {}) {
       reason: longOk ? "long" : "short",
       ma20,
       ma200,
-      crossTicks: longOk ? bar.close - ma20 : ma20 - bar.close,
+      tickSize,
+      crossTicks: beyond,
     };
   }
   if (bar.close === ma200) {
@@ -151,4 +164,6 @@ module.exports = {
   crossedUp,
   crossedDown,
   clampTicks,
+  tickSizeOf,
+  ticksBeyond,
 };

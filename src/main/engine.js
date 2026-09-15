@@ -3,7 +3,7 @@
 const { getStrategy, listStrategies, DEFAULT_STRATEGY_ID } = require("./strategies/catalog");
 const { Risk } = require("./risk");
 const { MarketData } = require("./marketData");
-const { INTERVAL_MS, SYMBOLS, TIMEFRAMES, clampRefreshMs, symbolLabel, fetchExchangeSymbols } = require("./markets");
+const { INTERVAL_MS, SYMBOLS, TIMEFRAMES, HISTORY_BARS, clampRefreshMs, symbolLabel, fallbackTick, fetchExchangeSymbols } = require("./markets");
 const { PaperBroker } = require("./paperBroker");
 const { PreddyAdapter } = require("./predicAdapter");
 const { Journal } = require("./journal");
@@ -62,7 +62,8 @@ class Engine {
     this.lastHandledOpenTs = null;
     this.notificationsEnabled = this.settings.notificationsEnabled !== false;
     this.strategyId = this.settings.strategyId || DEFAULT_STRATEGY_ID;
-    this.symbols = SYMBOLS.slice();
+    this.symbols = SYMBOLS.map((s) => ({ ...s, tickSize: fallbackTick(s.id) }));
+    this.tickSize = fallbackTick(this.settings.symbol || "BTCUSDT");
     this._bindMarket();
   }
 
@@ -154,10 +155,7 @@ class Engine {
     this.markers = [];
     const bars = this.market.bars;
     for (let i = 199; i < bars.length; i += 1) {
-      const ev = this.strategy().evaluate(bars, i, {
-        minOpeningAtr: this.settings.minOpeningAtr,
-        minCrossTicks: this.settings.minCrossTicks,
-      });
+      const ev = this.strategy().evaluate(bars, i, this._evalOptions());
       if (ev.signal) {
         this.markers.push({
           time: Math.floor(bars[i].openTs / 1000),
@@ -211,6 +209,7 @@ class Engine {
         timeframe,
         refreshMs: next.refreshMs,
       });
+      this.tickSize = this._tickFor(symbol);
       this.markers = [];
       this.lastEval = null;
       this.lastHandledOpenTs = null;
@@ -220,13 +219,14 @@ class Engine {
       this._replayMarkers(true);
       this.emit("history", { bars: this.market.bars, forming: this.market.forming });
     }
+    this.emit("settings", this.settings);
     return this.snapshot();
   }
 
   async warmChart() {
     try {
       if (typeof this.market.loadHistory === "function") {
-        await this.market.loadHistory(500);
+        await this.market.loadHistory(HISTORY_BARS);
       }
       this._replayMarkers(true);
       this._ensureMarket();
@@ -235,9 +235,10 @@ class Engine {
         try {
           this.symbols = await fetchExchangeSymbols(this.market.fetchJson);
         } catch {
-          this.symbols = SYMBOLS.slice();
+          this.symbols = SYMBOLS.map((s) => ({ ...s, tickSize: fallbackTick(s.id) }));
         }
       }
+      this.tickSize = this._tickFor(this.settings.symbol);
     } catch (err) {
       this.journal.write({ type: "data_error", message: String(err.message || err) });
       this.emit("log", { level: "error", message: String(err.message || err) });
@@ -257,7 +258,7 @@ class Engine {
     this.status = "warming_up";
     this.emit("status", this.status);
     if (typeof this.market.loadHistory === "function" && this.market.bars.length < 200) {
-      await this.market.loadHistory(500);
+      await this.market.loadHistory(HISTORY_BARS);
     }
     const last = this.market.bars[this.market.bars.length - 1];
     if (last) this.lastHandledOpenTs = last.openTs;
@@ -404,7 +405,16 @@ class Engine {
     return {
       minOpeningAtr: this.settings.minOpeningAtr,
       minCrossTicks: this.settings.minCrossTicks,
+      tickSize: this.tickSize,
     };
+  }
+
+  _tickFor(symbol) {
+    const id = symbol || this.settings.symbol || "BTCUSDT";
+    const row = (this.symbols || []).find((s) => s.id === id);
+    const n = Number(row && row.tickSize);
+    if (Number.isFinite(n) && n > 0) return n;
+    return fallbackTick(id);
   }
 
   _settleIfOpen(bar) {
@@ -573,7 +583,7 @@ class Engine {
         ? this.market.bars[this.market.bars.length - 1].close
         : null;
     return {
-      version: "0.5.0",
+      version: "0.6.0",
       running: this.running,
       status: this.status,
       mode: this.mode,
@@ -595,6 +605,7 @@ class Engine {
         refreshMs: clampRefreshMs(this.settings.refreshMs || 100),
         notificationsEnabled: this.notificationsEnabled !== false,
         paperBalance: this.settings.paperBalance || "1000.00",
+        tickSize: this.tickSize,
       },
       pairLabel: `${symbolLabel(this.settings.symbol || "BTCUSDT")} · ${this.settings.timeframe || "15m"}`,
       lastPrice: lastClose,
@@ -606,7 +617,7 @@ class Engine {
       markers: this.running ? this.markers.slice(-80) : [],
       todayPnl: this.todayPnl.toFixed(2),
       barsReady: this.market.bars.length,
-      bars: this.market.bars.slice(-400).map((b) => ({
+      bars: this.market.bars.map((b) => ({
         time: Math.floor(b.openTs / 1000),
         open: b.open,
         high: b.high,

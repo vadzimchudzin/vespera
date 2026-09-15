@@ -14,18 +14,13 @@
     <div class="app">
       <header class="chrome drag">
         <div class="chrome-left no-drag">
-          <button class="orb" id="btnBack" data-i18n-title="goLive" title="Go to last candle">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8">
-              <path d="M4 12h14" />
-              <path d="M12 6l6 6-6 6" />
-            </svg>
-          </button>
           <div class="brand">
             <img class="brand-mark" src="assets/icon.png" alt="" />
-            <div>
-              <div class="brand-name" data-i18n="app">Vespera</div>
-              <div class="brand-sub" id="pairLabel">BTC/USDT · 15m</div>
-            </div>
+            <div class="brand-name" data-i18n="app">Vespera</div>
+          </div>
+          <div class="chrome-picks" id="chromePicks">
+            <div class="hdr-slot" id="hdrSym"></div>
+            <div class="hdr-slot" id="hdrTf"></div>
           </div>
         </div>
         <div class="chrome-center no-drag">
@@ -35,7 +30,7 @@
           </div>
         </div>
         <div class="chrome-right no-drag">
-          <span class="pill" id="statusPill">Idle</span>
+          <span class="lamp" id="statusLamp" data-on="0" data-status="stopped" title="Idle"></span>
           <button class="cta" id="btnRun" data-i18n="start">Start</button>
           <button class="ghost-round" id="btnMenu" title="Menu">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">

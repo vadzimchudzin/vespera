@@ -123,28 +123,43 @@ function paintShort(bars, i) {
   assert(filtered.reason === "ma_opening_too_small", filtered.reason);
 }
 
-{
-  const bars = makeBars({ n: 220, close: 110, trend: 0.05 });
-  const i = bars.length - 1;
+function paintLongTicks(bars, i, nTicks, tickSize) {
   const ma20Prev = sma(
     bars.map((b) => b.close),
     20,
     i - 1
   );
-  bars[i - 1] = bar(ma20Prev + 1, ma20Prev + 1, ma20Prev - 2, ma20Prev - 1, {
+  bars[i - 1] = bar(ma20Prev + 1, ma20Prev + 1.5, ma20Prev - 2, ma20Prev - 1, {
     openTs: bars[i - 1].openTs,
   });
-  const ma20 = sma(
-    bars.map((b) => b.close),
-    20,
-    i
-  );
-  bars[i] = bar(ma20 - 0.2, ma20 + 0.4, ma20 - 0.3, ma20 + 0.2, { openTs: bars[i].openTs });
-  const shallow = evaluateBar(bars, i, { minCrossTicks: 1 });
-  assert(shallow.signal === null, "shallow cross skipped");
+  let sum19 = 0;
+  for (let k = i - 19; k < i; k += 1) sum19 += bars[k].close;
+  const close = (nTicks * tickSize * 20 + sum19) / 19;
+  const ma20 = (sum19 + close) / 20;
+  bars[i] = bar(ma20 - nTicks * tickSize, close + tickSize, ma20 - nTicks * tickSize, close, {
+    openTs: bars[i].openTs,
+  });
+}
+
+{
+  const bars = makeBars({ n: 220, close: 110, trend: 0.05 });
+  const i = bars.length - 1;
+  const tick = 0.0001;
+  paintLongTicks(bars, i, 3, tick);
+  const shallow = evaluateBar(bars, i, { minCrossTicks: 5, tickSize: tick });
+  assert(shallow.signal === null, "3-tick cross skipped when min is 5");
   assert(shallow.reason === "cross_too_shallow", shallow.reason);
-  const any = evaluateBar(bars, i, { minCrossTicks: 0 });
+  const any = evaluateBar(bars, i, { minCrossTicks: 0, tickSize: tick });
   assert(any.signal === "UP", `zero ticks still fires ${any.reason}`);
+}
+
+{
+  const bars = makeBars({ n: 220, close: 110, trend: 0.05 });
+  const i = bars.length - 1;
+  const tick = 0.0001;
+  paintLongTicks(bars, i, 5, tick);
+  const deep = evaluateBar(bars, i, { minCrossTicks: 5, tickSize: tick });
+  assert(deep.signal === "UP", `5-tick close must fire got ${deep.signal} ${deep.reason} ${deep.crossTicks}`);
 }
 
 {

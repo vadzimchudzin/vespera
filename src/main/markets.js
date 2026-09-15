@@ -17,6 +17,44 @@ const INTERVAL_MS = {
 
 const TIMEFRAMES = Object.keys(INTERVAL_MS);
 
+/** Closed candles kept for SMA200 + chart. Binance serves 1000 per call; we page. */
+const HISTORY_BARS = 2000;
+
+const FALLBACK_TICK = {
+  BTCUSDT: 0.01,
+  ETHUSDT: 0.01,
+  SOLUSDT: 0.01,
+  BNBUSDT: 0.01,
+  XRPUSDT: 0.0001,
+  DOGEUSDT: 0.00001,
+  ADAUSDT: 0.0001,
+  AVAXUSDT: 0.01,
+  LINKUSDT: 0.001,
+  TONUSDT: 0.0001,
+  SUIUSDT: 0.0001,
+  NEARUSDT: 0.001,
+  LTCUSDT: 0.01,
+  DOTUSDT: 0.001,
+  ATOMUSDT: 0.001,
+  UNIUSDT: 0.001,
+  APTUSDT: 0.0001,
+  ARBUSDT: 0.0001,
+  OPUSDT: 0.0001,
+  PEPEUSDT: 1e-8,
+};
+
+function fallbackTick(id) {
+  return FALLBACK_TICK[String(id || "").toUpperCase()] || 0.0001;
+}
+
+function tickSizeFromInfo(row) {
+  const filters = (row && row.filters) || [];
+  const price = filters.find((f) => f.filterType === "PRICE_FILTER");
+  const n = Number(price && price.tickSize);
+  if (Number.isFinite(n) && n > 0) return n;
+  return fallbackTick(row && row.symbol);
+}
+
 const SYMBOLS = [
   { id: "BTCUSDT", label: "BTC/USDT" },
   { id: "ETHUSDT", label: "ETH/USDT" },
@@ -102,8 +140,9 @@ async function fetchExchangeSymbols(fetchJson) {
   const list = usdt.slice(0, 80).map((s) => ({
     id: s.symbol,
     label: `${s.baseAsset}/USDT`,
+    tickSize: tickSizeFromInfo(s),
   }));
-  return list.length ? list : SYMBOLS.slice();
+  return list.length ? list : SYMBOLS.map((s) => ({ ...s, tickSize: fallbackTick(s.id) }));
 }
 
 module.exports = {
@@ -111,7 +150,11 @@ module.exports = {
   TIMEFRAMES,
   SYMBOLS,
   TF_LABELS,
+  HISTORY_BARS,
+  FALLBACK_TICK,
   clampRefreshMs,
   symbolLabel,
+  fallbackTick,
+  tickSizeFromInfo,
   fetchExchangeSymbols,
 };

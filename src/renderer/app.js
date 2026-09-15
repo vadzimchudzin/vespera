@@ -10,6 +10,8 @@
     snapshot: null,
     openMenu: null,
     pairLabel: "",
+    chromeKey: "",
+    saveTimer: 0,
   };
 
   function applyI18n() {
@@ -19,8 +21,8 @@
     document.documentElement.lang = state.locale;
     const menu = $("btnMenu");
     if (menu) menu.title = t("menu");
-    const back = $("btnBack");
-    if (back) back.title = t("goLive");
+    const lamp = $("statusLamp");
+    if (lamp && lamp.dataset.status) lamp.title = statusLabel(lamp.dataset.status);
   }
 
   function applyTheme() {
@@ -143,8 +145,13 @@
     state.snapshot = snap;
     state.running = snap.running;
     state.mode = snap.mode;
-    $("statusPill").textContent = statusLabel(snap.status);
-    $("statusPill").dataset.status = snap.status;
+    const lamp = $("statusLamp");
+    if (lamp) {
+      lamp.dataset.status = snap.status;
+      lamp.dataset.on = snap.running ? "1" : "0";
+      lamp.title = statusLabel(snap.status);
+    }
+    paintChromePicks(snap);
     paintBalance(snap);
     $("series").textContent = `${snap.risk.step}/${snap.risk.maxSteps} · $${snap.risk.size}`;
     const pnl = Number(snap.todayPnl);
@@ -158,9 +165,6 @@
     if (snap.pairLabel && snap.pairLabel !== state.pairLabel) {
       if (window.VesperaChart && window.VesperaChart.reset) window.VesperaChart.reset();
       state.pairLabel = snap.pairLabel;
-      $("pairLabel").textContent = snap.pairLabel;
-    } else if (snap.pairLabel) {
-      $("pairLabel").textContent = snap.pairLabel;
     }
     renderStrategies(snap);
     if (window.VesperaChart) window.VesperaChart.render(snap);
@@ -244,6 +248,43 @@
     return wrap;
   }
 
+  function debounceSave(patch, ms = 80) {
+    clearTimeout(state.saveTimer);
+    state.saveTimer = setTimeout(async () => {
+      if (!window.vespera) return;
+      const snap = await window.vespera.saveSettings(patch);
+      if (snap && snap.settings) renderSnap(snap);
+    }, ms);
+  }
+
+  function paintChromePicks(snap) {
+    const hostSym = $("hdrSym");
+    const hostTf = $("hdrTf");
+    if (!hostSym || !hostTf || !snap) return;
+    const s = snap.settings || {};
+    const symbols = (snap.symbols || []).map((x) => ({ value: x.id, label: x.label }));
+    const tfs = (snap.timeframes || ["1m", "5m", "15m", "1h", "4h", "1d"]).map((tf) => ({
+      value: tf,
+      label: tf,
+    }));
+    const key = `${s.symbol || ""}|${s.timeframe || ""}|${symbols.length}|${tfs.length}|${state.locale}`;
+    if (state.chromeKey === key && hostSym.firstChild && hostTf.firstChild) return;
+    state.chromeKey = key;
+    hostSym.innerHTML = "";
+    hostTf.innerHTML = "";
+    const onMarket = async (patch) => {
+      if (!window.vespera) return;
+      const next = await window.vespera.saveSettings(patch);
+      if (next && next.settings) renderSnap(next);
+    };
+    hostSym.appendChild(
+      buildSelect("hdr-sym", symbols.length ? symbols : [{ value: "BTCUSDT", label: "BTC/USDT" }], s.symbol || "BTCUSDT", (v) =>
+        onMarket({ symbol: v })
+      )
+    );
+    hostTf.appendChild(buildSelect("hdr-tf", tfs, s.timeframe || "15m", (v) => onMarket({ timeframe: v })));
+  }
+
   function openSheet(show) {
     $("sheet").hidden = !show;
     $("backdrop").hidden = !show;
@@ -323,17 +364,7 @@
     if (kind === "settings") {
       title.textContent = t("settings");
       const s = state.snapshot?.settings || {};
-      const symbols = (state.snapshot?.symbols || []).map((x) => ({
-        value: x.id,
-        label: x.label,
-      }));
-      const tfs = (state.snapshot?.timeframes || ["1m", "5m", "15m", "1h", "4h", "1d"]).map((tf) => ({
-        value: tf,
-        label: tf,
-      }));
       body.innerHTML = `
-        <div class="field" id="symField"><label>${t("symbol")}</label></div>
-        <div class="field" id="tfField"><label>${t("timeframe")}</label></div>
         <div class="field"><label>${t("base")}</label><input id="base" value="${s.baseUsd || "1.00"}" /></div>
         <div class="field"><label>${t("maxSteps")}</label><input id="steps" value="${s.maxSteps || 6}" /></div>
         <div class="field">
@@ -372,36 +403,33 @@
           <button class="ghost" id="resetPaper">${t("resetPaper")}</button>
         </div>
       `;
-      const symSel = buildSelect("sym", symbols.length ? symbols : [{ value: "BTCUSDT", label: "BTC/USDT" }], s.symbol || "BTCUSDT");
-      const tfSel = buildSelect("tf", tfs, s.timeframe || "15m");
-      $("symField").appendChild(symSel);
-      $("tfField").appendChild(tfSel);
       const opening = Math.round(Number(s.minOpeningAtr || 0) * 20);
       $("opening").value = String(opening);
       const paintOpening = () => {
         $("openingVal").textContent = `${(Number($("opening").value) / 20).toFixed(2)} ATR`;
       };
       paintOpening();
-      $("opening").oninput = paintOpening;
+      $("opening").oninput = () => {
+        paintOpening();
+        debounceSave({ minOpeningAtr: Number($("opening").value) / 20 });
+      };
       $("crossTicks").value = String(Math.max(0, Number(s.minCrossTicks || 0)));
       const paintCross = () => {
         $("crossVal").textContent = `${$("crossTicks").value} ${t("minCrossUnit")}`;
       };
       paintCross();
-      $("crossTicks").oninput = paintCross;
+      $("crossTicks").oninput = () => {
+        paintCross();
+        debounceSave({ minCrossTicks: Number($("crossTicks").value) });
+      };
       $("refresh").value = String(s.refreshMs || 100);
       const paintRefresh = () => {
         $("refreshVal").textContent = `${$("refresh").value} ${t("refreshUnit")}`;
       };
       paintRefresh();
-      let refreshTimer = 0;
       $("refresh").oninput = () => {
         paintRefresh();
-        const ms = Number($("refresh").value);
-        clearTimeout(refreshTimer);
-        refreshTimer = setTimeout(() => {
-          if (window.vespera) window.vespera.saveSettings({ refreshMs: ms });
-        }, 80);
+        debounceSave({ refreshMs: Number($("refresh").value) });
       };
       const notifyBtn = $("notifyToggle");
       notifyBtn.onclick = async () => {
@@ -421,8 +449,6 @@
         const minCrossTicks = Number($("crossTicks").value);
         const notifyOn = $("notifyToggle").classList.contains("on");
         await window.vespera.saveSettings({
-          symbol: $("symField").querySelector(".v-select").dataset.value,
-          timeframe: $("tfField").querySelector(".v-select").dataset.value,
           maxSteps: Number($("steps").value),
           baseUsd,
           minOpeningAtr,
@@ -508,6 +534,7 @@
       applyI18n();
     }
     if (navigator.userAgent.includes("Windows")) document.body.classList.add("win");
+    if (navigator.userAgent.includes("Mac")) document.body.classList.add("mac");
 
     $("btnMenu").onclick = () => openSheet(true);
     $("sheetClose").onclick = () => openSheet(false);
@@ -563,7 +590,6 @@
     $("btnMax").onclick = () => window.vespera?.maximize();
     $("btnClose").onclick = () => window.vespera?.close();
     const goLive = () => window.VesperaChart && window.VesperaChart.goToLive && window.VesperaChart.goToLive();
-    $("btnBack").onclick = goLive;
     $("btnLive").onclick = goLive;
     document.addEventListener("click", () => closeMenus());
   }

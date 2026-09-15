@@ -117,9 +117,9 @@ ipcMain.handle("engine:resetPaper", (_e, startingBalance) => {
 });
 ipcMain.handle("settings:get", () => store.value);
 ipcMain.handle("settings:save", async (_e, patch) => {
-  const next = store.save(patch);
+  store.save(patch);
   await engine.applySettings(patch);
-  return next;
+  return engine.snapshot();
 });
 ipcMain.handle("window:minimize", () => win.minimize());
 ipcMain.handle("window:close", () => win.close());

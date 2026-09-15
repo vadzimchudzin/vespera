@@ -1,7 +1,7 @@
 "use strict";
 
 const https = require("https");
-const { INTERVAL_MS } = require("./markets");
+const { INTERVAL_MS, HISTORY_BARS } = require("./markets");
 
 let WebSocketImpl = null;
 try {
@@ -115,25 +115,54 @@ class MarketData {
     this.forming = null;
     const keep = this._wanted;
     this.stop({ keepWanted: keep });
-    await this.loadHistory(500);
+    await this.loadHistory(HISTORY_BARS);
     if (keep) this.start();
     return this.bars;
   }
 
-  async loadHistory(limit = 500, { emitHistory = true } = {}) {
+  async _fetchKlinesPage(limit, endTime) {
     let raw;
     let lastErr;
+    const cap = Math.min(1000, Math.max(1, limit));
     for (const host of KLINE_HOSTS) {
-      const url = `${host}/api/v3/klines?symbol=${this.symbol}&interval=${this.timeframe}&limit=${limit}`;
+      let url = `${host}/api/v3/klines?symbol=${this.symbol}&interval=${this.timeframe}&limit=${cap}`;
+      if (endTime) url += `&endTime=${endTime}`;
       try {
         raw = await this.fetchJson(url);
-        if (Array.isArray(raw)) break;
+        if (Array.isArray(raw)) return raw;
         lastErr = new Error(`klines_not_array from ${host}`);
       } catch (err) {
         lastErr = err;
       }
     }
-    if (!Array.isArray(raw)) throw lastErr || new Error("klines_failed");
+    throw lastErr || new Error("klines_failed");
+  }
+
+  async loadHistory(limit = HISTORY_BARS, { emitHistory = true } = {}) {
+    const want = Math.max(200, Number(limit) || HISTORY_BARS);
+    let pages = [];
+    let endTime = null;
+    while (pages.length < want) {
+      const remaining = want - pages.length;
+      const raw = await this._fetchKlinesPage(remaining, endTime);
+      if (!Array.isArray(raw) || !raw.length) break;
+      pages = raw.concat(pages);
+      if (raw.length < Math.min(1000, remaining)) break;
+      const firstOpen = Number(raw[0][0]);
+      if (!Number.isFinite(firstOpen)) break;
+      endTime = firstOpen - 1;
+      if (pages.length >= want) break;
+    }
+    const seen = new Set();
+    const unique = [];
+    for (const row of pages) {
+      const ts = Number(row[0]);
+      if (seen.has(ts)) continue;
+      seen.add(ts);
+      unique.push(row);
+    }
+    unique.sort((a, b) => Number(a[0]) - Number(b[0]));
+    const raw = unique.slice(-want);
     const bars = parseKlines(raw);
     const last = bars[bars.length - 1];
     const interval = INTERVAL_MS[this.timeframe] || 900_000;
@@ -161,7 +190,7 @@ class MarketData {
         const prevTs = this.bars.length ? this.bars[this.bars.length - 1].openTs : null;
         const liveForming = this.forming && this.ws ? { ...this.forming } : null;
         const initial = this.bars.length === 0;
-        await this.loadHistory(500, { emitHistory: initial });
+        await this.loadHistory(HISTORY_BARS, { emitHistory: initial });
         if (liveForming) {
           if (this.forming && this.forming.openTs === liveForming.openTs) {
             this.forming.close = liveForming.close;

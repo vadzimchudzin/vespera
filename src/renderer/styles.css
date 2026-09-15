@@ -107,8 +107,66 @@ html[data-theme="glass-light"] .atmosphere {
   align-items: center;
   gap: 10px;
 }
+.chrome-left {
+  min-width: 0;
+  gap: 12px;
+}
 .chrome-right {
   justify-content: flex-end;
+}
+.chrome-picks {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.hdr-slot {
+  min-width: 0;
+}
+.hdr-slot .v-select-btn {
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: rgba(118, 118, 128, 0.16);
+  border: 0;
+  font-size: 13px;
+  font-weight: 590;
+  gap: 8px;
+  min-width: 92px;
+  max-width: 148px;
+}
+.hdr-slot .v-select-btn span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+html[data-theme="glass-light"] .hdr-slot .v-select-btn {
+  background: rgba(118, 118, 128, 0.12);
+}
+.hdr-slot .v-menu {
+  min-width: 160px;
+  left: 0;
+  right: auto;
+}
+.lamp {
+  width: 10px;
+  height: 10px;
+  border-radius: 99px;
+  background: #ff3b30;
+  box-shadow: 0 0 0 3px rgba(255, 59, 48, 0.18);
+  flex-shrink: 0;
+}
+.lamp[data-on="1"] {
+  background: #34c759;
+  box-shadow: 0 0 0 3px rgba(52, 199, 89, 0.22);
+}
+.lamp[data-status="halt"] {
+  background: #ff9f0a;
+  box-shadow: 0 0 0 3px rgba(255, 159, 10, 0.22);
+}
+.lamp[data-status="warming_up"] {
+  background: #ff9f0a;
+  box-shadow: 0 0 0 3px rgba(255, 159, 10, 0.18);
 }
 .orb {
   width: 44px;
@@ -134,8 +192,9 @@ html[data-theme="glass-light"] .orb {
 }
 .brand {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   align-items: center;
+  flex-shrink: 0;
 }
 .brand-mark {
   width: 28px;
@@ -201,16 +260,7 @@ html[data-theme="glass-light"] .ghost-round {
   background: rgba(118, 118, 128, 0.12);
 }
 .pill {
-  font-size: 11px;
-  color: var(--muted);
-  padding: 6px 10px;
-  border-radius: 999px;
-  border: 1px solid var(--hair);
-  white-space: nowrap;
-}
-.pill[data-status="watching"] {
-  color: var(--accent);
-  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  display: none;
 }
 .win-btns {
   display: none;
@@ -230,6 +280,9 @@ html[data-theme="glass-light"] .ghost-round {
 .win-btns #btnClose { background: #ff5f57; }
 body.win .win-btns {
   display: flex;
+}
+body.mac .chrome {
+  padding-left: 72px;
 }
 .stage {
   display: grid;
