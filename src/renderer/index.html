@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-src https://s.tradingview.com https://www.tradingview.com; connect-src 'self' https://api.binance.com;"
+      content="default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' https://api.binance.com;"
     />
     <title>Vespera</title>
     <link rel="stylesheet" href="styles.css" />
@@ -72,12 +72,13 @@
 
         <section class="chart-wrap glass">
           <div class="chart-frame" id="tvHost">
-            <iframe
-              id="tvFrame"
-              title="TradingView"
-              src="https://s.tradingview.com/widgetembed/?frameElementId=tvFrame&symbol=BINANCE%3ABTCUSDT&interval=15&hidesidetoolbar=0&symboledit=1&saveimage=0&toolbarbg=rgba(20,20,22,0.4)&studies=MASimple%40tv-basicstudies%1FMASimple%40tv-basicstudies&theme=dark&style=1&timezone=Etc%2FUTC&withdateranges=1&hideideas=1&hidevolume=0"
-              allowtransparency="true"
-            ></iframe>
+            <div class="chart-legend">
+              <span class="lg ma200">SMA200</span>
+              <span class="lg ma20">SMA20</span>
+              <span class="lg up">UP</span>
+              <span class="lg down">DOWN</span>
+            </div>
+            <div id="chart"></div>
           </div>
         </section>
       </main>
@@ -128,6 +129,8 @@
       <div id="panelBody"></div>
     </section>
 
+    <script src="vendor/lightweight-charts.js"></script>
+    <script src="chart.js"></script>
     <script src="i18n.js"></script>
     <script src="app.js"></script>
   </body>

@@ -39,7 +39,9 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ]
     },
@@ -57,7 +59,9 @@
       "target": [
         {
           "target": "dmg",
-          "arch": ["universal"]
+          "arch": [
+            "universal"
+          ]
         }
       ],
       "hardenedRuntime": true,
@@ -70,5 +74,8 @@
   "devDependencies": {
     "electron": "^33.2.1",
     "electron-builder": "^25.1.8"
+  },
+  "dependencies": {
+    "lightweight-charts": "^4.2.3"
   }
 }

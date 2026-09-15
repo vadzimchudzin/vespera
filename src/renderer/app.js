@@ -53,6 +53,7 @@
       b.classList.toggle("on", b.dataset.mode === snap.mode);
     });
     renderStrategies(snap);
+    if (window.VesperaChart) window.VesperaChart.render(snap);
     const log = $("log");
     log.innerHTML = "";
     const rows = snap.log || [];
@@ -235,7 +236,15 @@
       state.theme = settings.theme || "glass-dark";
       applyTheme();
       applyI18n();
-      renderSnap(await window.vespera.snapshot());
+      if (window.vespera.warmChart) {
+        try {
+          renderSnap(await window.vespera.warmChart());
+        } catch {
+          renderSnap(await window.vespera.snapshot());
+        }
+      } else {
+        renderSnap(await window.vespera.snapshot());
+      }
       window.vespera.onEvent((evt) => {
         if (evt.state) renderSnap(evt.state);
       });

@@ -77,7 +77,7 @@ class Engine {
     this.settings.strategyId = next.id;
     this.markers = [];
     this.lastEval = null;
-    this._replayMarkers();
+    this._replayMarkers(true);
     this.journal.write({ type: "strategy", strategyId: next.id });
     this.emit("strategy", { strategyId: next.id });
     return { ok: true, strategyId: next.id };
@@ -135,8 +135,8 @@ class Engine {
     }
   }
 
-  _replayMarkers() {
-    if (this.markers.length) return;
+  _replayMarkers(force = false) {
+    if (this.markers.length && !force) return;
     const bars = this.market.bars;
     for (let i = 199; i < bars.length; i += 1) {
       const ev = this.strategy().evaluate(bars, i, {
@@ -157,6 +157,20 @@ class Engine {
     if (!this.market.timer && typeof this.market.start === "function") {
       this.market.start();
     }
+  }
+
+  async warmChart() {
+    try {
+      if (typeof this.market.loadHistory === "function") {
+        await this.market.loadHistory(500);
+      }
+      this._replayMarkers(true);
+      this.emit("history", { bars: this.market.bars, forming: this.market.forming });
+    } catch (err) {
+      this.journal.write({ type: "data_error", message: String(err.message || err) });
+      this.emit("log", { level: "error", message: String(err.message || err) });
+    }
+    return this.snapshot();
   }
 
   async start() {
@@ -376,9 +390,25 @@ class Engine {
       paper: this.paper.snapshot(),
       ping: this.pingResult,
       lastEval: this.lastEval,
-      markers: this.markers.slice(-40),
+      markers: this.markers.slice(-80),
       todayPnl: this.todayPnl.toFixed(2),
       barsReady: this.market.bars.length,
+      bars: this.market.bars.slice(-400).map((b) => ({
+        time: Math.floor(b.openTs / 1000),
+        open: b.open,
+        high: b.high,
+        low: b.low,
+        close: b.close,
+      })),
+      forming: this.market.forming
+        ? {
+            time: Math.floor(this.market.forming.openTs / 1000),
+            open: this.market.forming.open,
+            high: this.market.forming.high,
+            low: this.market.forming.low,
+            close: this.market.forming.close,
+          }
+        : null,
       log: this.journal.tail(40),
     };
   }

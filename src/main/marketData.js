@@ -33,6 +33,9 @@ function defaultFetchJson(url) {
 }
 
 function parseKlines(raw) {
+  if (!Array.isArray(raw)) {
+    throw new Error(`klines_not_array: ${typeof raw}`);
+  }
   return raw.map((row) => ({
     openTs: Number(row[0]),
     open: Number(row[1]),
@@ -44,6 +47,11 @@ function parseKlines(raw) {
     closed: true,
   }));
 }
+
+const KLINE_HOSTS = [
+  "https://api.binance.com",
+  "https://api.binance.us",
+];
 
 class MarketData {
   constructor({ symbol = "BTCUSDT", timeframe = "15m", fetchJson } = {}) {
@@ -71,10 +79,19 @@ class MarketData {
   }
 
   async loadHistory(limit = 500, { emitHistory = true } = {}) {
-    const url =
-      `https://api.binance.com/api/v3/klines?symbol=${this.symbol}` +
-      `&interval=${this.timeframe}&limit=${limit}`;
-    const raw = await this.fetchJson(url);
+    let raw;
+    let lastErr;
+    for (const host of KLINE_HOSTS) {
+      const url = `${host}/api/v3/klines?symbol=${this.symbol}&interval=${this.timeframe}&limit=${limit}`;
+      try {
+        raw = await this.fetchJson(url);
+        if (Array.isArray(raw)) break;
+        lastErr = new Error(`klines_not_array from ${host}`);
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+    if (!Array.isArray(raw)) throw lastErr || new Error("klines_failed");
     const bars = parseKlines(raw);
     const last = bars[bars.length - 1];
     const interval = INTERVAL_MS[this.timeframe] || 900_000;
