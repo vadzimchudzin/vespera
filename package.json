@@ -12,8 +12,8 @@
     "test": "node src/main/strategy.test.js && node src/main/engine.test.js",
     "pack": "electron-builder --dir",
     "dist": "electron-builder --win --mac",
-    "dist:win": "electron-builder --win nsis",
-    "dist:mac": "electron-builder --mac dmg",
+    "dist:win": "electron-builder --win nsis --publish never",
+    "dist:mac": "electron-builder --mac dmg --publish never",
     "release": "electron-builder --win --mac --publish never"
   },
   "build": {
@@ -56,15 +56,16 @@
     "mac": {
       "icon": "build/icon.png",
       "category": "public.app-category.finance",
+      "identity": null,
       "target": [
         {
           "target": "dmg",
           "arch": [
-            "universal"
+            "arm64"
           ]
         }
       ],
-      "hardenedRuntime": true,
+      "hardenedRuntime": false,
       "gatekeeperAssess": false
     },
     "dmg": {
