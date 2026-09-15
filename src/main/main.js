@@ -93,6 +93,10 @@ ipcMain.handle("settings:save", (_e, patch) => {
   if (patch.theme) engine.settings.theme = patch.theme;
   if (patch.timeframe) engine.settings.timeframe = patch.timeframe;
   if (patch.symbol) engine.settings.symbol = patch.symbol;
+  if (patch.minOpeningAtr != null) {
+    engine.settings.minOpeningAtr = Number(patch.minOpeningAtr);
+    engine._replayMarkers(true);
+  }
   return next;
 });
 ipcMain.handle("window:minimize", () => win.minimize());

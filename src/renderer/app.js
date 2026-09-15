@@ -190,16 +190,33 @@
         </div>
         <div class="field"><label>${t("base")}</label><input id="base" value="${s.baseUsd || "1.00"}" /></div>
         <div class="field"><label>${t("maxSteps")}</label><input id="steps" value="${s.maxSteps || 6}" /></div>
+        <div class="field">
+          <label>${t("minOpening")}</label>
+          <div class="range-row">
+            <input id="opening" type="range" min="0" max="40" step="1" />
+            <span class="range-val" id="openingVal">0.00 ATR</span>
+          </div>
+          <p class="hint">${t("minOpeningHint")}</p>
+        </div>
         <button class="ok" id="saveSet">${t("confirmLot")}</button>
       `;
       $("tf").value = s.timeframe || "15m";
+      const opening = Math.round(Number(s.minOpeningAtr || 0) * 20);
+      $("opening").value = String(opening);
+      const paintOpening = () => {
+        $("openingVal").textContent = `${(Number($("opening").value) / 20).toFixed(2)} ATR`;
+      };
+      paintOpening();
+      $("opening").oninput = paintOpening;
       $("saveSet").onclick = async () => {
         const baseUsd = $("base").value;
+        const minOpeningAtr = Number($("opening").value) / 20;
         await window.vespera.saveSettings({
           symbol: $("sym").value,
           timeframe: $("tf").value,
           maxSteps: Number($("steps").value),
           baseUsd,
+          minOpeningAtr,
         });
         await window.vespera.confirmLot(baseUsd);
         $("panel").hidden = true;

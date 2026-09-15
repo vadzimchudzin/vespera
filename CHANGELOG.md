@@ -2,6 +2,13 @@
 
 All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 
+## 0.2.0 — 2026-09-15
+
+- Chart SMA20/SMA200 use **closed candles only**. The live bar still draws; it does not move the averages or create a signal.
+- Settings slider **Min opening**: skip when SMA20 and SMA200 are stuck together. `0` = every cross (default). Value is ATR of the 15m bar.
+- Paper chart markers stay on the signal candle `S`. The bet is still on `S+1`.
+- Windows NSIS installer + macOS DMG via `v0.2.0` tag.
+
 ## 0.1.2 — 2026-09-15
 
 - Strategy catalog in the left rail. Active **SMA200/20** lights green.

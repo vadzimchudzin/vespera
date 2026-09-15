@@ -141,6 +141,7 @@ class Engine {
     for (let i = 199; i < bars.length; i += 1) {
       const ev = this.strategy().evaluate(bars, i, {
         requirePriorPenetration: this.settings.requirePriorPenetration,
+        minOpeningAtr: this.settings.minOpeningAtr,
       });
       if (ev.signal) {
         this.markers.push({
@@ -293,6 +294,7 @@ class Engine {
 
     const ev = this.strategy().evaluate(bars, index, {
       requirePriorPenetration: this.settings.requirePriorPenetration,
+      minOpeningAtr: this.settings.minOpeningAtr,
     });
     this.lastEval = { ...ev, bar };
     this.journal.write({
@@ -385,6 +387,7 @@ class Engine {
         theme: this.settings.theme || "glass-dark",
         locale: this.settings.locale || "en",
         strategyId: this.strategyId,
+        minOpeningAtr: Number(this.settings.minOpeningAtr || 0),
       },
       risk: this.risk.snapshot(),
       paper: this.paper.snapshot(),

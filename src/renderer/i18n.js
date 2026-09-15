@@ -45,6 +45,8 @@ window.VSP_I18N = {
     btc15: "BTC · 15m",
     strategies: "Strategies",
     strategyBlocked: "Finish the open paper bet first",
+    minOpening: "Min opening",
+    minOpeningHint: "Skip when SMA20 and SMA200 are stuck together. 0 = every cross. Higher = only when the two lines are clearly apart (ATR).",
   },
   ru: {
     app: "Vespera",
@@ -92,5 +94,7 @@ window.VSP_I18N = {
     btc15: "BTC · 15м",
     strategies: "Стратегии",
     strategyBlocked: "Сначала дождись расчёта ставки",
+    minOpening: "Мин. раскрытие",
+    minOpeningHint: "Не входить, пока SMA20 и SMA200 слиплись. 0 = любой кросс. Выше = только когда линии явно разошлись (в ATR).",
   },
 };

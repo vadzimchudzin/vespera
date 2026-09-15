@@ -103,25 +103,27 @@
     ensure();
     if (!chart || !snap) return;
     applyTheme();
-    const bars = [...(snap.bars || [])];
+    const closed = snap.bars || [];
+    const bars = [...closed];
     if (snap.forming) bars.push(snap.forming);
     if (!bars.length) return;
 
     const candles = bars.map(toCandle);
-    if (candles.length !== lastBarCount) {
+    const closedCount = closed.length;
+    if (closedCount !== lastBarCount) {
       candleSeries.setData(candles);
-      const closes = bars.map((b) => b.close);
+      const closes = closed.map((b) => b.close);
       const ma20 = [];
       const ma200 = [];
-      for (let i = 0; i < bars.length; i += 1) {
+      for (let i = 0; i < closed.length; i += 1) {
         const a = sma(closes, 20, i);
         const b = sma(closes, 200, i);
-        if (a != null) ma20.push({ time: bars[i].time, value: a });
-        if (b != null) ma200.push({ time: bars[i].time, value: b });
+        if (a != null) ma20.push({ time: closed[i].time, value: a });
+        if (b != null) ma200.push({ time: closed[i].time, value: b });
       }
       ma20Series.setData(ma20);
       ma200Series.setData(ma200);
-      lastBarCount = candles.length;
+      lastBarCount = closedCount;
     } else if (snap.forming) {
       candleSeries.update(toCandle(snap.forming));
     }

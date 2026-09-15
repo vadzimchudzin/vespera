@@ -2,7 +2,7 @@
 
 Glass desktop terminal for BTC 15m Preddy / Polymarket-style up-down.
 
-**v0.1.0 is Paper.** Same strategy as the spec, no live money.
+**v0.2.0 is Paper.** Same strategy as the spec, no live money.
 
 Repo: private [`VadimChudin/vespera`](https://github.com/VadimChudin/vespera)
 
@@ -13,7 +13,8 @@ Repo: private [`VadimChudin/vespera`](https://github.com/VadimChudin/vespera)
 - Entry: candle crosses MA20 and closes with the trend.
 - Bet is on **the next** candle.
 - Paper martingale ×2, max 6. Win resets to base. Six losses → halt until **Start** and **confirm lot**.
-- TradingView widget is display only (~70% of the window). Signals do not read the widget.
+- Chart is TradingView Lightweight Charts (~70% of the window). SMA lines use **closed** candles only.
+- Settings slider **Min opening**: skip when SMA20 and SMA200 are stuck together (`0` = every cross).
 
 ## Modes
 
@@ -37,8 +38,8 @@ npm start
 Bump `version` in `package.json`, add a `CHANGELOG` line, tag:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 GitHub Actions builds:

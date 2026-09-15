@@ -17,6 +17,7 @@ const DEFAULTS = {
   requirePriorPenetration: false,
   maType: "SMA",
   strategyId: "sma200_20",
+  minOpeningAtr: 0,
 };
 
 class SettingsStore {

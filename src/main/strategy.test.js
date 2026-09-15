@@ -67,6 +67,22 @@ function assert(cond, msg) {
 }
 
 {
+  const bars = makeBars({ n: 220, close: 110, trend: 0.0001 });
+  const i = bars.length - 1;
+  const ma20 = sma(
+    bars.map((b) => b.close),
+    20,
+    i
+  );
+  bars[i] = bar(ma20 - 2, ma20 + 3, ma20 - 4, ma20 + 2);
+  const open = evaluateBar(bars, i);
+  assert(open.signal === "UP", "default still fires");
+  const filtered = evaluateBar(bars, i, { minOpeningAtr: 3 });
+  assert(filtered.signal === null, "tight MAs skipped");
+  assert(filtered.reason === "ma_opening_too_small", filtered.reason);
+}
+
+{
   const r = new Risk({ baseUsd: "1.00", maxSteps: 6 });
   assert(r.size().toFixed(2) === "1.00", "base size");
   r.onLoss();

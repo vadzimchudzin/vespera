@@ -400,6 +400,25 @@ html[data-theme="glass-light"] .strategy-chip.active {
   color: var(--muted);
   font-size: 12px;
 }
+.field input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+  height: 4px;
+}
+.range-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.range-row input {
+  flex: 1;
+}
+.range-val {
+  min-width: 72px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
 .field input,
 .field select {
   width: 100%;
