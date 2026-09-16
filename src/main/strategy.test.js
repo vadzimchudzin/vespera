@@ -185,6 +185,17 @@ function paintLongTicks(bars, i, nTicks, tickSize) {
 }
 
 {
+  const bars = makeBars({ n: 220, close: 110, trend: 0.05 });
+  const i = bars.length - 1;
+  paintLongTicks(bars, i, 3, 0.01);
+  const btcShallow = evaluateBar(bars, i, { minCrossTicks: 10, tickSize: 0.01 });
+  assert(btcShallow.signal === null, "BTC 3 ticks skipped when min is 10");
+  paintLongTicks(bars, i, 12, 0.01);
+  const btcDeep = evaluateBar(bars, i, { minCrossTicks: 10, tickSize: 0.01 });
+  assert(btcDeep.signal === "UP", `BTC 12 ticks must fire got ${btcDeep.signal} ${btcDeep.reason}`);
+}
+
+{
   const r = new Risk({ baseUsd: "1.00", maxSteps: 6 });
   assert(r.size().toFixed(2) === "1.00", "base size");
   r.onLoss();

@@ -2,7 +2,7 @@
 
 Glass desktop terminal for BTC 15m Preddy / Polymarket-style up-down.
 
-**v0.8.1 is Paper.** SMA200/20 on a **closed** candle `S`, bet on **S+1**. Arrow sits on the entry candle. No live money.
+**v0.8.2 is Paper.** SMA200/20 on a **closed** candle `S`, bet on **S+1**. Arrow sits on the entry candle. No live money.
 
 Repo: private [`VadimChudin/vespera`](https://github.com/VadimChudin/vespera)
 

@@ -228,9 +228,7 @@ class Engine {
       if (typeof this.market.loadHistory === "function") {
         await this.market.loadHistory(HISTORY_BARS);
       }
-      this._replayMarkers(true);
       this._ensureMarket();
-      this.emit("history", { bars: this.market.bars, forming: this.market.forming });
       if (typeof this.market.fetchJson === "function") {
         try {
           this.symbols = await fetchExchangeSymbols(this.market.fetchJson);
@@ -239,6 +237,8 @@ class Engine {
         }
       }
       this.tickSize = this._tickFor(this.settings.symbol);
+      this._replayMarkers(true);
+      this.emit("history", { bars: this.market.bars, forming: this.market.forming });
     } catch (err) {
       this.journal.write({ type: "data_error", message: String(err.message || err) });
       this.emit("log", { level: "error", message: String(err.message || err) });
@@ -583,7 +583,7 @@ class Engine {
         ? this.market.bars[this.market.bars.length - 1].close
         : null;
     return {
-      version: "0.8.1",
+      version: "0.8.2",
       running: this.running,
       status: this.status,
       mode: this.mode,

@@ -2,6 +2,12 @@
 
 All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 
+## 0.8.2 — 2026-09-16
+
+- Min-cross slider actually redraws arrows while you drag.
+- Label shows ticks **and** dollars (BTC 4 ticks = $0.04). Range 0–500.
+- Tick size is applied **before** arrows are replayed after symbol load.
+
 ## 0.8.1 — 2026-09-16
 
 - Arrow marks the **entry candle `S+1`**, not the signal candle `S`.
