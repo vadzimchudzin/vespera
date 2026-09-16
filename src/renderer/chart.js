@@ -18,6 +18,8 @@
   let lastPaintAt = 0;
   let pendingMarkers = [];
   let lastTheme = "";
+  let lastCandlePoint = null;
+  let lastIntervalSec = 60;
 
   function sma(closes, period, index) {
     if (index + 1 < period) return null;
@@ -55,25 +57,68 @@
 
   function centerLive() {
     followLive = true;
-    ignoreRangeUntil = Date.now() + 500;
+    ignoreRangeUntil = Date.now() + 1200;
     setLiveBtn(false);
-    if (!chart || lastBarIndex < 0) return;
-    const visible = 72;
-    const to = lastBarIndex + 3;
-    const from = Math.max(-2, to - visible);
+    if (!chart) return;
     try {
-      chart.timeScale().setVisibleLogicalRange({ from, to });
+      chart.priceScale("right").applyOptions({ autoScale: true });
     } catch {
+      /* ignore */
+    }
+    if (candleSeries) {
+      try {
+        candleSeries.priceScale().applyOptions({ autoScale: true });
+      } catch {
+        /* ignore */
+      }
+    }
+    const last = lastCandlePoint;
+    const lastT = last ? Number(last.time) : NaN;
+    const barSec = lastIntervalSec > 0 ? lastIntervalSec : 60;
+    if (Number.isFinite(lastT)) {
+      try {
+        chart.timeScale().setVisibleRange({
+          from: lastT - barSec * 48,
+          to: lastT + barSec * 6,
+        });
+      } catch {
+        try {
+          chart.timeScale().scrollToRealTime();
+        } catch {
+          /* ignore */
+        }
+      }
+    } else {
       try {
         chart.timeScale().scrollToRealTime();
       } catch {
         /* ignore */
       }
     }
+    if (!last || !candleSeries) return;
+    const high = Number(last.high);
+    const low = Number(last.low);
+    const close = Number(last.close);
+    if (![high, low, close].every(Number.isFinite)) return;
+    const mid = (high + low) / 2 || close;
+    const span = Math.max(high - low, Math.abs(close) * 0.004, 1e-8);
+    const pad = span * 8;
+    try {
+      candleSeries.priceScale().setVisibleRange({ from: mid - pad, to: mid + pad });
+    } catch {
+      /* ignore */
+    }
+    try {
+      candleSeries.priceScale().applyOptions({ autoScale: true });
+    } catch {
+      /* ignore */
+    }
   }
 
   function goToLive() {
     centerLive();
+    requestAnimationFrame(() => centerLive());
+    setTimeout(() => centerLive(), 60);
   }
 
   function applyMarkers(list) {
@@ -223,6 +268,7 @@
     lastPaintAt = now;
     const c = toCandle(pendingForming);
     if (!c) return;
+    lastCandlePoint = c;
     try {
       candleSeries.update(c);
     } catch {
@@ -263,6 +309,11 @@
     const forming = toCandle(snap.forming);
     const candles = forming ? closed.concat(forming) : closed.slice();
     if (!candles.length) return;
+    lastCandlePoint = candles[candles.length - 1];
+    if (closed.length >= 2) {
+      const dt = Number(closed[closed.length - 1].time) - Number(closed[closed.length - 2].time);
+      if (Number.isFinite(dt) && dt > 0) lastIntervalSec = dt;
+    }
 
     const hash = closedHash(closed);
     const closedCount = closed.length;
@@ -318,6 +369,7 @@
     pendingForming = null;
     pendingMarkers = [];
     lastTheme = "";
+    lastCandlePoint = null;
     followLive = true;
     setLiveBtn(false);
   }

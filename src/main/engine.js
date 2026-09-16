@@ -156,8 +156,9 @@ class Engine {
     for (let i = 199; i < bars.length; i += 1) {
       const ev = this.strategy().evaluate(bars, i, this._evalOptions());
       if (ev.signal) {
+        const interval = INTERVAL_MS[this.settings.timeframe || "15m"] || 900_000;
         this.markers.push({
-          time: Math.floor(bars[i].openTs / 1000),
+          time: Math.floor((bars[i].openTs + interval) / 1000),
           side: ev.signal,
           size: null,
           virtual: true,
@@ -509,7 +510,7 @@ class Engine {
     };
     const clientOrderId = `${new Date(bar.openTs).toISOString().slice(0, 10)}-${this.settings.timeframe || "15m"}-${bar.openTs}-${ev.signal}-${this.risk.step}`;
     this.markers.push({
-      time: Math.floor(bar.openTs / 1000),
+      time: Math.floor(round.openTs / 1000),
       side: ev.signal,
       size,
       virtual: this.mode !== "auto",
@@ -582,7 +583,7 @@ class Engine {
         ? this.market.bars[this.market.bars.length - 1].close
         : null;
     return {
-      version: "0.8.0",
+      version: "0.8.1",
       running: this.running,
       status: this.status,
       mode: this.mode,

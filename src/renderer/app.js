@@ -12,6 +12,7 @@
     pairLabel: "",
     chromeKey: "",
     saveTimer: 0,
+    savingPanel: false,
   };
 
   function applyI18n() {
@@ -256,6 +257,33 @@
     return `<button type="button" class="help" data-tip="${tip}" aria-label="${tip}">?</button>`;
   }
 
+  function hideTip() {
+    const el = $("vspTip");
+    if (el) el.hidden = true;
+  }
+
+  function showTip(btn) {
+    const el = $("vspTip");
+    if (!el || !btn) return;
+    const text = btn.getAttribute("data-tip") || "";
+    if (!text) return;
+    el.textContent = text;
+    el.hidden = false;
+    const r = btn.getBoundingClientRect();
+    const pad = 10;
+    const tw = Math.min(320, window.innerWidth - 24);
+    let left = r.left + r.width / 2 - tw / 2;
+    left = Math.max(pad, Math.min(left, window.innerWidth - tw - pad));
+    el.style.width = `${tw}px`;
+    el.style.left = `${left}px`;
+    el.style.top = "0px";
+    const h = el.offsetHeight || 48;
+    let top = r.top - h - 8;
+    if (top < pad) top = r.bottom + 8;
+    if (top + h > window.innerHeight - pad) top = Math.max(pad, window.innerHeight - h - pad);
+    el.style.top = `${top}px`;
+  }
+
   function closePanel() {
     $("panel").hidden = true;
     $("backdrop").hidden = true;
@@ -467,36 +495,65 @@
         notifyBtn.setAttribute("aria-pressed", String(on));
         if (window.vespera) await window.vespera.saveSettings({ notificationsEnabled: on });
       };
-      $("resetPaper").onclick = async () => {
+      const saveNow = async () => {
+        if (state.savingPanel) return;
+        state.savingPanel = true;
+        const baseEl = $("base");
+        const stepsEl = $("steps");
+        const openingEl = $("opening");
+        const crossEl = $("crossTicks");
+        const refreshEl = $("refresh");
+        const notifyEl = $("notifyToggle");
+        const patch = {
+          maxSteps: Number(stepsEl && stepsEl.value) || 6,
+          baseUsd: baseEl ? baseEl.value : s.baseUsd || "1.00",
+          minOpeningAtr: openingEl ? Number(openingEl.value) / 20 : 0,
+          minCrossTicks: crossEl ? Number(crossEl.value) : 0,
+          refreshMs: refreshEl ? Number(refreshEl.value) : 100,
+          notificationsEnabled: notifyEl ? notifyEl.classList.contains("on") : true,
+        };
+        hideTip();
+        closePanel();
+        try {
+          if (!window.vespera) return;
+          const snap = await window.vespera.saveSettings(patch);
+          try {
+            await window.vespera.confirmLot(patch.baseUsd);
+          } catch {
+            /* lot confirm is secondary */
+          }
+          renderSnap(snap || (await window.vespera.snapshot()));
+        } catch {
+          try {
+            renderSnap(await window.vespera.snapshot());
+          } catch {
+            /* already closed */
+          }
+        } finally {
+          state.savingPanel = false;
+        }
+      };
+      if (foot) {
+        foot.onclick = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const hit = e.target.closest("button");
+          if (!hit) return;
+          if (hit.id === "saveSet") saveNow();
+        };
+      }
+      $("resetPaper").onclick = async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
         if (!window.vespera || !window.vespera.resetPaper) return;
         const snap = await window.vespera.resetPaper(s.paperBalance || "1000.00");
         renderSnap(snap);
       };
-      $("saveSet").onclick = async (e) => {
+      const saveBtn = $("saveSet");
+      if (saveBtn) saveBtn.onclick = (e) => {
         e.preventDefault();
         e.stopPropagation();
-        if (!window.vespera) return;
-        const btn = $("saveSet");
-        if (btn) btn.disabled = true;
-        try {
-          const baseUsd = $("base").value;
-          const minOpeningAtr = Number($("opening").value) / 20;
-          const minCrossTicks = Number($("crossTicks").value);
-          const notifyOn = $("notifyToggle").classList.contains("on");
-          const snap = await window.vespera.saveSettings({
-            maxSteps: Number($("steps").value),
-            baseUsd,
-            minOpeningAtr,
-            minCrossTicks,
-            refreshMs: Number($("refresh").value),
-            notificationsEnabled: notifyOn,
-          });
-          await window.vespera.confirmLot(baseUsd);
-          renderSnap(snap || (await window.vespera.snapshot()));
-          closePanel();
-        } finally {
-          if (btn) btn.disabled = false;
-        }
+        saveNow();
       };
     }
 
@@ -618,9 +675,27 @@
     $("btnMin").onclick = () => window.vespera?.minimize();
     $("btnMax").onclick = () => window.vespera?.maximize();
     $("btnClose").onclick = () => window.vespera?.close();
-    const goLive = () => window.VesperaChart && window.VesperaChart.goToLive && window.VesperaChart.goToLive();
+    const goLive = (e) => {
+      if (e) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+      if (window.VesperaChart && window.VesperaChart.goToLive) window.VesperaChart.goToLive();
+    };
     $("btnLive").onclick = goLive;
     document.addEventListener("click", () => closeMenus());
+    document.addEventListener("mouseover", (e) => {
+      const btn = e.target.closest && e.target.closest(".help");
+      if (btn) showTip(btn);
+    });
+    document.addEventListener("mouseout", (e) => {
+      const btn = e.target.closest && e.target.closest(".help");
+      if (!btn) return;
+      const next = e.relatedTarget;
+      if (next && btn.contains(next)) return;
+      hideTip();
+    });
+    document.addEventListener("scroll", hideTip, true);
   }
 
   boot();

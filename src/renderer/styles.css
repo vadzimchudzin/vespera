@@ -605,8 +605,9 @@ html[data-theme="glass-light"] .row:hover {
   padding-top: 14px;
   margin-top: 4px;
   position: relative;
-  z-index: 21;
+  z-index: 40;
   pointer-events: auto;
+  -webkit-app-region: no-drag;
 }
 .panel-foot[hidden] {
   display: none !important;
@@ -631,6 +632,7 @@ html[data-theme="glass-light"] .row:hover {
   vertical-align: middle;
   position: relative;
   cursor: help;
+  flex-shrink: 0;
 }
 html[data-theme="glass-light"] .help {
   background: rgba(60, 60, 67, 0.12);
@@ -640,31 +642,25 @@ html[data-theme="glass-light"] .help {
   color: var(--ink);
   background: rgba(10, 132, 255, 0.22);
 }
-.help::after {
-  content: attr(data-tip);
-  position: absolute;
-  left: 50%;
-  bottom: calc(100% + 8px);
-  transform: translateX(-50%);
-  width: min(280px, 70vw);
-  padding: 8px 10px;
+#vspTip {
+  position: fixed;
+  z-index: 80;
+  max-width: min(320px, calc(100vw - 24px));
+  padding: 10px 12px;
   border-radius: 12px;
   background: var(--select-bg);
   color: var(--ink);
   border: 1px solid var(--hair);
   box-shadow: var(--shadow);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
-  line-height: 1.35;
+  line-height: 1.4;
   text-align: left;
   white-space: normal;
-  opacity: 0;
   pointer-events: none;
-  z-index: 30;
 }
-.help:hover::after,
-.help:focus::after {
-  opacity: 1;
+#vspTip[hidden] {
+  display: none !important;
 }
 .field-label {
   display: flex;

@@ -2,6 +2,13 @@
 
 All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 
+## 0.8.1 — 2026-09-16
+
+- Arrow marks the **entry candle `S+1`**, not the signal candle `S`.
+- **Last candle** recenters both time and price so the live bar is on screen.
+- Setting **?** tips render in a floating layer — no more clipped text.
+- **Save** closes the panel immediately.
+
 ## 0.8.0 — 2026-09-16
 
 - Pullback is **body-only**. `S-1` must close entirely beyond SMA20. Wicks do not count (customer case 1 is skipped, case 2 enters).
