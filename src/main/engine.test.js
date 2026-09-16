@@ -361,6 +361,26 @@ async function run() {
 
   {
     const dir = tmpDir();
+    const bars = makeTrendBars({ n: 222, close: 110, trend: 0.05 });
+    paintLong(bars, 219);
+    const engine = new Engine({
+      userDataDir: dir,
+      settings: { mode: "paper", baseUsd: "1.00", maxSteps: 6, timeframe: "15m", minCrossTicks: 0 },
+      market: fakeMarket(bars.slice(0, 220)),
+    });
+    engine.tickSize = 0.01;
+    engine.market.bars = bars.slice(0, 220);
+    engine._replayMarkers(true);
+    const before = engine.snapshot().markers.length;
+    assert(before > 0, "markers at 0 ticks");
+    await engine.applySettings({ minCrossTicks: 10_000 });
+    assert(engine.snapshot().markers.length === 0, "min-cross slider must drop arrows");
+    await engine.applySettings({ minCrossTicks: 0 });
+    assert(engine.snapshot().markers.length === before, "0 ticks restores arrows");
+  }
+
+  {
+    const dir = tmpDir();
     const bars = makeTrendBars({ n: 220, close: 110, trend: 0.05 });
     const engine = new Engine({
       userDataDir: dir,

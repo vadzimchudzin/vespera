@@ -217,7 +217,6 @@ class Engine {
       this.emit("history", { bars: this.market.bars, forming: this.market.forming });
     } else if (patch.minOpeningAtr != null || patch.minCrossTicks != null) {
       this._replayMarkers(true);
-      this.emit("history", { bars: this.market.bars, forming: this.market.forming });
     }
     this.emit("settings", this.settings);
     return this.snapshot();
@@ -583,7 +582,7 @@ class Engine {
         ? this.market.bars[this.market.bars.length - 1].close
         : null;
     return {
-      version: "0.8.2",
+      version: "0.8.3",
       running: this.running,
       status: this.status,
       mode: this.mode,

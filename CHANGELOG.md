@@ -2,6 +2,10 @@
 
 All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 
+## 0.8.3 — 2026-09-16
+
+- Min-cross on BTC was a no-op at 4 ticks ($0.04). Slider max is now 2000 ticks on BTC ($20). Label shows `$`. Dragging updates arrows only — chart is not reset.
+
 ## 0.8.2 — 2026-09-16
 
 - Min-cross slider actually redraws arrows while you drag.

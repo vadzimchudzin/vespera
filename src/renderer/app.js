@@ -436,7 +436,7 @@
         <div class="field">
           <span class="field-label">${t("minCross")}${helpBtn("minCrossHint")}</span>
           <div class="range-row">
-            <input id="crossTicks" type="range" min="0" max="500" step="1" />
+            <input id="crossTicks" type="range" min="0" max="2000" step="1" />
             <span class="range-val" id="crossVal">0 ${t("minCrossUnit")}</span>
           </div>
         </div>
@@ -471,15 +471,17 @@
         paintOpening();
         debounceSave({ minOpeningAtr: Number($("opening").value) / 20 });
       };
-      $("crossTicks").value = String(Math.max(0, Math.min(500, Number(s.minCrossTicks || 0))));
       const tickSize = Number(s.tickSize) > 0 ? Number(s.tickSize) : 0.01;
+      const crossMax = tickSize >= 0.01 ? 2000 : tickSize >= 0.001 ? 500 : 200;
+      $("crossTicks").max = String(crossMax);
+      $("crossTicks").value = String(Math.max(0, Math.min(crossMax, Number(s.minCrossTicks || 0))));
       const paintCross = () => {
         const n = Number($("crossTicks").value) || 0;
         const usd = n * tickSize;
-        const usdLabel = usd >= 1 ? usd.toFixed(2) : usd >= 0.01 ? usd.toFixed(4) : usd.toFixed(8).replace(/0+$/, "").replace(/\.$/, "");
-        $("crossVal").textContent = n === 0
-          ? `0 ${t("minCrossUnit")}`
-          : `${n} ${t("minCrossUnit")} · $${usdLabel}`;
+        const usdLabel =
+          usd >= 1 ? usd.toFixed(2) : usd >= 0.01 ? usd.toFixed(4) : usd.toFixed(8).replace(/0+$/, "").replace(/\.$/, "");
+        $("crossVal").textContent =
+          n === 0 ? `0 ${t("minCrossUnit")}` : `${n} ${t("minCrossUnit")} · $${usdLabel}`;
       };
       paintCross();
       $("crossTicks").oninput = () => {
