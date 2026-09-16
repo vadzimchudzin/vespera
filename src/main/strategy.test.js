@@ -33,7 +33,7 @@ function paintLong(bars, i) {
     20,
     i - 1
   );
-  bars[i - 1] = bar(ma20Prev + 1, ma20Prev + 1.5, ma20Prev - 2, ma20Prev - 1, {
+  bars[i - 1] = bar(ma20Prev - 1, ma20Prev - 0.4, ma20Prev - 2, ma20Prev - 1.2, {
     openTs: bars[i - 1].openTs,
   });
   const ma20 = sma(
@@ -50,7 +50,7 @@ function paintShort(bars, i) {
     20,
     i - 1
   );
-  bars[i - 1] = bar(ma20Prev - 1, ma20Prev + 2, ma20Prev - 1.5, ma20Prev + 1, {
+  bars[i - 1] = bar(ma20Prev + 1.2, ma20Prev + 2, ma20Prev + 0.4, ma20Prev + 1, {
     openTs: bars[i - 1].openTs,
   });
   const ma20 = sma(
@@ -123,13 +123,35 @@ function paintShort(bars, i) {
   assert(filtered.reason === "ma_opening_too_small", filtered.reason);
 }
 
+{
+  const bars = makeBars({ n: 220, close: 110, trend: 0.05 });
+  const i = bars.length - 1;
+  const ma20Prev = sma(
+    bars.map((b) => b.close),
+    20,
+    i - 1
+  );
+  bars[i - 1] = bar(ma20Prev + 1, ma20Prev + 1.5, ma20Prev - 2, ma20Prev + 0.4, {
+    openTs: bars[i - 1].openTs,
+  });
+  const ma20 = sma(
+    bars.map((b) => b.close),
+    20,
+    i
+  );
+  bars[i] = bar(ma20 - 2, ma20 + 3, ma20 - 4, ma20 + 2, { openTs: bars[i].openTs });
+  const ev = evaluateBar(bars, i);
+  assert(ev.signal === null, `wick-only pullback must not fire got ${ev.signal} ${ev.reason}`);
+  assert(ev.reason === "no_pullback_down", ev.reason);
+}
+
 function paintLongTicks(bars, i, nTicks, tickSize) {
   const ma20Prev = sma(
     bars.map((b) => b.close),
     20,
     i - 1
   );
-  bars[i - 1] = bar(ma20Prev + 1, ma20Prev + 1.5, ma20Prev - 2, ma20Prev - 1, {
+  bars[i - 1] = bar(ma20Prev - 1, ma20Prev - 0.4, ma20Prev - 2, ma20Prev - 1.2, {
     openTs: bars[i - 1].openTs,
   });
   let sum19 = 0;

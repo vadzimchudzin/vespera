@@ -112,7 +112,7 @@ class Engine {
   _bindMarket() {
     this.market.on((event, payload) => {
       if (event === "history") {
-        this._replayMarkers();
+        this._replayMarkers(this.markers.length === 0);
         this.emit("history", payload);
       }
       if (event === "bar_close") {
@@ -582,7 +582,7 @@ class Engine {
         ? this.market.bars[this.market.bars.length - 1].close
         : null;
     return {
-      version: "0.7.0",
+      version: "0.8.0",
       running: this.running,
       status: this.status,
       mode: this.mode,

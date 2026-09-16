@@ -39,7 +39,7 @@ function paintLong(bars, index) {
     index - 1
   );
   const prevTs = bars[index - 1].openTs;
-  bars[index - 1] = bar(ma20Prev + 1, ma20Prev + 1.5, ma20Prev - 2, ma20Prev - 1, {
+  bars[index - 1] = bar(ma20Prev - 1, ma20Prev - 0.4, ma20Prev - 2, ma20Prev - 1.2, {
     openTs: prevTs,
     closeTs: prevTs + 899_999,
   });
@@ -63,7 +63,7 @@ function paintShort(bars, index) {
     index - 1
   );
   const prevTs = bars[index - 1].openTs;
-  bars[index - 1] = bar(ma20Prev - 1, ma20Prev + 2, ma20Prev - 1.5, ma20Prev + 1, {
+  bars[index - 1] = bar(ma20Prev + 1.2, ma20Prev + 2, ma20Prev + 0.4, ma20Prev + 1, {
     openTs: prevTs,
     closeTs: prevTs + 899_999,
   });

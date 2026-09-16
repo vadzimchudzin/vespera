@@ -2,8 +2,10 @@
 
 /**
  * MA200 / MA20 pullback — checklist:
- * trend = SMA200, pullback through SMA20, confirm close back through SMA20,
- * bet on the next candle S+1. Forming candle never signals.
+ * trend = SMA200,
+ * S-1 body fully beyond SMA20 (wicks ignored),
+ * S closes back through SMA20,
+ * bet on S+1. Forming candle never signals.
  */
 
 function sma(values, period, index) {
@@ -48,6 +50,24 @@ function crossedDown(bar, ma20) {
   return bar.high >= ma20 && bar.close < ma20;
 }
 
+function bodyTop(bar) {
+  return Math.max(bar.open, bar.close);
+}
+
+function bodyBottom(bar) {
+  return Math.min(bar.open, bar.close);
+}
+
+/** Entire candle body closed below MA20. Wicks do not count. */
+function bodyBelow(bar, ma20) {
+  return bodyTop(bar) < ma20;
+}
+
+/** Entire candle body closed above MA20. Wicks do not count. */
+function bodyAbove(bar, ma20) {
+  return bodyBottom(bar) > ma20;
+}
+
 function clampTicks(value) {
   const n = Number(value);
   if (!Number.isFinite(n) || n < 0) return 0;
@@ -84,8 +104,8 @@ function evaluateBar(bars, index, options = {}) {
     return { signal: null, reason: "doji", ma20, ma200 };
   }
 
-  const pulledDown = prev.low < ma20Prev;
-  const pulledUp = prev.high > ma20Prev;
+  const pulledDown = bodyBelow(prev, ma20Prev);
+  const pulledUp = bodyAbove(prev, ma20Prev);
   const beyond = ticksBeyond(bar.close, ma20, tickSize);
   const tickLong = beyond >= minCrossTicks;
   const tickShort = beyond >= minCrossTicks;
@@ -163,6 +183,10 @@ module.exports = {
   evaluateBar,
   crossedUp,
   crossedDown,
+  bodyTop,
+  bodyBottom,
+  bodyBelow,
+  bodyAbove,
   clampTicks,
   tickSizeOf,
   ticksBeyond,

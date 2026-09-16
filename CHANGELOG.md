@@ -2,6 +2,11 @@
 
 All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 
+## 0.8.0 — 2026-09-16
+
+- Pullback is **body-only**. `S-1` must close entirely beyond SMA20. Wicks do not count (customer case 1 is skipped, case 2 enters).
+- Overnight stream: ping/pong, 90s stale reconnect, REST reconcile every 15s so arrows and candles survive a dead socket.
+
 ## 0.7.0 — 2026-09-15
 
 - Settings **Save** sits outside the scroll area and always closes the panel.

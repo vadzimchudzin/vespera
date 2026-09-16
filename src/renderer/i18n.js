@@ -95,8 +95,8 @@ window.VSP_I18N = {
     reason_cross_but_not_red: "Cross, not red",
     reason_long: "UP setup",
     reason_short: "DOWN setup",
-    reason_no_pullback_down: "no pullback through SMA20",
-    reason_no_pullback_up: "no pullback through SMA20",
+    reason_no_pullback_down: "no full body below SMA20",
+    reason_no_pullback_up: "no full body above SMA20",
     reason_cross_too_shallow: "cross too shallow",
   },
   ru: {
@@ -195,8 +195,8 @@ window.VSP_I18N = {
     reason_cross_but_not_red: "кросс, но не красная",
     reason_long: "сетап UP",
     reason_short: "сетап DOWN",
-    reason_no_pullback_down: "нет отката через SMA20",
-    reason_no_pullback_up: "нет отката через SMA20",
+    reason_no_pullback_down: "тело не закрылось ниже SMA20",
+    reason_no_pullback_up: "тело не закрылось выше SMA20",
     reason_cross_too_shallow: "кросс слишком мелкий",
   },
 };

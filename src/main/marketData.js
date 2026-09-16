@@ -84,6 +84,9 @@ class MarketData {
     this._lastTickEmit = 0;
     this._wanted = false;
     this._reconnectTimer = null;
+    this._lastWsAt = 0;
+    this._wsGeneration = 0;
+    this._pingTimer = null;
   }
 
   on(fn) {
@@ -187,10 +190,16 @@ class MarketData {
       if (this._busy) return;
       this._busy = true;
       try {
+        const staleWs = this.ws && this._lastWsAt && Date.now() - this._lastWsAt > 90_000;
+        if (staleWs) {
+          this._safeClose(this.ws);
+          this.ws = null;
+          this._scheduleReconnect();
+        }
         const prevTs = this.bars.length ? this.bars[this.bars.length - 1].openTs : null;
         const liveForming = this.forming && this.ws ? { ...this.forming } : null;
         const initial = this.bars.length === 0;
-        await this.loadHistory(HISTORY_BARS, { emitHistory: initial });
+        await this.loadHistory(HISTORY_BARS, { emitHistory: true });
         if (liveForming) {
           if (this.forming && this.forming.openTs === liveForming.openTs) {
             this.forming.close = liveForming.close;
@@ -205,7 +214,8 @@ class MarketData {
             if (bar.openTs > prevTs) this.emit("bar_close", bar);
           }
         }
-        if (!this.ws) this._emitTick(true);
+        this._emitTick(true);
+        if (!this.ws && this._wanted) this._openWs();
       } catch (err) {
         this.emit("error", String(err.message || err));
       } finally {
@@ -213,7 +223,7 @@ class MarketData {
       }
     };
     if (this.bars.length === 0) reconcile();
-    this.timer = setInterval(reconcile, 20000);
+    this.timer = setInterval(reconcile, 15000);
     this._openWs();
   }
 
@@ -226,6 +236,10 @@ class MarketData {
     if (this._reconnectTimer) {
       clearTimeout(this._reconnectTimer);
       this._reconnectTimer = null;
+    }
+    if (this._pingTimer) {
+      clearInterval(this._pingTimer);
+      this._pingTimer = null;
     }
     if (this.ws) {
       this._safeClose(this.ws);
@@ -257,8 +271,13 @@ class MarketData {
 
   _openWs() {
     if (!WebSocketImpl || !this._wanted) return;
+    if (this.ws) {
+      this._safeClose(this.ws);
+      this.ws = null;
+    }
     const host = WS_HOSTS[this._wsIndex % WS_HOSTS.length];
     const url = wsUrl(host, this.symbol, this.timeframe);
+    const generation = (this._wsGeneration += 1);
     let ws;
     try {
       ws = new WebSocketImpl(url);
@@ -268,8 +287,42 @@ class MarketData {
       return;
     }
     this.ws = ws;
-    ws.on("message", (buf) => this._onWs(buf));
+    this._lastWsAt = Date.now();
+    if (this._pingTimer) {
+      clearInterval(this._pingTimer);
+      this._pingTimer = null;
+    }
+    this._pingTimer = setInterval(() => {
+      if (!this.ws || this.ws !== ws) return;
+      try {
+        if (typeof ws.ping === "function") ws.ping();
+      } catch {
+        this._safeClose(ws);
+        if (this.ws === ws) this.ws = null;
+        this._scheduleReconnect();
+      }
+    }, 20_000);
+    ws.on("open", () => {
+      this._lastWsAt = Date.now();
+    });
+    ws.on("ping", () => {
+      this._lastWsAt = Date.now();
+      try {
+        if (typeof ws.pong === "function") ws.pong();
+      } catch {
+        /* ignore */
+      }
+    });
+    ws.on("message", (buf) => {
+      if (this._wsGeneration !== generation) return;
+      this._lastWsAt = Date.now();
+      this._onWs(buf);
+    });
     ws.on("close", () => {
+      if (this._pingTimer) {
+        clearInterval(this._pingTimer);
+        this._pingTimer = null;
+      }
       if (this.ws === ws) this.ws = null;
       this._scheduleReconnect();
     });
@@ -282,10 +335,11 @@ class MarketData {
   _scheduleReconnect() {
     if (!this._wanted || this._reconnectTimer) return;
     this._wsIndex += 1;
+    const delay = Math.min(15_000, 800 * Math.pow(1.6, Math.min(this._wsIndex, 8)));
     this._reconnectTimer = setTimeout(() => {
       this._reconnectTimer = null;
       this._openWs();
-    }, 800);
+    }, delay);
   }
 
   _onWs(buf) {
