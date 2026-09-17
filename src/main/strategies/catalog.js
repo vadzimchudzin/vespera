@@ -13,7 +13,7 @@ function catalog() {
     {
       id: "sma200_20",
       name: "SMA200/20",
-      description: "SMA200 trend, full body beyond SMA20, close back, bet on S+1",
+      description: "SMA200 trend, S-1 body beyond SMA20, S full body of the needed color beyond SMA20, bet on S+1",
       enabled: true,
       evaluate(bars, index, options) {
         return evaluateBar(bars, index, options);

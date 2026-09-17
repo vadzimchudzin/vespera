@@ -4,7 +4,8 @@
  * MA200 / MA20 pullback — checklist:
  * trend = SMA200,
  * S-1 body fully beyond SMA20 (wicks ignored),
- * S closes back through SMA20,
+ * S is a full candle of the needed color with its entire body
+ * beyond SMA20 (open and close on that side; wicks ignored),
  * bet on S+1. Forming candle never signals.
  */
 
@@ -40,14 +41,6 @@ function isGreen(bar) {
 
 function isRed(bar) {
   return bar.close < bar.open;
-}
-
-function crossedUp(bar, ma20) {
-  return bar.low <= ma20 && bar.close > ma20;
-}
-
-function crossedDown(bar, ma20) {
-  return bar.high >= ma20 && bar.close < ma20;
 }
 
 function bodyTop(bar) {
@@ -106,6 +99,8 @@ function evaluateBar(bars, index, options = {}) {
 
   const pulledDown = bodyBelow(prev, ma20Prev);
   const pulledUp = bodyAbove(prev, ma20Prev);
+  const closedAbove = bodyAbove(bar, ma20);
+  const closedBelow = bodyBelow(bar, ma20);
   const beyond = ticksBeyond(bar.close, ma20, tickSize);
   const tickLong = beyond >= minCrossTicks;
   const tickShort = beyond >= minCrossTicks;
@@ -113,14 +108,14 @@ function evaluateBar(bars, index, options = {}) {
   const longOk =
     bar.close > ma200 &&
     pulledDown &&
-    crossedUp(bar, ma20) &&
+    closedAbove &&
     isGreen(bar) &&
     tickLong;
 
   const shortOk =
     bar.close < ma200 &&
     pulledUp &&
-    crossedDown(bar, ma20) &&
+    closedBelow &&
     isRed(bar) &&
     tickShort;
 
@@ -156,22 +151,22 @@ function evaluateBar(bars, index, options = {}) {
   if (bar.close < ma200 && !pulledUp) {
     return { signal: null, reason: "no_pullback_up", ma20, ma200 };
   }
-  if (bar.close > ma200 && !crossedUp(bar, ma20)) {
+  if (bar.close > ma200 && !closedAbove) {
     return { signal: null, reason: "no_ma20_cross_up", ma20, ma200 };
   }
-  if (bar.close < ma200 && !crossedDown(bar, ma20)) {
+  if (bar.close < ma200 && !closedBelow) {
     return { signal: null, reason: "no_ma20_cross_down", ma20, ma200 };
   }
-  if (bar.close > ma200 && crossedUp(bar, ma20) && !isGreen(bar)) {
+  if (bar.close > ma200 && closedAbove && !isGreen(bar)) {
     return { signal: null, reason: "cross_but_not_green", ma20, ma200 };
   }
-  if (bar.close < ma200 && crossedDown(bar, ma20) && !isRed(bar)) {
+  if (bar.close < ma200 && closedBelow && !isRed(bar)) {
     return { signal: null, reason: "cross_but_not_red", ma20, ma200 };
   }
-  if (bar.close > ma200 && crossedUp(bar, ma20) && !tickLong) {
+  if (bar.close > ma200 && closedAbove && !tickLong) {
     return { signal: null, reason: "cross_too_shallow", ma20, ma200 };
   }
-  if (bar.close < ma200 && crossedDown(bar, ma20) && !tickShort) {
+  if (bar.close < ma200 && closedBelow && !tickShort) {
     return { signal: null, reason: "cross_too_shallow", ma20, ma200 };
   }
   return { signal: null, reason: "no_setup", ma20, ma200 };
@@ -181,8 +176,6 @@ module.exports = {
   sma,
   atr,
   evaluateBar,
-  crossedUp,
-  crossedDown,
   bodyTop,
   bodyBottom,
   bodyBelow,

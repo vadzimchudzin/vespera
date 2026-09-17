@@ -2,6 +2,10 @@
 
 All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 
+## 0.8.4 — 2026-09-17
+
+- Signal candle `S` must be a **full body** of the needed color beyond SMA20. Open and close both on that side; wicks ignored. A green that straddles SMA20 no longer counts as a long, even if it closes above.
+
 ## 0.8.3 — 2026-09-16
 
 - Min-cross on BTC was a no-op at 4 ticks ($0.04). Slider max is now 2000 ticks on BTC ($20). Label shows `$`. Dragging updates arrows only — chart is not reset.

@@ -41,7 +41,7 @@ function paintLong(bars, i) {
     20,
     i
   );
-  bars[i] = bar(ma20 - 2, ma20 + 3, ma20 - 4, ma20 + 2, { openTs: bars[i].openTs });
+  bars[i] = bar(ma20 + 1, ma20 + 3, ma20 + 0.5, ma20 + 2, { openTs: bars[i].openTs });
 }
 
 function paintShort(bars, i) {
@@ -58,7 +58,7 @@ function paintShort(bars, i) {
     20,
     i
   );
-  bars[i] = bar(ma20 + 2, ma20 + 4, ma20 - 3, ma20 - 2, { openTs: bars[i].openTs });
+  bars[i] = bar(ma20 - 1, ma20 - 0.5, ma20 - 3, ma20 - 2, { openTs: bars[i].openTs });
 }
 
 {
@@ -145,6 +145,50 @@ function paintShort(bars, i) {
   assert(ev.reason === "no_pullback_down", ev.reason);
 }
 
+{
+  const bars = makeBars({ n: 220, close: 110, trend: 0.05 });
+  const i = bars.length - 1;
+  const ma20Prev = sma(
+    bars.map((b) => b.close),
+    20,
+    i - 1
+  );
+  bars[i - 1] = bar(ma20Prev - 1, ma20Prev - 0.4, ma20Prev - 2, ma20Prev - 1.2, {
+    openTs: bars[i - 1].openTs,
+  });
+  const ma20 = sma(
+    bars.map((b) => b.close),
+    20,
+    i
+  );
+  bars[i] = bar(ma20 - 2, ma20 + 3, ma20 - 4, ma20 + 2, { openTs: bars[i].openTs });
+  const ev = evaluateBar(bars, i);
+  assert(ev.signal === null, `straddling green must not fire got ${ev.signal} ${ev.reason}`);
+  assert(ev.reason === "no_ma20_cross_up", ev.reason);
+}
+
+{
+  const bars = makeBars({ n: 220, close: 80, trend: -0.05 });
+  const i = bars.length - 1;
+  const ma20Prev = sma(
+    bars.map((b) => b.close),
+    20,
+    i - 1
+  );
+  bars[i - 1] = bar(ma20Prev + 1.2, ma20Prev + 2, ma20Prev + 0.4, ma20Prev + 1, {
+    openTs: bars[i - 1].openTs,
+  });
+  const ma20 = sma(
+    bars.map((b) => b.close),
+    20,
+    i
+  );
+  bars[i] = bar(ma20 + 2, ma20 + 4, ma20 - 3, ma20 - 2, { openTs: bars[i].openTs });
+  const ev = evaluateBar(bars, i);
+  assert(ev.signal === null, `straddling red must not fire got ${ev.signal} ${ev.reason}`);
+  assert(ev.reason === "no_ma20_cross_down", ev.reason);
+}
+
 function paintLongTicks(bars, i, nTicks, tickSize) {
   const ma20Prev = sma(
     bars.map((b) => b.close),
@@ -158,7 +202,7 @@ function paintLongTicks(bars, i, nTicks, tickSize) {
   for (let k = i - 19; k < i; k += 1) sum19 += bars[k].close;
   const close = (nTicks * tickSize * 20 + sum19) / 19;
   const ma20 = (sum19 + close) / 20;
-  bars[i] = bar(ma20 - nTicks * tickSize, close + tickSize, ma20 - nTicks * tickSize, close, {
+  bars[i] = bar(ma20 + tickSize, close + tickSize, ma20 + tickSize * 0.5, close, {
     openTs: bars[i].openTs,
   });
 }
