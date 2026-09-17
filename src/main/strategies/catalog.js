@@ -13,7 +13,7 @@ function catalog() {
     {
       id: "sma200_20",
       name: "SMA200/20",
-      description: "SMA200 trend, S-1 body beyond SMA20, S full body of the needed color beyond SMA20, bet on S+1",
+      description: "Slow SMA trend, pullback, then N full same-color bodies beyond fast SMA, bet on next",
       enabled: true,
       evaluate(bars, index, options) {
         return evaluateBar(bars, index, options);

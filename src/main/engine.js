@@ -7,6 +7,7 @@ const { INTERVAL_MS, SYMBOLS, TIMEFRAMES, HISTORY_BARS, clampRefreshMs, symbolLa
 const { createVenue } = require("./brokers");
 const { Journal } = require("./journal");
 const { Decimal } = require("./money");
+const { fastPeriodOf, slowPeriodOf, confirmCountOf } = require("./strategy");
 
 const STATUSES = [
   "stopped",
@@ -153,7 +154,8 @@ class Engine {
     if (this.markers.length && !force) return;
     this.markers = [];
     const bars = this.market.bars;
-    for (let i = 199; i < bars.length; i += 1) {
+    const warm = Math.max(0, this._slowPeriod() - 1);
+    for (let i = warm; i < bars.length; i += 1) {
       const ev = this.strategy().evaluate(bars, i, this._evalOptions());
       if (ev.signal) {
         const interval = INTERVAL_MS[this.settings.timeframe || "15m"] || 900_000;
@@ -189,6 +191,13 @@ class Engine {
     if (patch.minOpeningAtr != null) {
       next.minOpeningAtr = Number(patch.minOpeningAtr);
     }
+    if (patch.confirmCount != null) {
+      next.confirmCount = confirmCountOf({ confirmCount: patch.confirmCount });
+    }
+    if (patch.fastPeriod != null || patch.slowPeriod != null) {
+      next.fastPeriod = fastPeriodOf(next);
+      next.slowPeriod = slowPeriodOf(next);
+    }
     if (patch.maxSteps != null) {
       this.risk.maxSteps = Math.max(1, Number(patch.maxSteps) || 1);
     }
@@ -215,7 +224,13 @@ class Engine {
       this.lastHandledOpenTs = null;
       this._replayMarkers(true);
       this.emit("history", { bars: this.market.bars, forming: this.market.forming });
-    } else if (patch.minOpeningAtr != null || patch.minCrossTicks != null) {
+    } else if (
+      patch.minOpeningAtr != null ||
+      patch.minCrossTicks != null ||
+      patch.confirmCount != null ||
+      patch.fastPeriod != null ||
+      patch.slowPeriod != null
+    ) {
       this._replayMarkers(true);
     }
     this.emit("settings", this.settings);
@@ -256,13 +271,13 @@ class Engine {
     this.running = true;
     this.status = "warming_up";
     this.emit("status", this.status);
-    if (typeof this.market.loadHistory === "function" && this.market.bars.length < 200) {
+    if (typeof this.market.loadHistory === "function" && this.market.bars.length < this._slowPeriod()) {
       await this.market.loadHistory(HISTORY_BARS);
     }
     const last = this.market.bars[this.market.bars.length - 1];
     if (last) this.lastHandledOpenTs = last.openTs;
     this._ensureMarket();
-    if (this.market.bars.length < 200) {
+    if (this.market.bars.length < this._slowPeriod()) {
       this.status = "warming_up";
     } else {
       this.status = this.paper.openBet ? "waiting_settlement" : "watching";
@@ -400,11 +415,22 @@ class Engine {
     return this.liveBalance;
   }
 
+  _fastPeriod() {
+    return fastPeriodOf(this.settings);
+  }
+
+  _slowPeriod() {
+    return slowPeriodOf(this.settings);
+  }
+
   _evalOptions() {
     return {
       minOpeningAtr: this.settings.minOpeningAtr,
       minCrossTicks: this.settings.minCrossTicks,
       tickSize: this.tickSize,
+      confirmCount: confirmCountOf(this.settings),
+      fastPeriod: this._fastPeriod(),
+      slowPeriod: this._slowPeriod(),
     };
   }
 
@@ -462,7 +488,7 @@ class Engine {
       this.emit("status", this.status);
       return;
     }
-    if (bars.length < 200) {
+    if (bars.length < this._slowPeriod()) {
       this.status = "warming_up";
       this.emit("status", this.status);
       return;
@@ -582,7 +608,7 @@ class Engine {
         ? this.market.bars[this.market.bars.length - 1].close
         : null;
     return {
-      version: "0.8.3",
+      version: "0.8.5",
       running: this.running,
       status: this.status,
       mode: this.mode,
@@ -601,6 +627,9 @@ class Engine {
         strategyId: this.strategyId,
         minOpeningAtr: Number(this.settings.minOpeningAtr || 0),
         minCrossTicks: Number(this.settings.minCrossTicks || 0),
+        confirmCount: confirmCountOf(this.settings),
+        fastPeriod: this._fastPeriod(),
+        slowPeriod: this._slowPeriod(),
         refreshMs: clampRefreshMs(this.settings.refreshMs || 100),
         notificationsEnabled: this.notificationsEnabled !== false,
         paperBalance: this.settings.paperBalance || "1000.00",

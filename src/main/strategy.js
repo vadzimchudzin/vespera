@@ -1,12 +1,15 @@
 "use strict";
 
 /**
- * MA200 / MA20 pullback — checklist:
- * trend = SMA200,
- * S-1 body fully beyond SMA20 (wicks ignored),
- * S is a full candle of the needed color with its entire body
- * beyond SMA20 (open and close on that side; wicks ignored),
- * bet on S+1. Forming candle never signals.
+ * MA pullback — checklist:
+ * trend = slow SMA (default 200),
+ * pullback bar body fully beyond fast SMA (wicks ignored),
+ * then (confirmCount + 1) consecutive full-body candles of the needed
+ * color beyond the fast SMA (open and close on that side; wicks ignored),
+ * bet on the next candle. Forming candle never signals.
+ *
+ * confirmCount 0 = first full poke (v0.8.4).
+ * confirmCount 1 = one more same-color full body, then enter, etc.
  */
 
 function sma(values, period, index) {
@@ -51,14 +54,14 @@ function bodyBottom(bar) {
   return Math.min(bar.open, bar.close);
 }
 
-/** Entire candle body closed below MA20. Wicks do not count. */
-function bodyBelow(bar, ma20) {
-  return bodyTop(bar) < ma20;
+/** Entire candle body closed below MA. Wicks do not count. */
+function bodyBelow(bar, ma) {
+  return bodyTop(bar) < ma;
 }
 
-/** Entire candle body closed above MA20. Wicks do not count. */
-function bodyAbove(bar, ma20) {
-  return bodyBottom(bar) > ma20;
+/** Entire candle body closed above MA. Wicks do not count. */
+function bodyAbove(bar, ma) {
+  return bodyBottom(bar) > ma;
 }
 
 function clampTicks(value) {
@@ -73,23 +76,63 @@ function tickSizeOf(options) {
   return 0.0001;
 }
 
-function ticksBeyond(close, ma20, tickSize) {
-  return Math.abs(close - ma20) / tickSize;
+function ticksBeyond(close, ma, tickSize) {
+  return Math.abs(close - ma) / tickSize;
+}
+
+function clampInt(value, fallback, min, max) {
+  const n = Math.round(Number(value));
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
+function fastPeriodOf(options = {}) {
+  return clampInt(options.fastPeriod, 20, 2, 200);
+}
+
+function slowPeriodOf(options = {}) {
+  const fast = fastPeriodOf(options);
+  const slow = clampInt(options.slowPeriod, 200, 5, 500);
+  return slow <= fast ? Math.min(500, fast + 1) : slow;
+}
+
+function confirmCountOf(options = {}) {
+  return clampInt(options.confirmCount, 0, 0, 10);
+}
+
+function consecutiveFullRun(bars, index, side, fastPeriod, closes) {
+  let n = 0;
+  for (let i = index; i >= 0; i -= 1) {
+    const ma = sma(closes, fastPeriod, i);
+    if (ma == null) break;
+    const b = bars[i];
+    const ok =
+      side === "UP" ? isGreen(b) && bodyAbove(b, ma) : isRed(b) && bodyBelow(b, ma);
+    if (!ok) break;
+    n += 1;
+  }
+  return n;
 }
 
 function evaluateBar(bars, index, options = {}) {
   const minOpeningAtr = Number(options.minOpeningAtr || 0);
   const minCrossTicks = clampTicks(options.minCrossTicks);
   const tickSize = tickSizeOf(options);
-  if (index < 199) {
+  const fastPeriod = fastPeriodOf(options);
+  const slowPeriod = slowPeriodOf(options);
+  const confirmCount = confirmCountOf(options);
+  const runLen = confirmCount + 1;
+  const pullIndex = index - runLen;
+
+  if (index < slowPeriod - 1 || pullIndex < 0) {
     return { signal: null, reason: "warming_up", ma20: null, ma200: null };
   }
   const bar = bars[index];
-  const prev = bars[index - 1];
+  const prev = bars[pullIndex];
   const closes = bars.map((b) => b.close);
-  const ma20 = sma(closes, 20, index);
-  const ma200 = sma(closes, 200, index);
-  const ma20Prev = sma(closes, 20, index - 1);
+  const ma20 = sma(closes, fastPeriod, index);
+  const ma200 = sma(closes, slowPeriod, index);
+  const ma20Prev = sma(closes, fastPeriod, pullIndex);
   if (ma20 == null || ma200 == null || ma20Prev == null) {
     return { signal: null, reason: "warming_up", ma20, ma200 };
   }
@@ -104,12 +147,17 @@ function evaluateBar(bars, index, options = {}) {
   const beyond = ticksBeyond(bar.close, ma20, tickSize);
   const tickLong = beyond >= minCrossTicks;
   const tickShort = beyond >= minCrossTicks;
+  const longRun = consecutiveFullRun(bars, index, "UP", fastPeriod, closes);
+  const shortRun = consecutiveFullRun(bars, index, "DOWN", fastPeriod, closes);
+  const longConfirmed = longRun >= runLen;
+  const shortConfirmed = shortRun >= runLen;
 
   const longOk =
     bar.close > ma200 &&
     pulledDown &&
     closedAbove &&
     isGreen(bar) &&
+    longConfirmed &&
     tickLong;
 
   const shortOk =
@@ -117,6 +165,7 @@ function evaluateBar(bars, index, options = {}) {
     pulledUp &&
     closedBelow &&
     isRed(bar) &&
+    shortConfirmed &&
     tickShort;
 
   if (longOk || shortOk) {
@@ -140,6 +189,9 @@ function evaluateBar(bars, index, options = {}) {
       ma200,
       tickSize,
       crossTicks: beyond,
+      confirmCount,
+      fastPeriod,
+      slowPeriod,
     };
   }
   if (bar.close === ma200) {
@@ -163,6 +215,12 @@ function evaluateBar(bars, index, options = {}) {
   if (bar.close < ma200 && closedBelow && !isRed(bar)) {
     return { signal: null, reason: "cross_but_not_red", ma20, ma200 };
   }
+  if (bar.close > ma200 && closedAbove && !longConfirmed) {
+    return { signal: null, reason: "need_more_confirms", ma20, ma200 };
+  }
+  if (bar.close < ma200 && closedBelow && !shortConfirmed) {
+    return { signal: null, reason: "need_more_confirms", ma20, ma200 };
+  }
   if (bar.close > ma200 && closedAbove && !tickLong) {
     return { signal: null, reason: "cross_too_shallow", ma20, ma200 };
   }
@@ -183,4 +241,7 @@ module.exports = {
   clampTicks,
   tickSizeOf,
   ticksBeyond,
+  fastPeriodOf,
+  slowPeriodOf,
+  confirmCountOf,
 };

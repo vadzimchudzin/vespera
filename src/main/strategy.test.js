@@ -189,6 +189,67 @@ function paintShort(bars, i) {
   assert(ev.reason === "no_ma20_cross_down", ev.reason);
 }
 
+function paintLongRun(bars, i, extra = 0, fastPeriod = 20) {
+  const runLen = extra + 1;
+  const pull = i - runLen;
+  const maPull = sma(
+    bars.map((b) => b.close),
+    fastPeriod,
+    pull
+  );
+  bars[pull] = bar(maPull - 1, maPull - 0.4, maPull - 2, maPull - 1.2, {
+    openTs: bars[pull].openTs,
+  });
+  for (let k = pull + 1; k <= i; k += 1) {
+    const ma = sma(
+      bars.map((b) => b.close),
+      fastPeriod,
+      k
+    );
+    bars[k] = bar(ma + 1, ma + 3, ma + 0.5, ma + 2, { openTs: bars[k].openTs });
+  }
+}
+
+{
+  const bars = makeBars({ n: 220, close: 110, trend: 0.05 });
+  const i = bars.length - 1;
+  const maPull = sma(
+    bars.map((b) => b.close),
+    20,
+    i - 2
+  );
+  bars[i - 2] = bar(maPull - 1, maPull - 0.4, maPull - 2, maPull - 1.2, {
+    openTs: bars[i - 2].openTs,
+  });
+  const ma = sma(
+    bars.map((b) => b.close),
+    20,
+    i
+  );
+  bars[i] = bar(ma + 1, ma + 3, ma + 0.5, ma + 2, { openTs: bars[i].openTs });
+  const waiting = evaluateBar(bars, i, { confirmCount: 1 });
+  assert(waiting.signal === null, `one poke must wait when confirm is 1 got ${waiting.signal} ${waiting.reason}`);
+  assert(waiting.reason === "need_more_confirms", waiting.reason);
+}
+
+{
+  const bars = makeBars({ n: 220, close: 110, trend: 0.05 });
+  const i = bars.length - 1;
+  paintLongRun(bars, i, 1);
+  const ready = evaluateBar(bars, i, { confirmCount: 1 });
+  assert(ready.signal === "UP", `two full greens must fire at confirm 1 got ${ready.signal} ${ready.reason}`);
+  const stillZero = evaluateBar(bars, i, { confirmCount: 0 });
+  assert(stillZero.signal === null, "third-in-a-row should not re-fire at confirm 0 without pullback on S-1");
+}
+
+{
+  const bars = makeBars({ n: 220, close: 110, trend: 0.05 });
+  const i = bars.length - 1;
+  paintLongRun(bars, i, 0, 10);
+  const ev = evaluateBar(bars, i, { fastPeriod: 10, slowPeriod: 50 });
+  assert(ev.signal === "UP", `custom SMA 10/50 must fire got ${ev.signal} ${ev.reason}`);
+}
+
 function paintLongTicks(bars, i, nTicks, tickSize) {
   const ma20Prev = sma(
     bars.map((b) => b.close),

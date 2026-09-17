@@ -305,7 +305,13 @@
       if (window.VesperaChart && window.VesperaChart.setRefreshMs) {
         window.VesperaChart.setRefreshMs(snap.settings.refreshMs);
       }
-      if (patch.minCrossTicks != null || patch.minOpeningAtr != null) {
+      if (
+        patch.minCrossTicks != null ||
+        patch.minOpeningAtr != null ||
+        patch.confirmCount != null ||
+        patch.fastPeriod != null ||
+        patch.slowPeriod != null
+      ) {
         renderSnap(snap);
       }
     }, ms);
@@ -441,6 +447,27 @@
           </div>
         </div>
         <div class="field">
+          <span class="field-label">${t("confirmCount")}${helpBtn("confirmCountHint")}</span>
+          <div class="range-row">
+            <input id="confirms" type="range" min="0" max="10" step="1" />
+            <span class="range-val" id="confirmsVal">0</span>
+          </div>
+        </div>
+        <div class="field">
+          <span class="field-label">${t("fastPeriod")}${helpBtn("fastPeriodHint")}</span>
+          <div class="range-row">
+            <input id="fastPeriod" type="range" min="2" max="80" step="1" />
+            <span class="range-val" id="fastPeriodVal">SMA20</span>
+          </div>
+        </div>
+        <div class="field">
+          <span class="field-label">${t("slowPeriod")}${helpBtn("slowPeriodHint")}</span>
+          <div class="range-row">
+            <input id="slowPeriod" type="range" min="20" max="400" step="1" />
+            <span class="range-val" id="slowPeriodVal">SMA200</span>
+          </div>
+        </div>
+        <div class="field">
           <span class="field-label">${t("refresh")}${helpBtn("refreshHint")}</span>
           <div class="range-row">
             <input id="refresh" type="range" min="1" max="1000" step="1" />
@@ -488,6 +515,43 @@
         paintCross();
         debounceSave({ minCrossTicks: Number($("crossTicks").value) });
       };
+      $("confirms").value = String(Math.max(0, Math.min(10, Number(s.confirmCount || 0))));
+      const paintConfirms = () => {
+        const n = Number($("confirms").value) || 0;
+        $("confirmsVal").textContent = `${n} ${t("confirmCountUnit")}`;
+      };
+      paintConfirms();
+      $("confirms").oninput = () => {
+        paintConfirms();
+        debounceSave({ confirmCount: Number($("confirms").value) });
+      };
+      $("fastPeriod").value = String(Math.max(2, Math.min(80, Number(s.fastPeriod || 20))));
+      $("slowPeriod").value = String(Math.max(20, Math.min(400, Number(s.slowPeriod || 200))));
+      const paintPeriods = () => {
+        let fast = Number($("fastPeriod").value) || 20;
+        let slow = Number($("slowPeriod").value) || 200;
+        if (slow <= fast) {
+          slow = Math.min(400, fast + 1);
+          $("slowPeriod").value = String(slow);
+        }
+        $("fastPeriodVal").textContent = `SMA${fast}`;
+        $("slowPeriodVal").textContent = `SMA${slow}`;
+      };
+      paintPeriods();
+      $("fastPeriod").oninput = () => {
+        paintPeriods();
+        debounceSave({
+          fastPeriod: Number($("fastPeriod").value),
+          slowPeriod: Number($("slowPeriod").value),
+        });
+      };
+      $("slowPeriod").oninput = () => {
+        paintPeriods();
+        debounceSave({
+          fastPeriod: Number($("fastPeriod").value),
+          slowPeriod: Number($("slowPeriod").value),
+        });
+      };
       $("refresh").value = String(s.refreshMs || 100);
       const paintRefresh = () => {
         $("refreshVal").textContent = `${$("refresh").value} ${t("refreshUnit")}`;
@@ -513,6 +577,9 @@
         const stepsEl = $("steps");
         const openingEl = $("opening");
         const crossEl = $("crossTicks");
+        const confirmsEl = $("confirms");
+        const fastEl = $("fastPeriod");
+        const slowEl = $("slowPeriod");
         const refreshEl = $("refresh");
         const notifyEl = $("notifyToggle");
         const patch = {
@@ -520,6 +587,9 @@
           baseUsd: baseEl ? baseEl.value : s.baseUsd || "1.00",
           minOpeningAtr: openingEl ? Number(openingEl.value) / 20 : 0,
           minCrossTicks: crossEl ? Number(crossEl.value) : 0,
+          confirmCount: confirmsEl ? Number(confirmsEl.value) : 0,
+          fastPeriod: fastEl ? Number(fastEl.value) : 20,
+          slowPeriod: slowEl ? Number(slowEl.value) : 200,
           refreshMs: refreshEl ? Number(refreshEl.value) : 100,
           notificationsEnabled: notifyEl ? notifyEl.classList.contains("on") : true,
         };

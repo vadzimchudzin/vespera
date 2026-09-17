@@ -2,6 +2,11 @@
 
 All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 
+## 0.8.5 — 2026-09-17
+
+- **Confirms** slider: how many extra full same-color candles beyond the fast SMA after the first poke. `0` = first poke (v0.8.4). `1` = wait for one more, then enter.
+- **Fast SMA** / **Slow SMA** periods are editable (default 20 / 200). Chart legend follows.
+
 ## 0.8.4 — 2026-09-17
 
 - Signal candle `S` must be a **full body** of the needed color beyond SMA20. Open and close both on that side; wicks ignored. A green that straddles SMA20 no longer counts as a long, even if it closes above.

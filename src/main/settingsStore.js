@@ -19,6 +19,9 @@ const DEFAULTS = {
   strategyId: "sma200_20",
   minOpeningAtr: 0,
   minCrossTicks: 0,
+  confirmCount: 0,
+  fastPeriod: 20,
+  slowPeriod: 200,
   refreshMs: 100,
   notificationsEnabled: true,
 };

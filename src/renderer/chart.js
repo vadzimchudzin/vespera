@@ -20,6 +20,8 @@
   let lastTheme = "";
   let lastCandlePoint = null;
   let lastIntervalSec = 60;
+  let fastPeriod = 20;
+  let slowPeriod = 200;
 
   function sma(closes, period, index) {
     if (index + 1 < period) return null;
@@ -173,14 +175,14 @@
       lineWidth: 2,
       priceLineVisible: false,
       lastValueVisible: true,
-      title: "SMA20",
+      title: `SMA${fastPeriod}`,
     });
     ma200Series = chart.addLineSeries({
       color: c.ma200,
       lineWidth: 2,
       priceLineVisible: false,
       lastValueVisible: true,
-      title: "SMA200",
+      title: `SMA${slowPeriod}`,
     });
     chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
       if (!range || Date.now() < ignoreRangeUntil) return;
@@ -248,13 +250,23 @@
     const ma20 = [];
     const ma200 = [];
     for (let i = 0; i < closed.length; i += 1) {
-      const a = sma(closes, 20, i);
-      const b = sma(closes, 200, i);
+      const a = sma(closes, fastPeriod, i);
+      const b = sma(closes, slowPeriod, i);
       if (a != null) ma20.push({ time: closed[i].time, value: a });
       if (b != null) ma200.push({ time: closed[i].time, value: b });
     }
     ma20Series.setData(ma20);
     ma200Series.setData(ma200);
+    try {
+      ma20Series.applyOptions({ title: `SMA${fastPeriod}` });
+      ma200Series.applyOptions({ title: `SMA${slowPeriod}` });
+    } catch {
+      /* ignore */
+    }
+    const legendFast = document.querySelector(".chart-legend .lg.ma20");
+    const legendSlow = document.querySelector(".chart-legend .lg.ma200");
+    if (legendFast) legendFast.textContent = `SMA${fastPeriod}`;
+    if (legendSlow) legendSlow.textContent = `SMA${slowPeriod}`;
   }
 
   function paintPending() {
@@ -304,6 +316,13 @@
   function render(snap) {
     ensure();
     if (!chart || !snap) return;
+    const nextFast = Number(snap.settings && snap.settings.fastPeriod) || 20;
+    const nextSlow = Number(snap.settings && snap.settings.slowPeriod) || 200;
+    if (nextFast !== fastPeriod || nextSlow !== slowPeriod) {
+      fastPeriod = nextFast;
+      slowPeriod = nextSlow;
+      lastClosedHash = "";
+    }
     applyTheme();
     const closed = (snap.bars || []).map(toCandle).filter(Boolean);
     const forming = toCandle(snap.forming);
