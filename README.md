@@ -1,8 +1,8 @@
 # Vespera (VSP)
 
-Glass desktop terminal for BTC 15m Preddy / Polymarket-style up-down.
+Glass desktop terminal for BTC 15m Polymarket Up/Down.
 
-**v0.8.5 is Paper.** SMA200/20 on a **closed** candle `S`, bet on **S+1**. Arrow sits on the entry candle. No live money.
+**v0.8.6 is Paper.** SMA200/20 on a **closed** candle `S`, bet on **S+1**. Arrow sits on the entry candle. No live money. Auto pings the Polymarket CLOB; orders wait for an L1/L2 signer.
 
 Repo: private [`VadimChudin/vespera`](https://github.com/VadimChudin/vespera)
 
@@ -22,10 +22,10 @@ Repo: private [`VadimChudin/vespera`](https://github.com/VadimChudin/vespera)
 
 | Mode | Name in UI | Orders |
 |---|---|---|
-| Paper | Paper / Пейпер | Virtual Preddy fills |
-| Auto | Auto / Авто | Pings Preddy immediately. Orders blocked until a live signer exists. Balance pulses `$0.00` if the book is unreachable. |
+| Paper | Paper / Пейпер | Virtual Up/Down fills |
+| Auto | Auto / Авто | Pings `clob.polymarket.com`. Resolves the current BTC/ETH Up/Down round via Gamma. Orders blocked until an L1/L2 signer exists. Balance pulses `$0.00` until then. |
 
-Preddy ([preddy.trade](https://preddy.trade)) has no public API key. **OK** pings that the site is reachable. It does not place trades.
+**OK** in the API panel pings the Polymarket CLOB. It does not place trades. Live `marketBuy` stays `auto_not_wired` until a signer is plugged into `src/main/brokers`.
 
 ## Run from source
 
@@ -64,7 +64,7 @@ src/renderer/    glass UI, i18n EN/RU, TradingView host
 build/           app icon (.png / .ico)
 ```
 
-`Strategy` does not know Preddy. `Broker` does not know MAs. Live venues implement `src/main/brokers/spi.js` (`ping`, `getBalance`, `marketBuy`).
+`Strategy` does not know Polymarket. `Broker` does not know MAs. Live venues implement `src/main/brokers/spi.js` (`ping`, `getBalance`, `marketBuy`). Auto uses `PolymarketAdapter` + Gamma slug `btc-updown-15m-{utcStart}`.
 
 ## Spec
 

@@ -11,6 +11,25 @@ function assert(cond, msg) {
   if (!cond) throw new Error(msg);
 }
 
+function stubLive() {
+  return {
+    async ping() {
+      return { ok: false, venue: "polymarket", message: "offline_test", trading: false };
+    },
+    async getBalance() {
+      return null;
+    },
+    async marketBuy() {
+      const err = new Error("auto_not_wired");
+      err.code = "auto_not_wired";
+      throw err;
+    },
+    configure() {
+      return this;
+    },
+  };
+}
+
 function bar(open, high, low, close, extra = {}) {
   return { open, high, low, close, volume: 1, closed: true, ...extra };
 }
@@ -121,6 +140,7 @@ async function run() {
     const engine = new Engine({
       userDataDir: dir,
       settings: { mode: "paper", baseUsd: "1.00", maxSteps: 6, timeframe: "15m" },
+      live: stubLive(),
       market: fakeMarket(bars.slice(0, 219)),
     });
     engine.market.bars = bars.slice(0, 219);
@@ -161,6 +181,7 @@ async function run() {
     const engine = new Engine({
       userDataDir: dir,
       settings: { mode: "paper", baseUsd: "1.00", maxSteps: 6, timeframe: "15m" },
+      live: stubLive(),
       market: fakeMarket(bars.slice(0, 219)),
     });
     await engine.start();
@@ -212,6 +233,7 @@ async function run() {
     const engine = new Engine({
       userDataDir: dir,
       settings: { mode: "paper", baseUsd: "1.00", maxSteps: 6, timeframe: "15m" },
+      live: stubLive(),
       market: fakeMarket(bars.slice(0, 219)),
     });
     await engine.start();
@@ -239,6 +261,7 @@ async function run() {
     const engine = new Engine({
       userDataDir: dir,
       settings: { mode: "paper", baseUsd: "1.00", maxSteps: 6, timeframe: "15m" },
+      live: stubLive(),
       market: fakeMarket(bars.slice(0, 219)),
     });
     await engine.start();
@@ -257,6 +280,7 @@ async function run() {
     const engine = new Engine({
       userDataDir: dir,
       settings: { mode: "paper", baseUsd: "1.00", maxSteps: 6, timeframe: "15m" },
+      live: stubLive(),
       market: fakeMarket(bars.slice(0, 219)),
     });
     await engine.start();
@@ -273,6 +297,7 @@ async function run() {
     const first = new Engine({
       userDataDir: dir,
       settings: { mode: "paper", baseUsd: "1.00", maxSteps: 6, timeframe: "15m" },
+      live: stubLive(),
       market: fakeMarket(bars.slice(0, 219)),
     });
     await first.start();
@@ -281,6 +306,7 @@ async function run() {
     const restored = new Engine({
       userDataDir: dir,
       settings: { mode: "paper", baseUsd: "1.00", maxSteps: 6, timeframe: "15m" },
+      live: stubLive(),
       market: fakeMarket(bars.slice(0, 220)),
     });
     assert(restored.paper.openBet, "restore open paper bet");
@@ -342,6 +368,7 @@ async function run() {
     const engine = new Engine({
       userDataDir: dir,
       settings: { mode: "paper", baseUsd: "1.00", maxSteps: 6, timeframe: "15m" },
+      live: stubLive(),
       market: fakeMarket(bars.slice(0, 219)),
     });
     assert(engine.strategyId === "sma200_20", "default SMA200/20");
@@ -366,6 +393,7 @@ async function run() {
     const engine = new Engine({
       userDataDir: dir,
       settings: { mode: "paper", baseUsd: "1.00", maxSteps: 6, timeframe: "15m", minCrossTicks: 0 },
+      live: stubLive(),
       market: fakeMarket(bars.slice(0, 220)),
     });
     engine.tickSize = 0.01;
@@ -385,6 +413,7 @@ async function run() {
     const engine = new Engine({
       userDataDir: dir,
       settings: { mode: "paper", baseUsd: "1.00", maxSteps: 6, timeframe: "15m" },
+      live: stubLive(),
       market: fakeMarket(bars.slice(0, 219)),
     });
     await engine.setMode("auto");
@@ -421,6 +450,7 @@ async function run() {
     const engine = new Engine({
       userDataDir: dir,
       settings: { mode: "paper", baseUsd: "1.00", maxSteps: 6, timeframe: "15m" },
+      live: stubLive(),
       market: fakeMarket(bars.slice(0, 219)),
     });
     const notes = [];
@@ -449,6 +479,7 @@ async function run() {
     const engine = new Engine({
       userDataDir: dir,
       settings: { mode: "paper", baseUsd: "1.00", maxSteps: 2, timeframe: "15m" },
+      live: stubLive(),
       market: fakeMarket(bars.slice(0, 219)),
     });
     await engine.applySettings({ maxSteps: 2 });
@@ -481,6 +512,7 @@ async function run() {
     const engine = new Engine({
       userDataDir: dir,
       settings: { mode: "paper", baseUsd: "1.00", maxSteps: 6, timeframe: "15m", paperBalance: "1000.00" },
+      live: stubLive(),
       market: fakeMarket(bars.slice(0, 219)),
     });
     engine.paper.balance = require("./money").Decimal("800.00");

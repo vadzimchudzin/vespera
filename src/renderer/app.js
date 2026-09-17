@@ -369,7 +369,10 @@
         <p class="hint">${t("pingHint")}</p>
         <div class="field">
           <label>${t("api")}</label>
-          <input id="apiKey" type="password" placeholder="${t("apiPlaceholder")}" />
+          <div class="api-row">
+            <img class="api-mark" src="assets/polymarket.png" width="22" height="22" alt="Polymarket" />
+            <input id="apiKey" type="password" placeholder="${t("apiPlaceholder")}" autocomplete="off" />
+          </div>
         </div>
         <button class="ok" id="btnPing">${t("ping")}</button>
         <p class="hint" id="pingOut"></p>
@@ -380,9 +383,10 @@
         const res = await window.vespera.ping(key);
         const live = res.live || {};
         const ok = Boolean(live.ok);
+        const extra = live.slug ? ` · ${live.slug}` : "";
         $("pingOut").innerHTML = `<span class="ping-dot ${ok ? "ok" : "bad"}"></span>${
           ok ? t("reachable") : live.message === "missing_key" ? t("missingKey") : t("unreachable")
-        }${live.latencyMs ? " · " + live.latencyMs + "ms" : ""}`;
+        }${live.latencyMs ? " · " + live.latencyMs + "ms" : ""}${extra}`;
       };
       if (ping?.live) $("pingOut").textContent = ping.live.message || "";
     }

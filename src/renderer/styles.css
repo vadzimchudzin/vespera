@@ -925,3 +925,30 @@ html[data-theme="glass-light"] .ghost {
     height: auto;
   }
 }
+
+.api-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.api-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.api-row input {
+  flex: 1;
+}
+.api-mark {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  flex-shrink: 0;
+  display: block;
+  object-fit: cover;
+}
+.api-mark.lg {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+}

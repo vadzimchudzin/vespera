@@ -1,15 +1,15 @@
 {
   "name": "vespera",
   "productName": "Vespera",
-  "version": "0.8.5",
-  "description": "Vespera (VSP) — glass terminal for Preddy MA200/MA20. Paper first.",
+  "version": "0.8.6",
+  "description": "Vespera (VSP) — glass terminal for Polymarket MA200/MA20. Paper first.",
   "author": "VadimChudin",
   "license": "UNLICENSED",
   "private": true,
   "main": "src/main/main.js",
   "scripts": {
     "start": "electron .",
-    "test": "node src/main/strategy.test.js && node src/main/engine.test.js",
+    "test": "node src/main/strategy.test.js && node src/main/engine.test.js && node src/main/brokers/polymarket.test.js",
     "pack": "electron-builder --dir",
     "dist": "electron-builder --win --mac",
     "dist:win": "electron-builder --win nsis --publish never",

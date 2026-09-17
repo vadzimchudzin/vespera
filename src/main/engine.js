@@ -19,7 +19,7 @@ const STATUSES = [
 ];
 
 class Engine {
-  constructor({ userDataDir, settings, market } = {}) {
+  constructor({ userDataDir, settings, market, live } = {}) {
     this.userDataDir = userDataDir;
     this.settings = settings || {};
     this.running = false;
@@ -38,10 +38,18 @@ class Engine {
     if (restored.halted) this.risk.lotConfirmed = false;
     this.paper = createVenue("paper", { startingBalance: this.settings.paperBalance || "1000.00" });
     this._restorePaper();
-    this.live = createVenue("auto", {
-      apiKey: this.settings.apiKey || "",
-      baseUrl: this.settings.apiBase || "https://preddy.trade",
-    });
+    this.live =
+      live ||
+      createVenue("auto", {
+        apiKey: this.settings.apiKey || "",
+        apiSecret: this.settings.apiSecret || "",
+        apiPassphrase: this.settings.apiPassphrase || "",
+        walletAddress: this.settings.walletAddress || "",
+        symbol: this.settings.symbol || "BTCUSDT",
+        timeframe: this.settings.timeframe || "15m",
+        clobUrl: this.settings.clobUrl || "https://clob.polymarket.com",
+        gammaUrl: this.settings.gammaUrl || "https://gamma-api.polymarket.com",
+      });
     this.market =
       market ||
       new MarketData({
@@ -212,6 +220,16 @@ class Engine {
     const timeframe = next.timeframe || this.settings.timeframe || "15m";
     const marketChanged = symbol !== (this.settings.symbol || "BTCUSDT") || timeframe !== (this.settings.timeframe || "15m");
     this.settings = next;
+    if (typeof this.live.configure === "function") {
+      this.live.configure({
+        apiKey: next.apiKey,
+        apiSecret: next.apiSecret,
+        apiPassphrase: next.apiPassphrase,
+        walletAddress: next.walletAddress,
+        symbol,
+        timeframe,
+      });
+    }
     if (marketChanged && typeof this.market.configure === "function") {
       await this.market.configure({
         symbol,
@@ -355,7 +373,15 @@ class Engine {
 
   async pingApi(apiKey) {
     this.settings.apiKey = apiKey;
-    this.live.apiKey = apiKey;
+    if (typeof this.live.configure === "function") {
+      this.live.configure({
+        apiKey,
+        symbol: this.settings.symbol,
+        timeframe: this.settings.timeframe,
+      });
+    } else {
+      this.live.apiKey = apiKey;
+    }
     const paper = await this.paper.ping();
     const live = await this.live.ping();
     this.pingResult = { paper, live, at: Date.now() };
@@ -608,7 +634,7 @@ class Engine {
         ? this.market.bars[this.market.bars.length - 1].close
         : null;
     return {
-      version: "0.8.5",
+      version: "0.8.6",
       running: this.running,
       status: this.status,
       mode: this.mode,
@@ -627,6 +653,7 @@ class Engine {
         strategyId: this.strategyId,
         minOpeningAtr: Number(this.settings.minOpeningAtr || 0),
         minCrossTicks: Number(this.settings.minCrossTicks || 0),
+        venue: "polymarket",
         confirmCount: confirmCountOf(this.settings),
         fastPeriod: this._fastPeriod(),
         slowPeriod: this._slowPeriod(),
