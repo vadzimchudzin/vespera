@@ -3,13 +3,14 @@
 /**
  * MA pullback — checklist:
  * trend = slow SMA (default 200),
- * pullback bar body fully beyond fast SMA (wicks ignored),
- * then (confirmCount + 1) consecutive full-body candles of the needed
- * color beyond the fast SMA (open and close on that side; wicks ignored),
+ * S-1 body fully beyond fast SMA (wicks ignored),
+ * S: either close-through (fullBodyOnS off) or a full body of the
+ * needed color beyond the line (fullBodyOnS on),
+ * then confirmCount extra qualifying candles of the same side,
  * bet on the next candle. Forming candle never signals.
  *
- * confirmCount 0 = first full poke (v0.8.4).
- * confirmCount 1 = one more same-color full body, then enter, etc.
+ * confirmCount 0 = first poke. Fire only on the exact run length
+ * so a 3-bar run does not re-enter when confirms is 0 or 1.
  */
 
 function sma(values, period, index) {
@@ -54,14 +55,20 @@ function bodyBottom(bar) {
   return Math.min(bar.open, bar.close);
 }
 
-/** Entire candle body closed below MA. Wicks do not count. */
 function bodyBelow(bar, ma) {
   return bodyTop(bar) < ma;
 }
 
-/** Entire candle body closed above MA. Wicks do not count. */
 function bodyAbove(bar, ma) {
   return bodyBottom(bar) > ma;
+}
+
+function crossedUp(bar, ma) {
+  return bar.low <= ma && bar.close > ma;
+}
+
+function crossedDown(bar, ma) {
+  return bar.high >= ma && bar.close < ma;
 }
 
 function clampTicks(value) {
@@ -100,15 +107,32 @@ function confirmCountOf(options = {}) {
   return clampInt(options.confirmCount, 0, 0, 10);
 }
 
-function consecutiveFullRun(bars, index, side, fastPeriod, closes) {
+function truthy(value, fallback) {
+  if (value === false || value === 0 || value === "0" || value === "false") return false;
+  if (value === true || value === 1 || value === "1" || value === "true") return true;
+  return fallback;
+}
+
+/** Default off: close-through SMA (v0.8.3). On: full body of needed color (v0.8.4). */
+function fullBodyOnSOf(options = {}) {
+  return truthy(options.fullBodyOnS, false);
+}
+
+function signalBarOk(bar, ma, side, fullBody) {
+  if (side === "UP") {
+    if (!isGreen(bar)) return false;
+    return fullBody ? bodyAbove(bar, ma) : crossedUp(bar, ma);
+  }
+  if (!isRed(bar)) return false;
+  return fullBody ? bodyBelow(bar, ma) : crossedDown(bar, ma);
+}
+
+function consecutiveRun(bars, index, side, fastPeriod, closes, fullBody) {
   let n = 0;
   for (let i = index; i >= 0; i -= 1) {
     const ma = sma(closes, fastPeriod, i);
     if (ma == null) break;
-    const b = bars[i];
-    const ok =
-      side === "UP" ? isGreen(b) && bodyAbove(b, ma) : isRed(b) && bodyBelow(b, ma);
-    if (!ok) break;
+    if (!signalBarOk(bars[i], ma, side, fullBody)) break;
     n += 1;
   }
   return n;
@@ -121,6 +145,7 @@ function evaluateBar(bars, index, options = {}) {
   const fastPeriod = fastPeriodOf(options);
   const slowPeriod = slowPeriodOf(options);
   const confirmCount = confirmCountOf(options);
+  const fullBodyOnS = fullBodyOnSOf(options);
   const runLen = confirmCount + 1;
   const pullIndex = index - runLen;
 
@@ -142,31 +167,21 @@ function evaluateBar(bars, index, options = {}) {
 
   const pulledDown = bodyBelow(prev, ma20Prev);
   const pulledUp = bodyAbove(prev, ma20Prev);
-  const closedAbove = bodyAbove(bar, ma20);
-  const closedBelow = bodyBelow(bar, ma20);
+  const longBar = signalBarOk(bar, ma20, "UP", fullBodyOnS);
+  const shortBar = signalBarOk(bar, ma20, "DOWN", fullBodyOnS);
   const beyond = ticksBeyond(bar.close, ma20, tickSize);
   const tickLong = beyond >= minCrossTicks;
   const tickShort = beyond >= minCrossTicks;
-  const longRun = consecutiveFullRun(bars, index, "UP", fastPeriod, closes);
-  const shortRun = consecutiveFullRun(bars, index, "DOWN", fastPeriod, closes);
-  const longConfirmed = longRun >= runLen;
-  const shortConfirmed = shortRun >= runLen;
+  const longRun = consecutiveRun(bars, index, "UP", fastPeriod, closes, fullBodyOnS);
+  const shortRun = consecutiveRun(bars, index, "DOWN", fastPeriod, closes, fullBodyOnS);
+  const longConfirmed = longRun === runLen;
+  const shortConfirmed = shortRun === runLen;
 
   const longOk =
-    bar.close > ma200 &&
-    pulledDown &&
-    closedAbove &&
-    isGreen(bar) &&
-    longConfirmed &&
-    tickLong;
+    bar.close > ma200 && pulledDown && longBar && longConfirmed && tickLong;
 
   const shortOk =
-    bar.close < ma200 &&
-    pulledUp &&
-    closedBelow &&
-    isRed(bar) &&
-    shortConfirmed &&
-    tickShort;
+    bar.close < ma200 && pulledUp && shortBar && shortConfirmed && tickShort;
 
   if (longOk || shortOk) {
     if (minOpeningAtr > 0) {
@@ -192,6 +207,7 @@ function evaluateBar(bars, index, options = {}) {
       confirmCount,
       fastPeriod,
       slowPeriod,
+      fullBodyOnS,
     };
   }
   if (bar.close === ma200) {
@@ -203,28 +219,22 @@ function evaluateBar(bars, index, options = {}) {
   if (bar.close < ma200 && !pulledUp) {
     return { signal: null, reason: "no_pullback_up", ma20, ma200 };
   }
-  if (bar.close > ma200 && !closedAbove) {
+  if (bar.close > ma200 && !longBar) {
     return { signal: null, reason: "no_ma20_cross_up", ma20, ma200 };
   }
-  if (bar.close < ma200 && !closedBelow) {
+  if (bar.close < ma200 && !shortBar) {
     return { signal: null, reason: "no_ma20_cross_down", ma20, ma200 };
   }
-  if (bar.close > ma200 && closedAbove && !isGreen(bar)) {
-    return { signal: null, reason: "cross_but_not_green", ma20, ma200 };
-  }
-  if (bar.close < ma200 && closedBelow && !isRed(bar)) {
-    return { signal: null, reason: "cross_but_not_red", ma20, ma200 };
-  }
-  if (bar.close > ma200 && closedAbove && !longConfirmed) {
+  if (bar.close > ma200 && longBar && !longConfirmed) {
     return { signal: null, reason: "need_more_confirms", ma20, ma200 };
   }
-  if (bar.close < ma200 && closedBelow && !shortConfirmed) {
+  if (bar.close < ma200 && shortBar && !shortConfirmed) {
     return { signal: null, reason: "need_more_confirms", ma20, ma200 };
   }
-  if (bar.close > ma200 && closedAbove && !tickLong) {
+  if (bar.close > ma200 && longBar && !tickLong) {
     return { signal: null, reason: "cross_too_shallow", ma20, ma200 };
   }
-  if (bar.close < ma200 && closedBelow && !tickShort) {
+  if (bar.close < ma200 && shortBar && !tickShort) {
     return { signal: null, reason: "cross_too_shallow", ma20, ma200 };
   }
   return { signal: null, reason: "no_setup", ma20, ma200 };
@@ -238,10 +248,13 @@ module.exports = {
   bodyBottom,
   bodyBelow,
   bodyAbove,
+  crossedUp,
+  crossedDown,
   clampTicks,
   tickSizeOf,
   ticksBeyond,
   fastPeriodOf,
   slowPeriodOf,
   confirmCountOf,
+  fullBodyOnSOf,
 };

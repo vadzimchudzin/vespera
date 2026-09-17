@@ -7,7 +7,7 @@ const { INTERVAL_MS, SYMBOLS, TIMEFRAMES, HISTORY_BARS, clampRefreshMs, symbolLa
 const { createVenue } = require("./brokers");
 const { Journal } = require("./journal");
 const { Decimal } = require("./money");
-const { fastPeriodOf, slowPeriodOf, confirmCountOf } = require("./strategy");
+const { fastPeriodOf, slowPeriodOf, confirmCountOf, fullBodyOnSOf } = require("./strategy");
 
 const STATUSES = [
   "stopped",
@@ -202,6 +202,9 @@ class Engine {
     if (patch.confirmCount != null) {
       next.confirmCount = confirmCountOf({ confirmCount: patch.confirmCount });
     }
+    if (patch.fullBodyOnS != null) {
+      next.fullBodyOnS = fullBodyOnSOf({ fullBodyOnS: patch.fullBodyOnS });
+    }
     if (patch.fastPeriod != null || patch.slowPeriod != null) {
       next.fastPeriod = fastPeriodOf(next);
       next.slowPeriod = slowPeriodOf(next);
@@ -246,6 +249,7 @@ class Engine {
       patch.minOpeningAtr != null ||
       patch.minCrossTicks != null ||
       patch.confirmCount != null ||
+      patch.fullBodyOnS != null ||
       patch.fastPeriod != null ||
       patch.slowPeriod != null
     ) {
@@ -371,16 +375,23 @@ class Engine {
     this.emit("notify", { kind, title, body, at: Date.now() });
   }
 
-  async pingApi(apiKey) {
-    this.settings.apiKey = apiKey;
+  async pingApi(creds = {}) {
+    const patch = typeof creds === "string" ? { apiKey: creds } : creds || {};
+    if (patch.apiKey != null) this.settings.apiKey = patch.apiKey;
+    if (patch.apiSecret != null) this.settings.apiSecret = patch.apiSecret;
+    if (patch.apiPassphrase != null) this.settings.apiPassphrase = patch.apiPassphrase;
+    if (patch.walletAddress != null) this.settings.walletAddress = patch.walletAddress;
     if (typeof this.live.configure === "function") {
       this.live.configure({
-        apiKey,
+        apiKey: this.settings.apiKey,
+        apiSecret: this.settings.apiSecret,
+        apiPassphrase: this.settings.apiPassphrase,
+        walletAddress: this.settings.walletAddress,
         symbol: this.settings.symbol,
         timeframe: this.settings.timeframe,
       });
-    } else {
-      this.live.apiKey = apiKey;
+    } else if (patch.apiKey != null) {
+      this.live.apiKey = patch.apiKey;
     }
     const paper = await this.paper.ping();
     const live = await this.live.ping();
@@ -457,6 +468,7 @@ class Engine {
       confirmCount: confirmCountOf(this.settings),
       fastPeriod: this._fastPeriod(),
       slowPeriod: this._slowPeriod(),
+      fullBodyOnS: fullBodyOnSOf(this.settings),
     };
   }
 
@@ -634,7 +646,7 @@ class Engine {
         ? this.market.bars[this.market.bars.length - 1].close
         : null;
     return {
-      version: "0.8.7",
+      version: "0.8.8",
       running: this.running,
       status: this.status,
       mode: this.mode,
@@ -657,6 +669,9 @@ class Engine {
         confirmCount: confirmCountOf(this.settings),
         fastPeriod: this._fastPeriod(),
         slowPeriod: this._slowPeriod(),
+        fullBodyOnS: fullBodyOnSOf(this.settings),
+        apiKey: this.settings.apiKey ? "set" : "",
+        walletAddress: this.settings.walletAddress || "",
         refreshMs: clampRefreshMs(this.settings.refreshMs || 100),
         notificationsEnabled: this.notificationsEnabled !== false,
         paperBalance: this.settings.paperBalance || "1000.00",

@@ -126,6 +126,32 @@ async function adapterCases() {
   const viaFactory = createVenue("auto", { client });
   const p2 = await viaFactory.ping();
   assert(p2.venue === "polymarket", "factory auto is polymarket");
+
+  const l2client = {
+    async time() {
+      return { ok: true, status: 200, latencyMs: 4, json: 1 };
+    },
+    async eventBySlug() {
+      return client.eventBySlug();
+    },
+    async balanceAllowance() {
+      return { ok: true, status: 200, json: { balance: "12500000" } };
+    },
+  };
+  const wired = new PolymarketAdapter({
+    client: l2client,
+    apiKey: "k",
+    apiSecret: "s",
+    apiPassphrase: "p",
+    walletAddress: "0xabc",
+    symbol: "BTCUSDT",
+    timeframe: "15m",
+  });
+  assert(wired.hasL2() === true, "L2 complete");
+  const pingL2 = await wired.ping();
+  assert(pingL2.l2 && pingL2.l2.ok === true, "L2 ping");
+  const usd = await wired.getBalance();
+  assert(usd === "12.50", `pUSD from wei got ${usd}`);
 }
 
 adapterCases()

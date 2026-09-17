@@ -2,6 +2,12 @@
 
 All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 
+## 0.8.8 — 2026-09-17
+
+- **Full body on S** toggle in Settings. Off (default) = close through SMA20, more arrows (v0.8.3). On = entire body of the needed color beyond the line (v0.8.4). Pullback on S-1 stays body-only either way.
+- Confirms fire only on the **exact** run length, so a 2-bar run does not re-enter when confirms is 0.
+- API panel: CLOB `apiKey`, `secret`, `passphrase`, wallet address. OK pings CLOB, resolves the current Up/Down round, and with full L2 checks collateral. Live `marketBuy` still waits for an EIP-712 signer.
+
 ## 0.8.7 — 2026-09-17
 
 - Polymarket mark next to the API field is the official round **P** with a light aura.

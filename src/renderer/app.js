@@ -311,6 +311,7 @@
         patch.minCrossTicks != null ||
         patch.minOpeningAtr != null ||
         patch.confirmCount != null ||
+        patch.fullBodyOnS != null ||
         patch.fastPeriod != null ||
         patch.slowPeriod != null
       ) {
@@ -376,21 +377,41 @@
             <input id="apiKey" type="password" placeholder="${t("apiPlaceholder")}" autocomplete="off" />
           </div>
         </div>
+        <div class="field">
+          <label>${t("apiSecret")}</label>
+          <input id="apiSecret" type="password" placeholder="${t("apiSecretPlaceholder")}" autocomplete="off" />
+        </div>
+        <div class="field">
+          <label>${t("apiPassphrase")}</label>
+          <input id="apiPassphrase" type="password" placeholder="${t("apiPassphrasePlaceholder")}" autocomplete="off" />
+        </div>
+        <div class="field">
+          <label>${t("walletAddress")}</label>
+          <input id="walletAddress" type="text" placeholder="${t("walletPlaceholder")}" autocomplete="off" />
+        </div>
         <button class="ok" id="btnPing">${t("ping")}</button>
         <p class="hint" id="pingOut"></p>
         <p class="hint">${t("autoBlocked")}</p>
       `;
+      const sApi = state.snapshot?.settings || {};
+      if (sApi.walletAddress) $("walletAddress").value = sApi.walletAddress;
       $("btnPing").onclick = async () => {
-        const key = $("apiKey").value.trim();
-        const res = await window.vespera.ping(key);
+        const creds = {
+          apiKey: $("apiKey").value.trim(),
+          apiSecret: $("apiSecret").value.trim(),
+          apiPassphrase: $("apiPassphrase").value.trim(),
+          walletAddress: $("walletAddress").value.trim(),
+        };
+        const res = await window.vespera.ping(creds);
         const live = res.live || {};
         const ok = Boolean(live.ok);
         const extra = live.slug ? ` · ${live.slug}` : "";
+        const l2 = live.hasSigner ? (live.l2 && live.l2.ok ? " · L2 ok" : " · L2 fail") : "";
         $("pingOut").innerHTML = `<span class="ping-dot ${ok ? "ok" : "bad"}"></span>${
           ok ? t("reachable") : live.message === "missing_key" ? t("missingKey") : t("unreachable")
-        }${live.latencyMs ? " · " + live.latencyMs + "ms" : ""}${extra}`;
+        }${live.latencyMs ? " · " + live.latencyMs + "ms" : ""}${extra}${l2}`;
       };
-      if (ping?.live) $("pingOut").textContent = ping.live.message || "";
+      if (ping?.live) $("pingOut").textContent = ping.live.message || ping.live.slug || "";
     }
 
     if (kind === "theme") {
@@ -481,6 +502,12 @@
           </div>
         </div>
         <div class="field toggle-row">
+          <span class="field-label">${t("fullBodyOnS")}${helpBtn("fullBodyOnSHint")}</span>
+          <button type="button" class="toggle ${s.fullBodyOnS ? "on" : ""}" id="fullBodyToggle" aria-pressed="${Boolean(s.fullBodyOnS)}">
+            <span class="knob"></span>
+          </button>
+        </div>
+        <div class="field toggle-row">
           <span class="field-label">${t("notify")}${helpBtn("notifyHint")}</span>
           <button type="button" class="toggle ${s.notificationsEnabled !== false ? "on" : ""}" id="notifyToggle" aria-pressed="${s.notificationsEnabled !== false}">
             <span class="knob"></span>
@@ -569,6 +596,13 @@
         if (window.VesperaChart && window.VesperaChart.setRefreshMs) window.VesperaChart.setRefreshMs(ms);
         debounceSave({ refreshMs: ms });
       };
+      const fullBodyBtn = $("fullBodyToggle");
+      fullBodyBtn.onclick = async () => {
+        const on = !fullBodyBtn.classList.contains("on");
+        fullBodyBtn.classList.toggle("on", on);
+        fullBodyBtn.setAttribute("aria-pressed", String(on));
+        debounceSave({ fullBodyOnS: on });
+      };
       const notifyBtn = $("notifyToggle");
       notifyBtn.onclick = async () => {
         const on = !notifyBtn.classList.contains("on");
@@ -588,6 +622,7 @@
         const slowEl = $("slowPeriod");
         const refreshEl = $("refresh");
         const notifyEl = $("notifyToggle");
+        const fullBodyEl = $("fullBodyToggle");
         const patch = {
           maxSteps: Number(stepsEl && stepsEl.value) || 6,
           baseUsd: baseEl ? baseEl.value : s.baseUsd || "1.00",
@@ -596,6 +631,7 @@
           confirmCount: confirmsEl ? Number(confirmsEl.value) : 0,
           fastPeriod: fastEl ? Number(fastEl.value) : 20,
           slowPeriod: slowEl ? Number(slowEl.value) : 200,
+          fullBodyOnS: fullBodyEl ? fullBodyEl.classList.contains("on") : false,
           refreshMs: refreshEl ? Number(refreshEl.value) : 100,
           notificationsEnabled: notifyEl ? notifyEl.classList.contains("on") : true,
         };

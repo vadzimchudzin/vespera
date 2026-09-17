@@ -41,7 +41,7 @@ function paintLong(bars, i) {
     20,
     i
   );
-  bars[i] = bar(ma20 + 1, ma20 + 3, ma20 + 0.5, ma20 + 2, { openTs: bars[i].openTs });
+  bars[i] = bar(ma20 - 2, ma20 + 3, ma20 - 4, ma20 + 2, { openTs: bars[i].openTs });
 }
 
 function paintShort(bars, i) {
@@ -58,7 +58,7 @@ function paintShort(bars, i) {
     20,
     i
   );
-  bars[i] = bar(ma20 - 1, ma20 - 0.5, ma20 - 3, ma20 - 2, { openTs: bars[i].openTs });
+  bars[i] = bar(ma20 + 2, ma20 + 4, ma20 - 3, ma20 - 2, { openTs: bars[i].openTs });
 }
 
 {
@@ -162,9 +162,11 @@ function paintShort(bars, i) {
     i
   );
   bars[i] = bar(ma20 - 2, ma20 + 3, ma20 - 4, ma20 + 2, { openTs: bars[i].openTs });
-  const ev = evaluateBar(bars, i);
-  assert(ev.signal === null, `straddling green must not fire got ${ev.signal} ${ev.reason}`);
-  assert(ev.reason === "no_ma20_cross_up", ev.reason);
+  const ev = evaluateBar(bars, i); // default: close-through
+  assert(ev.signal === "UP", `straddling green must fire when fullBodyOnS is off got ${ev.signal} ${ev.reason}`);
+  const strict = evaluateBar(bars, i, { fullBodyOnS: true });
+  assert(strict.signal === null, `straddling green must not fire when fullBodyOnS is on got ${strict.signal} ${strict.reason}`);
+  assert(strict.reason === "no_ma20_cross_up", strict.reason);
 }
 
 {
@@ -185,8 +187,10 @@ function paintShort(bars, i) {
   );
   bars[i] = bar(ma20 + 2, ma20 + 4, ma20 - 3, ma20 - 2, { openTs: bars[i].openTs });
   const ev = evaluateBar(bars, i);
-  assert(ev.signal === null, `straddling red must not fire got ${ev.signal} ${ev.reason}`);
-  assert(ev.reason === "no_ma20_cross_down", ev.reason);
+  assert(ev.signal === "DOWN", `straddling red must fire when fullBodyOnS is off got ${ev.signal} ${ev.reason}`);
+  const strict = evaluateBar(bars, i, { fullBodyOnS: true });
+  assert(strict.signal === null, `straddling red must not fire when fullBodyOnS is on got ${strict.signal} ${strict.reason}`);
+  assert(strict.reason === "no_ma20_cross_down", strict.reason);
 }
 
 function paintLongRun(bars, i, extra = 0, fastPeriod = 20) {
@@ -206,7 +210,7 @@ function paintLongRun(bars, i, extra = 0, fastPeriod = 20) {
       fastPeriod,
       k
     );
-    bars[k] = bar(ma + 1, ma + 3, ma + 0.5, ma + 2, { openTs: bars[k].openTs });
+    bars[k] = bar(ma - 1, ma + 3, ma - 2, ma + 2, { openTs: bars[k].openTs });
   }
 }
 
@@ -226,7 +230,7 @@ function paintLongRun(bars, i, extra = 0, fastPeriod = 20) {
     20,
     i
   );
-  bars[i] = bar(ma + 1, ma + 3, ma + 0.5, ma + 2, { openTs: bars[i].openTs });
+  bars[i] = bar(ma - 2, ma + 3, ma - 4, ma + 2, { openTs: bars[i].openTs });
   const waiting = evaluateBar(bars, i, { confirmCount: 1 });
   assert(waiting.signal === null, `one poke must wait when confirm is 1 got ${waiting.signal} ${waiting.reason}`);
   assert(waiting.reason === "need_more_confirms", waiting.reason);
@@ -239,7 +243,9 @@ function paintLongRun(bars, i, extra = 0, fastPeriod = 20) {
   const ready = evaluateBar(bars, i, { confirmCount: 1 });
   assert(ready.signal === "UP", `two full greens must fire at confirm 1 got ${ready.signal} ${ready.reason}`);
   const stillZero = evaluateBar(bars, i, { confirmCount: 0 });
-  assert(stillZero.signal === null, "third-in-a-row should not re-fire at confirm 0 without pullback on S-1");
+  assert(stillZero.signal === null, "2-bar run must not fire at confirm 0 (exact run length)");
+  const tooMany = evaluateBar(bars, i, { confirmCount: 2 });
+  assert(tooMany.signal === null, "2-bar run must not fire at confirm 2");
 }
 
 {
@@ -263,7 +269,7 @@ function paintLongTicks(bars, i, nTicks, tickSize) {
   for (let k = i - 19; k < i; k += 1) sum19 += bars[k].close;
   const close = (nTicks * tickSize * 20 + sum19) / 19;
   const ma20 = (sum19 + close) / 20;
-  bars[i] = bar(ma20 + tickSize, close + tickSize, ma20 + tickSize * 0.5, close, {
+  bars[i] = bar(ma20 - nTicks * tickSize, close + tickSize, ma20 - nTicks * tickSize, close, {
     openTs: bars[i].openTs,
   });
 }

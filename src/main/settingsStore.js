@@ -25,6 +25,7 @@ const DEFAULTS = {
   minOpeningAtr: 0,
   minCrossTicks: 0,
   confirmCount: 0,
+  fullBodyOnS: false,
   fastPeriod: 20,
   slowPeriod: 200,
   refreshMs: 100,

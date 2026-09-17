@@ -101,9 +101,15 @@ ipcMain.handle("engine:confirmLot", (_e, baseUsd) => {
   engine.confirmLot(baseUsd);
   return engine.snapshot();
 });
-ipcMain.handle("engine:ping", (_e, apiKey) => {
-  store.save({ apiKey });
-  return engine.pingApi(apiKey);
+ipcMain.handle("engine:ping", (_e, creds) => {
+  const patch = typeof creds === "string" ? { apiKey: creds } : creds || {};
+  store.save({
+    apiKey: patch.apiKey,
+    apiSecret: patch.apiSecret,
+    apiPassphrase: patch.apiPassphrase,
+    walletAddress: patch.walletAddress,
+  });
+  return engine.pingApi(patch);
 });
 ipcMain.handle("engine:setStrategy", (_e, id) => {
   const result = engine.setStrategy(id);

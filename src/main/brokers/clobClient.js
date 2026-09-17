@@ -1,6 +1,7 @@
 "use strict";
 
 const https = require("https");
+const crypto = require("crypto");
 const { URL } = require("url");
 
 const DEFAULT_CLOB = "https://clob.polymarket.com";
@@ -20,7 +21,7 @@ function requestJson(url, { method = "GET", headers = {}, body, timeoutMs = 8000
         method,
         headers: {
           Accept: "application/json",
-          "User-Agent": "Vespera/0.8.6",
+          "User-Agent": "Vespera/0.8.8",
           ...(payload ? { "Content-Type": "application/json", "Content-Length": payload.length } : {}),
           ...headers,
         },
@@ -57,11 +58,50 @@ function requestJson(url, { method = "GET", headers = {}, body, timeoutMs = 8000
   });
 }
 
+function l2Headers({ address, apiKey, secret, passphrase, method, path, body }) {
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const payload = body == null ? "" : typeof body === "string" ? body : JSON.stringify(body);
+  const message = `${timestamp}${String(method || "GET").toUpperCase()}${path}${payload}`;
+  let key;
+  try {
+    key = Buffer.from(String(secret), "base64");
+  } catch {
+    key = Buffer.from(String(secret));
+  }
+  const signature = crypto.createHmac("sha256", key).update(message).digest("base64url");
+  const padded = signature.length % 4 === 0 ? signature : signature + "=".repeat(4 - (signature.length % 4));
+  return {
+    POLY_ADDRESS: address,
+    POLY_SIGNATURE: padded,
+    POLY_TIMESTAMP: timestamp,
+    POLY_API_KEY: apiKey,
+    POLY_PASSPHRASE: passphrase,
+  };
+}
+
 class ClobClient {
   constructor(options = {}) {
     this.clobUrl = String(options.clobUrl || DEFAULT_CLOB).replace(/\/$/, "");
     this.gammaUrl = String(options.gammaUrl || DEFAULT_GAMMA).replace(/\/$/, "");
     this.request = options.request || requestJson;
+    this.apiKey = options.apiKey || "";
+    this.apiSecret = options.apiSecret || "";
+    this.apiPassphrase = options.apiPassphrase || "";
+    this.walletAddress = options.walletAddress || "";
+  }
+
+  configure(patch = {}) {
+    if (patch.apiKey != null) this.apiKey = patch.apiKey;
+    if (patch.apiSecret != null) this.apiSecret = patch.apiSecret;
+    if (patch.apiPassphrase != null) this.apiPassphrase = patch.apiPassphrase;
+    if (patch.walletAddress != null) this.walletAddress = patch.walletAddress;
+    if (patch.clobUrl != null) this.clobUrl = String(patch.clobUrl).replace(/\/$/, "");
+    if (patch.gammaUrl != null) this.gammaUrl = String(patch.gammaUrl).replace(/\/$/, "");
+    return this;
+  }
+
+  hasL2() {
+    return Boolean(this.apiKey && this.apiSecret && this.apiPassphrase && this.walletAddress);
   }
 
   async time() {
@@ -79,11 +119,31 @@ class ClobClient {
   async marketBySlug(slug) {
     return this.request(`${this.gammaUrl}/markets/slug/${encodeURIComponent(slug)}`);
   }
+
+  async authGet(path) {
+    if (!this.hasL2()) {
+      return { ok: false, status: 0, latencyMs: 0, json: null, raw: "missing_l2" };
+    }
+    const headers = l2Headers({
+      address: this.walletAddress,
+      apiKey: this.apiKey,
+      secret: this.apiSecret,
+      passphrase: this.apiPassphrase,
+      method: "GET",
+      path,
+    });
+    return this.request(`${this.clobUrl}${path}`, { method: "GET", headers });
+  }
+
+  async balanceAllowance() {
+    return this.authGet("/balance-allowance?asset_type=COLLATERAL");
+  }
 }
 
 module.exports = {
   ClobClient,
   requestJson,
+  l2Headers,
   DEFAULT_CLOB,
   DEFAULT_GAMMA,
 };
