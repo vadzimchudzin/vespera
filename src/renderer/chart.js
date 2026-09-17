@@ -322,6 +322,8 @@
       fastPeriod = nextFast;
       slowPeriod = nextSlow;
       lastClosedHash = "";
+      seeded = false;
+      lastMarkerKey = "";
     }
     applyTheme();
     const closed = (snap.bars || []).map(toCandle).filter(Boolean);
@@ -355,6 +357,7 @@
       lastBarIndex = candles.length - 1;
       if (forming) candleSeries.update(forming);
       if (followLive) centerLive();
+      lastMarkerKey = "";
     } else if (forming) {
       pendingForming = snap.forming;
       if (!raf) raf = requestAnimationFrame(paintPending);

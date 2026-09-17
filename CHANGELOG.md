@@ -2,6 +2,11 @@
 
 All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 
+## 0.8.7 — 2026-09-17
+
+- Polymarket mark next to the API field is the official round **P** with a light aura.
+- Chart no longer wipes arrows on first load or when SMA periods change. Confirm / min-cross / SMA sliders still replay markers live.
+
 ## 0.8.6 — 2026-09-17
 
 - Auto venue is **Polymarket CLOB** (`clob.polymarket.com`). **OK** pings `/time`. Gamma resolves the current crypto Up/Down round (`btc-updown-15m-{utcStart}` → Up/Down token IDs). Live `marketBuy` still `auto_not_wired` until an L1/L2 signer exists.

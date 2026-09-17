@@ -940,15 +940,11 @@ html[data-theme="glass-light"] .ghost {
   flex: 1;
 }
 .api-mark {
-  width: 18px;
-  height: 18px;
-  border-radius: 5px;
-  flex-shrink: 0;
-  display: block;
-  object-fit: cover;
-}
-.api-mark.lg {
   width: 22px;
   height: 22px;
-  border-radius: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: block;
+  object-fit: contain;
+  background: transparent;
 }

@@ -405,6 +405,15 @@ async function run() {
     assert(engine.snapshot().markers.length === 0, "min-cross slider must drop arrows");
     await engine.applySettings({ minCrossTicks: 0 });
     assert(engine.snapshot().markers.length === before, "0 ticks restores arrows");
+    await engine.applySettings({ confirmCount: 8 });
+    assert(engine.snapshot().markers.length === 0, "high confirms must drop arrows");
+    await engine.applySettings({ confirmCount: 0 });
+    assert(engine.snapshot().markers.length === before, "confirm 0 restores arrows");
+    await engine.applySettings({ fastPeriod: 10, slowPeriod: 50 });
+    assert(engine.snapshot().settings.fastPeriod === 10, "fast SMA saved");
+    assert(engine.snapshot().settings.slowPeriod === 50, "slow SMA saved");
+    await engine.applySettings({ fastPeriod: 20, slowPeriod: 200 });
+    assert(engine.snapshot().markers.length === before, "default SMA periods restore arrows");
   }
 
   {

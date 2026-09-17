@@ -2,7 +2,7 @@
 
 Glass desktop terminal for BTC 15m Polymarket Up/Down.
 
-**v0.8.6 is Paper.** SMA200/20 on a **closed** candle `S`, bet on **S+1**. Arrow sits on the entry candle. No live money. Auto pings the Polymarket CLOB; orders wait for an L1/L2 signer.
+**v0.8.7 is Paper.** SMA200/20 on a **closed** candle `S`, bet on **S+1**. Arrow sits on the entry candle. No live money. Auto pings the Polymarket CLOB; orders wait for an L1/L2 signer.
 
 Repo: private [`VadimChudin/vespera`](https://github.com/VadimChudin/vespera)
 

@@ -164,7 +164,9 @@
       b.classList.toggle("on", b.dataset.mode === snap.mode);
     });
     if (snap.pairLabel && snap.pairLabel !== state.pairLabel) {
-      if (window.VesperaChart && window.VesperaChart.reset) window.VesperaChart.reset();
+      if (state.pairLabel && window.VesperaChart && window.VesperaChart.reset) {
+        window.VesperaChart.reset();
+      }
       state.pairLabel = snap.pairLabel;
     }
     renderStrategies(snap);
