@@ -31,7 +31,7 @@ class Engine {
       baseUsd: this.settings.baseUsd || "1.00",
       maxSteps: this.settings.maxSteps || 6,
     });
-    const restored = this.journal.restoreRisk();
+    const restored = this.journal.restoreRisk(this.risk.maxSteps);
     this.risk.step = restored.step;
     this.risk.consecutiveLosses = restored.consecutiveLosses;
     this.risk.halted = restored.halted;
@@ -217,7 +217,8 @@ class Engine {
       this.notificationsEnabled = next.notificationsEnabled;
     }
     if (patch.baseUsd != null) {
-      this.settings.baseUsd = Decimal(patch.baseUsd).toFixed(2);
+      next.baseUsd = Decimal(patch.baseUsd).toFixed(2);
+      this.risk.baseUsd = Decimal(next.baseUsd);
     }
     const symbol = next.symbol || this.settings.symbol || "BTCUSDT";
     const timeframe = next.timeframe || this.settings.timeframe || "15m";
@@ -377,9 +378,11 @@ class Engine {
 
   async pingApi(creds = {}) {
     const patch = typeof creds === "string" ? { apiKey: creds } : creds || {};
-    if (patch.apiKey != null) this.settings.apiKey = patch.apiKey;
-    if (patch.apiSecret != null) this.settings.apiSecret = patch.apiSecret;
-    if (patch.apiPassphrase != null) this.settings.apiPassphrase = patch.apiPassphrase;
+    // An empty field means "keep what is stored": the panel never re-sends a saved secret.
+    const keep = (value) => value != null && String(value) !== "";
+    if (keep(patch.apiKey)) this.settings.apiKey = patch.apiKey;
+    if (keep(patch.apiSecret)) this.settings.apiSecret = patch.apiSecret;
+    if (keep(patch.apiPassphrase)) this.settings.apiPassphrase = patch.apiPassphrase;
     if (patch.walletAddress != null) this.settings.walletAddress = patch.walletAddress;
     if (typeof this.live.configure === "function") {
       this.live.configure({
@@ -390,7 +393,7 @@ class Engine {
         symbol: this.settings.symbol,
         timeframe: this.settings.timeframe,
       });
-    } else if (patch.apiKey != null) {
+    } else if (keep(patch.apiKey)) {
       this.live.apiKey = patch.apiKey;
     }
     const paper = await this.paper.ping();
@@ -572,12 +575,12 @@ class Engine {
       closeTs: sClose + interval,
     };
     const clientOrderId = `${new Date(bar.openTs).toISOString().slice(0, 10)}-${this.settings.timeframe || "15m"}-${bar.openTs}-${ev.signal}-${this.risk.step}`;
-    this.markers.push({
+    const marker = {
       time: Math.floor(round.openTs / 1000),
       side: ev.signal,
       size,
       virtual: this.mode !== "auto",
-    });
+    };
     this.journal.write({
       type: "setup",
       reason: ev.reason,
@@ -596,6 +599,7 @@ class Engine {
       this.journal.write({ type: "auto_blocked", reason: "auto_not_wired" });
       this.emit("log", { level: "warn", message: "auto_not_wired" });
       this.status = "watching";
+      this.markers.push({ ...marker, virtual: true });
       this.emit("signal", { ...ev, paper: true, size });
       return null;
     }
@@ -608,6 +612,8 @@ class Engine {
         clientOrderId,
         round,
       });
+      // The arrow is drawn only for a bet that actually exists.
+      this.markers.push(marker);
       this.journal.write({ type: "order_sent", ...order });
       this.status = "waiting_settlement";
       this.emit("order", order);
@@ -646,7 +652,7 @@ class Engine {
         ? this.market.bars[this.market.bars.length - 1].close
         : null;
     return {
-      version: "0.8.8",
+      version: "0.8.9",
       running: this.running,
       status: this.status,
       mode: this.mode,
@@ -671,6 +677,9 @@ class Engine {
         slowPeriod: this._slowPeriod(),
         fullBodyOnS: fullBodyOnSOf(this.settings),
         apiKey: this.settings.apiKey ? "set" : "",
+        hasApiKey: Boolean(this.settings.apiKey),
+        hasApiSecret: Boolean(this.settings.apiSecret),
+        hasApiPassphrase: Boolean(this.settings.apiPassphrase),
         walletAddress: this.settings.walletAddress || "",
         refreshMs: clampRefreshMs(this.settings.refreshMs || 100),
         notificationsEnabled: this.notificationsEnabled !== false,

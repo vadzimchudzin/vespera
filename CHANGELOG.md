@@ -2,6 +2,18 @@
 
 All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 
+## 0.8.9 — 2026-09-21
+
+- API panel keeps stored credentials. `apiKey`, `secret` and `passphrase` are never sent back to the window; an empty field means "keep what is saved", so pressing **OK** after a restart no longer wipes the keys.
+- Credentials are encrypted at rest (Electron `safeStorage`, machine-bound AES-256-GCM fallback). Old plain configs are read once and re-encrypted. `settings.json` is written with 0600.
+- The **OK** lamp only turns green when the L2 credentials are actually accepted. Rejected keys report `l2_failed` instead of a green dot.
+- Journal rotates at 10 MB across 5 files and keeps at most 5000 entries in memory, so a long-running install no longer grows a single unbounded log.
+- Halt threshold follows the **max steps** setting after a restart. Before, the restore path always assumed 6 losses.
+- An arrow is drawn only for an order that actually happened. A rejected order (for example `insufficient_balance`) no longer leaves a phantom marker on the chart.
+- Base lot typed in Settings is normalised and applied to the running series.
+- **Full body on S** help text corrected: the two modes are different filters, not stricter/looser. Close-through needs the candle to touch the SMA, full body needs it entirely beyond the line — on fast timeframes the toggle can produce more arrows, not fewer.
+- New `persistence.test.js` suite covers rotation, halt restore, credential retention, encryption and marker/order consistency.
+
 ## 0.8.8 — 2026-09-17
 
 - **Full body on S** toggle in Settings. Off (default) = close through SMA20, more arrows (v0.8.3). On = entire body of the needed color beyond the line (v0.8.4). Pullback on S-1 stays body-only either way.

@@ -395,6 +395,12 @@
       `;
       const sApi = state.snapshot?.settings || {};
       if (sApi.walletAddress) $("walletAddress").value = sApi.walletAddress;
+      // Stored secrets are never sent back to the renderer. Show that they exist
+      // and keep them when the field is left empty.
+      const storedHint = t("secretStored");
+      if (sApi.hasApiKey) $("apiKey").placeholder = storedHint;
+      if (sApi.hasApiSecret) $("apiSecret").placeholder = storedHint;
+      if (sApi.hasApiPassphrase) $("apiPassphrase").placeholder = storedHint;
       $("btnPing").onclick = async () => {
         const creds = {
           apiKey: $("apiKey").value.trim(),
@@ -404,12 +410,23 @@
         };
         const res = await window.vespera.ping(creds);
         const live = res.live || {};
-        const ok = Boolean(live.ok);
+        const l2Failed = live.l2Ok === false;
+        const ok = Boolean(live.ok) && !l2Failed;
         const extra = live.slug ? ` · ${live.slug}` : "";
-        const l2 = live.hasSigner ? (live.l2 && live.l2.ok ? " · L2 ok" : " · L2 fail") : "";
+        const l2 = live.hasSigner ? (l2Failed ? ` · ${t("l2Fail")}` : ` · ${t("l2Ok")}`) : "";
         $("pingOut").innerHTML = `<span class="ping-dot ${ok ? "ok" : "bad"}"></span>${
-          ok ? t("reachable") : live.message === "missing_key" ? t("missingKey") : t("unreachable")
+          l2Failed
+            ? t("l2Rejected")
+            : live.ok
+              ? t("reachable")
+              : live.message === "missing_key"
+                ? t("missingKey")
+                : t("unreachable")
         }${live.latencyMs ? " · " + live.latencyMs + "ms" : ""}${extra}${l2}`;
+        if (res && res.live) {
+          const snap = await window.vespera.snapshot();
+          if (snap) state.snapshot = snap;
+        }
       };
       if (ping?.live) $("pingOut").textContent = ping.live.message || ping.live.slug || "";
     }

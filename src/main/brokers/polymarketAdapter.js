@@ -63,20 +63,24 @@ class PolymarketAdapter {
           l2 = { ok: false, message: String(err.message || err) };
         }
       }
+      const l2Ok = l2 ? Boolean(l2.ok) : null;
       return {
         ok: true,
         venue: "polymarket",
         latencyMs: time.latencyMs,
         status: time.status,
-        message: market.ok ? "reachable" : market.reason || "reachable",
+        message: l2Ok === false ? "l2_failed" : market.ok ? "reachable" : market.reason || "reachable",
         trading: false,
         hasKey: Boolean(this.apiKey),
         hasSigner: this.hasL2(),
+        l2Ok,
         slug: market.slug,
         market: market.ok ? market.round : null,
         l2,
         note: this.hasL2()
-          ? "CLOB L2 present. Live marketBuy waits for an EIP-712 signer."
+          ? l2Ok === false
+            ? "CLOB reachable, but these L2 credentials were rejected."
+            : "CLOB L2 present. Live marketBuy waits for an EIP-712 signer."
           : "CLOB ping is public. Paste apiKey, secret, passphrase and wallet to enable L2.",
       };
     } catch (err) {

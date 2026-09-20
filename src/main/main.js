@@ -103,12 +103,13 @@ ipcMain.handle("engine:confirmLot", (_e, baseUsd) => {
 });
 ipcMain.handle("engine:ping", (_e, creds) => {
   const patch = typeof creds === "string" ? { apiKey: creds } : creds || {};
-  store.save({
-    apiKey: patch.apiKey,
-    apiSecret: patch.apiSecret,
-    apiPassphrase: patch.apiPassphrase,
-    walletAddress: patch.walletAddress,
-  });
+  // Empty inputs keep whatever is already stored (the panel never shows a saved secret).
+  const save = {};
+  for (const key of ["apiKey", "apiSecret", "apiPassphrase"]) {
+    if (patch[key] != null && String(patch[key]) !== "") save[key] = patch[key];
+  }
+  if (patch.walletAddress != null) save.walletAddress = patch.walletAddress;
+  store.save(save);
   return engine.pingApi(patch);
 });
 ipcMain.handle("engine:setStrategy", (_e, id) => {
