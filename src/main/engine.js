@@ -7,7 +7,7 @@ const { INTERVAL_MS, SYMBOLS, TIMEFRAMES, HISTORY_BARS, clampRefreshMs, symbolLa
 const { createVenue } = require("./brokers");
 const { Journal } = require("./journal");
 const { Decimal } = require("./money");
-const { fastPeriodOf, slowPeriodOf, confirmCountOf, fullBodyOnSOf } = require("./strategy");
+const { fastPeriodOf, slowPeriodOf, confirmCountOf, fullBodyOnSOf, maTypeOf } = require("./strategy");
 
 const STATUSES = [
   "stopped",
@@ -61,6 +61,8 @@ class Engine {
     this.markers = [];
     this.lastEval = null;
     this.pingResult = null;
+    this.liveBet = null;
+    this.lastQuote = null;
     this.liveBalance = {
       ok: true,
       value: this.paper.balance.toFixed(2),
@@ -105,6 +107,34 @@ class Engine {
 
   broker() {
     return this.mode === "auto" ? this.live : this.paper;
+  }
+
+  /** The bet currently in flight, whichever venue placed it. */
+  openBet() {
+    return this.mode === "auto" ? this.liveBet : this.paper.openBet;
+  }
+
+  /**
+   * Live Polymarket quote for a side. Returns null when the venue cannot
+   * price the round (no network, unsupported timeframe, round already closed).
+   */
+  async _quoteFor(side, round) {
+    if (typeof this.live.getQuote !== "function") return null;
+    try {
+      const quote = await this.live.getQuote({
+        side,
+        tsMs: round && round.openTs ? round.openTs : Date.now(),
+      });
+      if (!quote || !quote.ok) {
+        this.emit("log", { level: "warn", message: `quote_unavailable: ${(quote && quote.reason) || "unknown"}` });
+        return null;
+      }
+      this.lastQuote = quote;
+      return quote;
+    } catch (err) {
+      this.emit("log", { level: "warn", message: `quote_error: ${String(err.message || err)}` });
+      return null;
+    }
   }
 
   on(fn) {
@@ -222,6 +252,9 @@ class Engine {
     if (patch.fullBodyOnS != null) {
       next.fullBodyOnS = fullBodyOnSOf({ fullBodyOnS: patch.fullBodyOnS });
     }
+    if (patch.maType != null) {
+      next.maType = maTypeOf({ maType: patch.maType });
+    }
     if (patch.fastPeriod != null || patch.slowPeriod != null) {
       next.fastPeriod = fastPeriodOf(next);
       next.slowPeriod = slowPeriodOf(next);
@@ -270,7 +303,8 @@ class Engine {
       patch.confirmCount != null ||
       patch.fullBodyOnS != null ||
       patch.fastPeriod != null ||
-      patch.slowPeriod != null
+      patch.slowPeriod != null ||
+      patch.maType != null
     ) {
       this._replayMarkers(true);
     }
@@ -321,7 +355,7 @@ class Engine {
     if (this.market.bars.length < this._slowPeriod()) {
       this.status = "warming_up";
     } else {
-      this.status = this.paper.openBet ? "waiting_settlement" : "watching";
+      this.status = this.openBet() ? "waiting_settlement" : "watching";
     }
     this.journal.write({ type: "start", mode: this.mode });
     this.emit("status", this.status);
@@ -329,7 +363,7 @@ class Engine {
 
   stop() {
     this.running = false;
-    this.status = this.paper.openBet ? "waiting_settlement" : "stopped";
+    this.status = this.openBet() ? "waiting_settlement" : "stopped";
     this.journal.write({ type: "stop" });
     this.emit("status", this.status);
   }
@@ -342,7 +376,7 @@ class Engine {
       }
       return this.snapshot();
     }
-    if (this.paper.openBet) {
+    if (this.openBet() || this.liveBet || this.paper.openBet) {
       this.emit("log", { level: "warn", message: "mode_blocked_open_bet" });
       return this.snapshot();
     }
@@ -498,6 +532,7 @@ class Engine {
       fastPeriod: this._fastPeriod(),
       slowPeriod: this._slowPeriod(),
       fullBodyOnS: fullBodyOnSOf(this.settings),
+      maType: maTypeOf(this.settings),
     };
   }
 
@@ -509,7 +544,57 @@ class Engine {
     return fallbackTick(id);
   }
 
+  /**
+   * Close out a live Polymarket bet when its round bar closes.
+   * Money settles on the venue; this keeps the series, journal and chart
+   * markers in sync and refreshes the real balance afterwards.
+   */
+  _settleLive(bar) {
+    const bet = this.liveBet;
+    if (!bet) return null;
+    if (bet.roundCloseTs && bar.closeTs && bar.closeTs < bet.roundCloseTs) return null;
+    const strike = Number(bet.strike);
+    const close = Number(bar.close);
+    const outcome = close > strike ? "UP" : close < strike ? "DOWN" : "FLAT";
+    const won = bet.side === outcome;
+    const size = Decimal(bet.sizeUsd);
+    const mult = Number(bet.payout) > 1 ? Number(bet.payout) : 2;
+    const pnl = won ? size.mul(mult).sub(size) : size.mul(-1);
+    const settled = {
+      ...bet,
+      mode: "auto",
+      status: won ? "win" : "loss",
+      outcome,
+      settleClose: close,
+      settledAt: Date.now(),
+      holdMs: Date.now() - bet.placedAt,
+      pnl: pnl.toFixed(2),
+    };
+    this.liveBet = null;
+    this.todayPnl = this.todayPnl.add(settled.pnl);
+    if (won) this.risk.onWin();
+    else this.risk.onLoss();
+    this.journal.write({ type: "settled", ...settled });
+    this._markResult(settled);
+    this.status = this.risk.halted ? "halt" : this.running ? "watching" : "stopped";
+    this.emit("settled", settled);
+    this.notify(
+      settled.status,
+      settled.status === "win" ? "Win" : "Loss",
+      `${settled.side} \u00b7 $${settled.pnl} \u00b7 live`
+    );
+    if (this.risk.halted) {
+      this.running = false;
+      this.journal.write({ type: "halt" });
+      this.emit("halt", this.risk.snapshot());
+      this.notify("halt", "Series halted", `${this.risk.maxSteps} losses \u2014 confirm lot`);
+    }
+    this.refreshLiveBalance().catch(() => {});
+    return settled;
+  }
+
   _settleIfOpen(bar) {
+    if (this.mode === "auto") return this._settleLive(bar);
     if (!this.paper.openBet) return null;
     const settled = this.paper.settle(bar);
     if (!settled) return null;
@@ -560,7 +645,7 @@ class Engine {
       this.emit("status", this.status);
       return;
     }
-    if (this.paper.openBet) return;
+    if (this.openBet()) return;
 
     const ev = this.strategy().evaluate(bars, index, this._evalOptions());
     this.lastEval = { ...ev, bar };
@@ -586,7 +671,7 @@ class Engine {
   }
 
   async _openFromSignal(ev, bar) {
-    if (this.paper.openBet) return null;
+    if (this.openBet()) return null;
     if (!this.risk.canOpen()) {
       this.status = this.risk.halted ? "halt" : "watching";
       this.emit("status", this.status);
@@ -619,7 +704,9 @@ class Engine {
       ma200: ev.ma200,
       signal: ev.signal,
     });
-    this.notify("setup", `${ev.signal} setup`, `SMA200/20 · $${size} · S+1`);
+    this.notify("setup", `${ev.signal} setup`, `${this.strategy().name} · $${size} · S+1`);
+
+    const quote = await this._quoteFor(ev.signal, round);
 
     if (this.mode === "auto") {
       // Live trading path — requires L2 + privateKey in the venue
@@ -640,11 +727,26 @@ class Engine {
         this.status = "order_sent";
         this.emit("status", this.status);
         const order = await this.live.marketBuy({
-          side: ev.signal === "UP" ? 0 : 1,
+          side: ev.signal,
           sizeUsd: size,
           clientOrderId,
           round,
         });
+        this.liveBet = {
+          clientOrderId,
+          side: ev.signal,
+          sizeUsd: size,
+          payout: order.payout || (quote && quote.payout) || null,
+          entryPrice: order.price || (quote && quote.price) || null,
+          shares: order.shares || null,
+          orderId: order.orderId || null,
+          slug: order.slug || (quote && quote.slug) || null,
+          strike: round.strike,
+          roundOpenTs: round.openTs,
+          roundCloseTs: round.closeTs,
+          placedAt: Date.now(),
+          status: "open",
+        };
         this.markers.push(marker);
         this.journal.write({ type: "order_sent", mode: "auto", ...order });
         this.status = "waiting_settlement";
@@ -671,6 +773,9 @@ class Engine {
         sizeUsd: size,
         clientOrderId,
         round,
+        payout: quote ? quote.payout : null,
+        price: quote ? quote.price : null,
+        quoteSource: quote ? "polymarket" : "fixed_2x",
       });
       this.markers.push(marker);
       this.journal.write({ type: "order_sent", ...order });
@@ -711,7 +816,7 @@ class Engine {
         ? this.market.bars[this.market.bars.length - 1].close
         : null;
     return {
-      version: "0.9.0",
+      version: "0.10.0",
       running: this.running,
       status: this.status,
       mode: this.mode,
@@ -735,6 +840,7 @@ class Engine {
         fastPeriod: this._fastPeriod(),
         slowPeriod: this._slowPeriod(),
         fullBodyOnS: fullBodyOnSOf(this.settings),
+        maType: maTypeOf(this.settings),
         apiKey: this.settings.apiKey ? "set" : "",
         hasApiKey: Boolean(this.settings.apiKey),
         hasApiSecret: Boolean(this.settings.apiSecret),
@@ -751,6 +857,8 @@ class Engine {
       risk: this.risk.snapshot(),
       paper: this.paper.snapshot(),
       liveBalance: this.liveBalance,
+      liveBet: this.liveBet,
+      quote: this.lastQuote,
       ping: this.pingResult,
       lastEval: this.lastEval,
       markers: this.markers.slice(-200),

@@ -389,6 +389,10 @@
           <label>${t("walletAddress")}</label>
           <input id="walletAddress" type="text" placeholder="${t("walletPlaceholder")}" autocomplete="off" />
         </div>
+        <div class="field">
+          <label>${t("privateKey")}</label>
+          <input id="privateKey" type="password" placeholder="${t("privateKeyPlaceholder")}" autocomplete="off" />
+        </div>
         <button class="ok" id="btnPing">${t("ping")}</button>
         <p class="hint" id="pingOut"></p>
         <p class="hint">${t("autoBlocked")}</p>
@@ -401,18 +405,28 @@
       if (sApi.hasApiKey) $("apiKey").placeholder = storedHint;
       if (sApi.hasApiSecret) $("apiSecret").placeholder = storedHint;
       if (sApi.hasApiPassphrase) $("apiPassphrase").placeholder = storedHint;
+      if (sApi.hasPrivKey) $("privateKey").placeholder = storedHint;
       $("btnPing").onclick = async () => {
         const creds = {
           apiKey: $("apiKey").value.trim(),
           apiSecret: $("apiSecret").value.trim(),
           apiPassphrase: $("apiPassphrase").value.trim(),
           walletAddress: $("walletAddress").value.trim(),
+          privateKey: $("privateKey").value.trim(),
         };
         const res = await window.vespera.ping(creds);
         const live = res.live || {};
         const l2Failed = live.l2Ok === false;
         const ok = Boolean(live.ok) && !l2Failed;
         const extra = live.slug ? ` · ${live.slug}` : "";
+        const q = live.quotes || {};
+        const fmt = (side) =>
+          q[side] ? `${side} ${q[side].price.toFixed(2)} → ×${q[side].payout.toFixed(2)}` : "";
+        const quoteLine = q.UP || q.DOWN
+          ? `<br/><span class="hint">${[fmt("UP"), fmt("DOWN")].filter(Boolean).join(" · ")}${
+              q.minOrderSize ? ` · min ${q.minOrderSize}` : ""
+            }</span>`
+          : "";
         const l2 = live.hasSigner ? (l2Failed ? ` · ${t("l2Fail")}` : ` · ${t("l2Ok")}`) : "";
         $("pingOut").innerHTML = `<span class="ping-dot ${ok ? "ok" : "bad"}"></span>${
           l2Failed
@@ -422,7 +436,7 @@
               : live.message === "missing_key"
                 ? t("missingKey")
                 : t("unreachable")
-        }${live.latencyMs ? " · " + live.latencyMs + "ms" : ""}${extra}${l2}`;
+        }${live.latencyMs ? " · " + live.latencyMs + "ms" : ""}${extra}${l2}${quoteLine}`;
         if (res && res.live) {
           const snap = await window.vespera.snapshot();
           if (snap) state.snapshot = snap;
@@ -495,6 +509,13 @@
           <div class="range-row">
             <input id="confirms" type="range" min="0" max="10" step="1" />
             <span class="range-val" id="confirmsVal">0</span>
+          </div>
+        </div>
+        <div class="field toggle-row">
+          <span class="field-label">${t("maType")}${helpBtn("maTypeHint")}</span>
+          <div class="seg seg-sm" id="maTypeSeg">
+            <button type="button" data-ma="SMA" class="${(s.maType || "SMA") === "SMA" ? "on" : ""}">SMA</button>
+            <button type="button" data-ma="EMA" class="${(s.maType || "SMA") === "EMA" ? "on" : ""}">EMA</button>
           </div>
         </div>
         <div class="field">
@@ -575,6 +596,10 @@
         paintConfirms();
         debounceSave({ confirmCount: Number($("confirms").value) });
       };
+      const currentMaType = () => {
+        const on = document.querySelector("#maTypeSeg button.on");
+        return on ? on.dataset.ma : (s.maType || "SMA");
+      };
       $("fastPeriod").value = String(Math.max(2, Math.min(80, Number(s.fastPeriod || 20))));
       $("slowPeriod").value = String(Math.max(20, Math.min(400, Number(s.slowPeriod || 200))));
       const paintPeriods = () => {
@@ -584,8 +609,9 @@
           slow = Math.min(400, fast + 1);
           $("slowPeriod").value = String(slow);
         }
-        $("fastPeriodVal").textContent = `SMA${fast}`;
-        $("slowPeriodVal").textContent = `SMA${slow}`;
+        const maLabel = currentMaType();
+        $("fastPeriodVal").textContent = `${maLabel}${fast}`;
+        $("slowPeriodVal").textContent = `${maLabel}${slow}`;
       };
       paintPeriods();
       $("fastPeriod").oninput = () => {
@@ -620,6 +646,14 @@
         fullBodyBtn.setAttribute("aria-pressed", String(on));
         debounceSave({ fullBodyOnS: on });
       };
+      const maSeg = $("maTypeSeg");
+      if (maSeg) maSeg.onclick = (e) => {
+        const btn = e.target.closest("button[data-ma]");
+        if (!btn) return;
+        for (const b of maSeg.querySelectorAll("button")) b.classList.toggle("on", b === btn);
+        syncPeriods();
+        debounceSave({ maType: btn.dataset.ma });
+      };
       const notifyBtn = $("notifyToggle");
       notifyBtn.onclick = async () => {
         const on = !notifyBtn.classList.contains("on");
@@ -649,6 +683,7 @@
           fastPeriod: fastEl ? Number(fastEl.value) : 20,
           slowPeriod: slowEl ? Number(slowEl.value) : 200,
           fullBodyOnS: fullBodyEl ? fullBodyEl.classList.contains("on") : false,
+          maType: (document.querySelector("#maTypeSeg button.on") || {}).dataset?.ma || s.maType || "SMA",
           refreshMs: refreshEl ? Number(refreshEl.value) : 100,
           notificationsEnabled: notifyEl ? notifyEl.classList.contains("on") : true,
         };

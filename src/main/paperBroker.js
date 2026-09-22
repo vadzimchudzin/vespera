@@ -40,7 +40,7 @@ class PaperBroker {
     return this.snapshot();
   }
 
-  async marketBuy({ side, sizeUsd, clientOrderId, round }) {
+  async marketBuy({ side, sizeUsd, clientOrderId, round, payout, price, quoteSource }) {
     if (this.openBet) {
       throw new Error("already_open");
     }
@@ -54,9 +54,15 @@ class PaperBroker {
     }
     this.balance = this.balance.sub(cost);
     const placedAt = Date.now();
+    // Polymarket pays $1 per winning share, so the multiple is 1/price.
+    // Falls back to the old flat x2 only when no live quote was available.
+    const mult = Number(payout);
     this.openBet = {
       clientOrderId,
       side,
+      payout: Number.isFinite(mult) && mult > 1 ? mult : 2,
+      entryPrice: Number.isFinite(Number(price)) ? Number(price) : null,
+      quoteSource: quoteSource || "fixed_2x",
       sizeUsd: size.toFixed(2),
       feeUsd: fee.toFixed(2),
       feeRate: this.feeRate,
@@ -89,10 +95,12 @@ class PaperBroker {
     const won = this.openBet.side === outcome;
     const size = Decimal(this.openBet.sizeUsd);
     const fee = Decimal(this.openBet.feeUsd || "0");
+    const payoutMult = Number(this.openBet.payout) > 1 ? Number(this.openBet.payout) : 2;
     let pnl = size.add(fee).mul(-1);
     if (won) {
-      this.balance = this.balance.add(size.mul(2));
-      pnl = size.sub(fee);
+      const gross = size.mul(payoutMult);
+      this.balance = this.balance.add(gross);
+      pnl = gross.sub(size).sub(fee);
     }
 
     const settled = {

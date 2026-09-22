@@ -2,13 +2,15 @@
 
 Glass desktop terminal for BTC 15m Polymarket Up/Down.
 
-**v0.8.8 is Paper.** SMA200/20 on a **closed** candle `S`, bet on **S+1**. Arrow sits on the entry candle. No live money. Auto pings the Polymarket CLOB; orders wait for an L1/L2 signer.
+**v0.10.0.** SMA/EMA 200/20 on a **closed** candle `S`, bet on **S+1**. Arrow sits on the entry candle. Auto prices the live Polymarket round and can send signed CLOB orders once an L2 key pair and a signing key are in Settings.
+
+**Payout is not ×2.** Polymarket pays $1 per winning share, so the multiple is `1 / price`. At an ask of 0.72 a $1 stake returns $1.39 while a loss still costs the full $1 — Paper now books results on that same number. A flat ×2 martingale does **not** recover a loss at those odds; size the series accordingly.
 
 Repo: private [`VadimChudin/vespera`](https://github.com/VadimChudin/vespera)
 
 ## What it does
 
-- SMA 200 (trend) + SMA 20 (trigger) on **closed** Binance candles. Default `BTCUSDT` 15m; pick any listed pair / timeframe.
+- Slow MA (trend) + fast MA (trigger) on **closed** Binance candles, **SMA or EMA** (Settings → Average). Default `BTCUSDT` 15m; pick any listed pair / timeframe.
 - Above 200 → only UP. Below 200 → only DOWN.
 - Entry: prior bar’s **body** fully beyond the fast SMA (default 20, wicks ignored). Then `confirmCount + 1` consecutive full-body candles of the needed color beyond that line. `0` = first poke. Periods of both SMAs are in Settings.
 - Bet is on **the next** candle (`S+1`). Forming candle never signals.
@@ -23,7 +25,7 @@ Repo: private [`VadimChudin/vespera`](https://github.com/VadimChudin/vespera)
 | Mode | Name in UI | Orders |
 |---|---|---|
 | Paper | Paper / Пейпер | Virtual Up/Down fills |
-| Auto | Auto / Авто | Pings `clob.polymarket.com`. Resolves the current BTC/ETH Up/Down round via Gamma. Orders blocked until an L1/L2 signer exists. Balance pulses `$0.00` until then. |
+| Auto | Auto / Авто | Prices the live round on `clob.polymarket.com`, signs EIP-712 orders and posts them. Needs apiKey, secret, passphrase, wallet **and** private key. Polymarket lists only **5m and 15m** Up/Down rounds; other timeframes report `timeframe_unsupported`. Minimum order is 5 shares. |
 
 **OK** in the API panel pings the Polymarket CLOB. It does not place trades. Live `marketBuy` stays `auto_not_wired` until a signer is plugged into `src/main/brokers`.
 

@@ -2,6 +2,19 @@
 
 All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 
+## 0.10.0 — 2026-09-22
+
+- **Real Polymarket quotes.** The venue now reads `/price`, `/midpoint` and `/book` for the live round. Entries are priced off the best ask, and the payout multiple is `1 / price` — Polymarket pays $1 per winning share, so an ask of 0.72 returns ×1.39, not ×2.
+- **Paper settles on that same payout.** Results now match what the venue would actually pay. A winning $10 bet at 0.72 books +$3.84, a loss books the full −$10. Without a quote the broker falls back to the old flat ×2 so offline runs still work.
+- **Live orders actually send.** The engine passed `{side, sizeUsd, round}` while the adapter expected `{tokenId, makerAmount}` — every live order died on `missing_tokenId`. The adapter now resolves the round, prices the book and sizes the order itself, in USDC micro units.
+- **Order payload fixed.** The signature goes inside the order object, `side` is sent as `BUY`/`SELL`, `salt` as a number, and `owner` is the API key rather than the wallet address. The CLOB rejected the old shape.
+- **Minimum order size is enforced before signing.** Polymarket requires 5 shares; a $1 lot at 0.50 is 2 shares and is now refused with the minimum lot in the message instead of a blind rejection.
+- **Private key has a home.** The API panel takes it, `settingsStore` encrypts it with the other secrets, and it survives a restart. Before, nothing persisted it, so Auto always stopped at `auto_blocked: privateKey not set`.
+- **Live rounds settle.** An Auto bet is tracked, closed against its round bar, and feeds the series, journal, chart markers and balance refresh. Previously the engine sat in `waiting_settlement` forever and kept firing new signals.
+- **EMA.** `Average` in Settings switches both lines and every entry rule between SMA and EMA, seeded the TradingView way. Periods stay editable; chart legend and labels follow the choice.
+- **1m no longer bets on the wrong round.** Polymarket only lists 5m and 15m Up/Down markets. Any other timeframe used to fall through to the 15m slug silently; it now reports `timeframe_unsupported`.
+- Marker replay caches its moving-average series instead of recomputing per bar.
+
 ## 0.8.9 — 2026-09-21
 
 - API panel keeps stored credentials. `apiKey`, `secret` and `passphrase` are never sent back to the window; an empty field means "keep what is saved", so pressing **OK** after a restart no longer wipes the keys.

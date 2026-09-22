@@ -32,6 +32,17 @@ function intervalSec(timeframe) {
   return TF_SECONDS[timeframe] || 900;
 }
 
+/**
+ * Polymarket only lists 5m and 15m crypto Up/Down rounds.
+ * Anything else (1m, 30m, 1h, 4h, 1d) has no round to bet on, so we say so
+ * instead of silently pointing the order at the 15m market.
+ */
+const SUPPORTED_TF = ["5m", "15m"];
+
+function isSupportedTimeframe(timeframe) {
+  return SUPPORTED_TF.includes(String(timeframe));
+}
+
 function floorStartUnix(tsMs, timeframe) {
   const sec = intervalSec(timeframe);
   const unix = Math.floor(Number(tsMs) / 1000);
@@ -43,7 +54,7 @@ function floorStartUnix(tsMs, timeframe) {
 }
 
 function updownSlug(symbol, timeframe, tsMs) {
-  const tf = timeframe === "5m" ? "5m" : "15m";
+  const tf = isSupportedTimeframe(timeframe) ? String(timeframe) : "15m";
   const start = floorStartUnix(tsMs, tf);
   return `${assetFromSymbol(symbol)}-updown-${tf}-${start}`;
 }
@@ -104,6 +115,15 @@ function normalizeRound(event, slug) {
 }
 
 async function resolveUpDown(client, { symbol, timeframe, tsMs } = {}) {
+  if (!isSupportedTimeframe(timeframe)) {
+    return {
+      ok: false,
+      slug: null,
+      reason: "timeframe_unsupported",
+      timeframe: String(timeframe || ""),
+      supported: SUPPORTED_TF.slice(),
+    };
+  }
   const slug = updownSlug(symbol, timeframe, tsMs == null ? Date.now() : tsMs);
   const res = await client.eventBySlug(slug);
   if (!res.ok || !res.json) {
@@ -123,6 +143,8 @@ async function resolveUpDown(client, { symbol, timeframe, tsMs } = {}) {
 
 module.exports = {
   TF_SECONDS,
+  SUPPORTED_TF,
+  isSupportedTimeframe,
   assetFromSymbol,
   intervalSec,
   floorStartUnix,

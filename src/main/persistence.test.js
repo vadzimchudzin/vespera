@@ -148,9 +148,15 @@ async function run() {
   {
     const dir = tmpDir();
     const store = new SettingsStore(dir);
-    store.save({ apiKey: "KEY-1", apiSecret: "SECRET-1", apiPassphrase: "PASS-1", walletAddress: "0xabc" });
+    store.save({
+      apiKey: "KEY-1",
+      apiSecret: "SECRET-1",
+      apiPassphrase: "PASS-1",
+      privateKey: "PRIV-1",
+      walletAddress: "0xabc",
+    });
     const raw = fs.readFileSync(path.join(dir, "settings.json"), "utf8");
-    for (const secret of ["KEY-1", "SECRET-1", "PASS-1"]) {
+    for (const secret of ["KEY-1", "SECRET-1", "PASS-1", "PRIV-1"]) {
       assert(!raw.includes(secret), `${secret} must not appear in settings.json`);
     }
     for (const key of SECRET_FIELDS) {
@@ -160,13 +166,15 @@ async function run() {
     assert(reopened.value.apiKey === "KEY-1", "apiKey decrypts back");
     assert(reopened.value.apiSecret === "SECRET-1", "apiSecret decrypts back");
     assert(reopened.value.apiPassphrase === "PASS-1", "apiPassphrase decrypts back");
+    assert(reopened.value.privateKey === "PRIV-1", "privateKey decrypts back");
 
     // pressing OK again with empty fields must not erase anything
-    reopened.save({ apiKey: "", apiSecret: "", apiPassphrase: "", walletAddress: "0xabc" });
+    reopened.save({ apiKey: "", apiSecret: "", apiPassphrase: "", privateKey: "", walletAddress: "0xabc" });
     const after = new SettingsStore(dir);
     assert(after.value.apiKey === "KEY-1", "empty input keeps the stored apiKey");
     assert(after.value.apiSecret === "SECRET-1", "empty input keeps the stored apiSecret");
     assert(after.value.apiPassphrase === "PASS-1", "empty input keeps the stored apiPassphrase");
+    assert(after.value.privateKey === "PRIV-1", "empty input keeps the stored privateKey");
 
     // an explicit clear still works
     after.clearSecret("apiSecret");

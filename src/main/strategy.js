@@ -22,6 +22,68 @@ function sma(values, period, index) {
   return sum / period;
 }
 
+/** Full SMA series. Same arithmetic as sma() so results are bit-identical. */
+function smaSeries(values, period) {
+  const out = new Array(values.length).fill(null);
+  for (let i = period - 1; i < values.length; i += 1) {
+    out[i] = sma(values, period, i);
+  }
+  return out;
+}
+
+/**
+ * Full EMA series, seeded with the SMA of the first `period` closes
+ * (the TradingView convention) so the line matches the customer's chart.
+ */
+function emaSeries(values, period) {
+  const out = new Array(values.length).fill(null);
+  if (values.length < period) return out;
+  const k = 2 / (period + 1);
+  let prev = sma(values, period, period - 1);
+  out[period - 1] = prev;
+  for (let i = period; i < values.length; i += 1) {
+    prev = values[i] * k + prev * (1 - k);
+    out[i] = prev;
+  }
+  return out;
+}
+
+function normalizeMaType(value) {
+  return String(value || "SMA").toUpperCase() === "EMA" ? "EMA" : "SMA";
+}
+
+function maTypeOf(options = {}) {
+  return normalizeMaType(options.maType);
+}
+
+function buildSeries(values, period, type) {
+  return normalizeMaType(type) === "EMA" ? emaSeries(values, period) : smaSeries(values, period);
+}
+
+/**
+ * Cached moving-average series per bars array.
+ * Marker replay evaluates every bar, so recomputing the whole series on each
+ * index turned the redraw into O(n^2 * period). The cache is invalidated when
+ * the array length or its last close changes.
+ */
+const SERIES_CACHE = new WeakMap();
+
+function maSeriesFor(bars, closes, period, type) {
+  const key = `${normalizeMaType(type)}:${period}`;
+  let entry = SERIES_CACHE.get(bars);
+  const last = closes.length ? closes[closes.length - 1] : null;
+  if (!entry || entry.len !== closes.length || entry.last !== last) {
+    entry = { len: closes.length, last, series: new Map() };
+    SERIES_CACHE.set(bars, entry);
+  }
+  let series = entry.series.get(key);
+  if (!series) {
+    series = buildSeries(closes, period, type);
+    entry.series.set(key, series);
+  }
+  return series;
+}
+
 function trueRange(bars, index) {
   const bar = bars[index];
   const range = bar.high - bar.low;
@@ -127,10 +189,10 @@ function signalBarOk(bar, ma, side, fullBody) {
   return fullBody ? bodyBelow(bar, ma) : crossedDown(bar, ma);
 }
 
-function consecutiveRun(bars, index, side, fastPeriod, closes, fullBody) {
+function consecutiveRun(bars, index, side, fastSeries, fullBody) {
   let n = 0;
   for (let i = index; i >= 0; i -= 1) {
-    const ma = sma(closes, fastPeriod, i);
+    const ma = fastSeries[i];
     if (ma == null) break;
     if (!signalBarOk(bars[i], ma, side, fullBody)) break;
     n += 1;
@@ -154,10 +216,13 @@ function evaluateBar(bars, index, options = {}) {
   }
   const bar = bars[index];
   const prev = bars[pullIndex];
+  const maType = maTypeOf(options);
   const closes = bars.map((b) => b.close);
-  const ma20 = sma(closes, fastPeriod, index);
-  const ma200 = sma(closes, slowPeriod, index);
-  const ma20Prev = sma(closes, fastPeriod, pullIndex);
+  const fastSeries = maSeriesFor(bars, closes, fastPeriod, maType);
+  const slowSeries = maSeriesFor(bars, closes, slowPeriod, maType);
+  const ma20 = fastSeries[index];
+  const ma200 = slowSeries[index];
+  const ma20Prev = fastSeries[pullIndex];
   if (ma20 == null || ma200 == null || ma20Prev == null) {
     return { signal: null, reason: "warming_up", ma20, ma200 };
   }
@@ -172,8 +237,8 @@ function evaluateBar(bars, index, options = {}) {
   const beyond = ticksBeyond(bar.close, ma20, tickSize);
   const tickLong = beyond >= minCrossTicks;
   const tickShort = beyond >= minCrossTicks;
-  const longRun = consecutiveRun(bars, index, "UP", fastPeriod, closes, fullBodyOnS);
-  const shortRun = consecutiveRun(bars, index, "DOWN", fastPeriod, closes, fullBodyOnS);
+  const longRun = consecutiveRun(bars, index, "UP", fastSeries, fullBodyOnS);
+  const shortRun = consecutiveRun(bars, index, "DOWN", fastSeries, fullBodyOnS);
   const longConfirmed = longRun === runLen;
   const shortConfirmed = shortRun === runLen;
 
@@ -208,6 +273,7 @@ function evaluateBar(bars, index, options = {}) {
       fastPeriod,
       slowPeriod,
       fullBodyOnS,
+      maType,
     };
   }
   if (bar.close === ma200) {
@@ -242,6 +308,11 @@ function evaluateBar(bars, index, options = {}) {
 
 module.exports = {
   sma,
+  smaSeries,
+  emaSeries,
+  buildSeries,
+  maSeriesFor,
+  maTypeOf,
   atr,
   evaluateBar,
   bodyTop,

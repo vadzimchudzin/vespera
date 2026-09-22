@@ -21,7 +21,7 @@ function requestJson(url, { method = "GET", headers = {}, body, timeoutMs = 8000
         method,
         headers: {
           Accept: "application/json",
-          "User-Agent": "Vespera/0.9.0",
+          "User-Agent": "Vespera/0.10.0",
           ...(payload ? { "Content-Type": "application/json", "Content-Length": payload.length } : {}),
           ...headers,
         },
@@ -158,6 +158,22 @@ class ClobClient {
     return this.request(`${this.clobUrl}/book?token_id=${encodeURIComponent(tokenId)}`);
   }
 
+  /** Mid price of a token, 0..1. Public endpoint, no auth. */
+  async midpoint(tokenId) {
+    return this.request(`${this.clobUrl}/midpoint?token_id=${encodeURIComponent(tokenId)}`);
+  }
+
+  /**
+   * Best executable price for one side of the book.
+   * side="buy" returns what a taker pays to buy the token.
+   */
+  async price(tokenId, side = "buy") {
+    const s = side === "sell" ? "sell" : "buy";
+    return this.request(
+      `${this.clobUrl}/price?token_id=${encodeURIComponent(tokenId)}&side=${s}`
+    );
+  }
+
   /**
    * Fetch active markets from Gamma, optionally filtered by resolution timeframe tags.
    * @param {object} [opts]
@@ -183,11 +199,19 @@ class ClobClient {
     if (!this.hasL2()) {
       return { ok: false, status: 0, latencyMs: 0, json: null, raw: "missing_l2" };
     }
+    // The CLOB expects the signature INSIDE the order object, `side` as a
+    // string, `salt` as a number, and `owner` set to the API key (not the
+    // wallet). The wallet address is only used for the L2 auth header.
+    const o = signedOrder.order || {};
     const bodyObj = {
-      order: signedOrder.order,
-      signature: signedOrder.signature,
-      owner: addr,
-      orderType: "FOK",
+      order: {
+        ...o,
+        salt: Number(o.salt),
+        side: o.side === 1 || o.side === "SELL" ? "SELL" : "BUY",
+        signature: signedOrder.signature,
+      },
+      owner: this.apiKey,
+      orderType: signedOrder.orderType || "FOK",
     };
     const path = "/order";
     const headers = l2Headers({

@@ -22,6 +22,21 @@
   let lastIntervalSec = 60;
   let fastPeriod = 20;
   let slowPeriod = 200;
+  let maType = "SMA";
+
+  /** EMA series seeded with the SMA of the first `period` closes. */
+  function emaSeries(closes, period) {
+    const out = new Array(closes.length).fill(null);
+    if (closes.length < period) return out;
+    const k = 2 / (period + 1);
+    let prev = sma(closes, period, period - 1);
+    out[period - 1] = prev;
+    for (let i = period; i < closes.length; i += 1) {
+      prev = closes[i] * k + prev * (1 - k);
+      out[i] = prev;
+    }
+    return out;
+  }
 
   function sma(closes, period, index) {
     if (index + 1 < period) return null;
@@ -247,26 +262,29 @@
 
   function paintAverages(closed) {
     const closes = closed.map((b) => b.close);
+    const label = maType === "EMA" ? "EMA" : "SMA";
+    const fastVals = maType === "EMA" ? emaSeries(closes, fastPeriod) : null;
+    const slowVals = maType === "EMA" ? emaSeries(closes, slowPeriod) : null;
     const ma20 = [];
     const ma200 = [];
     for (let i = 0; i < closed.length; i += 1) {
-      const a = sma(closes, fastPeriod, i);
-      const b = sma(closes, slowPeriod, i);
+      const a = fastVals ? fastVals[i] : sma(closes, fastPeriod, i);
+      const b = slowVals ? slowVals[i] : sma(closes, slowPeriod, i);
       if (a != null) ma20.push({ time: closed[i].time, value: a });
       if (b != null) ma200.push({ time: closed[i].time, value: b });
     }
     ma20Series.setData(ma20);
     ma200Series.setData(ma200);
     try {
-      ma20Series.applyOptions({ title: `SMA${fastPeriod}` });
-      ma200Series.applyOptions({ title: `SMA${slowPeriod}` });
+      ma20Series.applyOptions({ title: `${label}${fastPeriod}` });
+      ma200Series.applyOptions({ title: `${label}${slowPeriod}` });
     } catch {
       /* ignore */
     }
     const legendFast = document.querySelector(".chart-legend .lg.ma20");
     const legendSlow = document.querySelector(".chart-legend .lg.ma200");
-    if (legendFast) legendFast.textContent = `SMA${fastPeriod}`;
-    if (legendSlow) legendSlow.textContent = `SMA${slowPeriod}`;
+    if (legendFast) legendFast.textContent = `${label}${fastPeriod}`;
+    if (legendSlow) legendSlow.textContent = `${label}${slowPeriod}`;
   }
 
   function paintPending() {
@@ -318,9 +336,11 @@
     if (!chart || !snap) return;
     const nextFast = Number(snap.settings && snap.settings.fastPeriod) || 20;
     const nextSlow = Number(snap.settings && snap.settings.slowPeriod) || 200;
-    if (nextFast !== fastPeriod || nextSlow !== slowPeriod) {
+    const nextMa = (snap.settings && snap.settings.maType) === "EMA" ? "EMA" : "SMA";
+    if (nextFast !== fastPeriod || nextSlow !== slowPeriod || nextMa !== maType) {
       fastPeriod = nextFast;
       slowPeriod = nextSlow;
+      maType = nextMa;
       lastClosedHash = "";
       seeded = false;
       lastMarkerKey = "";

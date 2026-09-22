@@ -16,7 +16,7 @@ const { clampRefreshMs } = require("./markets");
  * re-encrypted on the next save.
  */
 
-const SECRET_FIELDS = ["apiKey", "apiSecret", "apiPassphrase"];
+const SECRET_FIELDS = ["apiKey", "apiSecret", "apiPassphrase", "privateKey"];
 const ENC_PREFIX = "enc:v1:";
 const LOCAL_PREFIX = "encl:v1:";
 
@@ -32,6 +32,7 @@ const DEFAULTS = {
   apiKey: "",
   apiSecret: "",
   apiPassphrase: "",
+  privateKey: "",
   walletAddress: "",
   apiBase: "https://clob.polymarket.com",
   clobUrl: "https://clob.polymarket.com",

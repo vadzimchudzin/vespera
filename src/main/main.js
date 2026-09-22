@@ -105,7 +105,7 @@ ipcMain.handle("engine:ping", (_e, creds) => {
   const patch = typeof creds === "string" ? { apiKey: creds } : creds || {};
   // Empty inputs keep whatever is already stored (the panel never shows a saved secret).
   const save = {};
-  for (const key of ["apiKey", "apiSecret", "apiPassphrase"]) {
+  for (const key of ["apiKey", "apiSecret", "apiPassphrase", "privateKey"]) {
     if (patch[key] != null && String(patch[key]) !== "") save[key] = patch[key];
   }
   if (patch.walletAddress != null) save.walletAddress = patch.walletAddress;
