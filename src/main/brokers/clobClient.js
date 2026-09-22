@@ -21,7 +21,7 @@ function requestJson(url, { method = "GET", headers = {}, body, timeoutMs = 8000
         method,
         headers: {
           Accept: "application/json",
-          "User-Agent": "Vespera/0.8.8",
+          "User-Agent": "Vespera/0.9.0",
           ...(payload ? { "Content-Type": "application/json", "Content-Length": payload.length } : {}),
           ...headers,
         },
@@ -79,6 +79,36 @@ function l2Headers({ address, apiKey, secret, passphrase, method, path, body }) 
   };
 }
 
+// ── helpers ────────────────────────────────────────────────────────────────
+
+function _parseList(json) {
+  if (!json) return [];
+  if (Array.isArray(json)) return json;
+  if (Array.isArray(json.data)) return json.data;
+  if (Array.isArray(json.markets)) return json.markets;
+  return [];
+}
+
+function _mapTokenIds(markets) {
+  return markets.map((m) => {
+    const tokens = Array.isArray(m.tokens) ? m.tokens : [];
+    return {
+      slug: m.slug || m.conditionId || "",
+      question: m.question || m.title || "",
+      conditionId: m.conditionId || "",
+      tokens: tokens.map((t) => ({
+        tokenId: String(t.token_id || t.tokenId || ""),
+        outcome: t.outcome || "",
+      })),
+      active: Boolean(m.active),
+      closed: Boolean(m.closed),
+      endDate: m.endDate || m.end_date_iso || null,
+    };
+  });
+}
+
+// ── ClobClient ─────────────────────────────────────────────────────────────
+
 class ClobClient {
   constructor(options = {}) {
     this.clobUrl = String(options.clobUrl || DEFAULT_CLOB).replace(/\/$/, "");
@@ -120,6 +150,62 @@ class ClobClient {
     return this.request(`${this.gammaUrl}/markets/slug/${encodeURIComponent(slug)}`);
   }
 
+  /**
+   * Fetch top-of-book for a given outcome token.
+   * @param {string} tokenId
+   */
+  async getOrderBook(tokenId) {
+    return this.request(`${this.clobUrl}/book?token_id=${encodeURIComponent(tokenId)}`);
+  }
+
+  /**
+   * Fetch active markets from Gamma, optionally filtered by resolution timeframe tags.
+   * @param {object} [opts]
+   * @param {string[]} [opts.timeframes] - e.g. ["1d", "1w"]
+   * @param {number}  [opts.limit=50]
+   */
+  async fetchActiveMarkets({ timeframes, limit = 50 } = {}) {
+    const qs = new URLSearchParams({ active: "true", closed: "false", limit: String(limit) });
+    if (timeframes && timeframes.length) {
+      qs.set("tag", timeframes.join(","));
+    }
+    const res = await this.request(`${this.gammaUrl}/markets?${qs}`);
+    return { ...res, markets: _mapTokenIds(_parseList(res.json)) };
+  }
+
+  /**
+   * POST a signed order to the CLOB.
+   * @param {object} signedOrder - { order, signature } from orderSigner.signOrder()
+   * @param {string} walletAddress
+   */
+  async postOrder(signedOrder, walletAddress) {
+    const addr = walletAddress || this.walletAddress;
+    if (!this.hasL2()) {
+      return { ok: false, status: 0, latencyMs: 0, json: null, raw: "missing_l2" };
+    }
+    const bodyObj = {
+      order: signedOrder.order,
+      signature: signedOrder.signature,
+      owner: addr,
+      orderType: "FOK",
+    };
+    const path = "/order";
+    const headers = l2Headers({
+      address: addr,
+      apiKey: this.apiKey,
+      secret: this.apiSecret,
+      passphrase: this.apiPassphrase,
+      method: "POST",
+      path,
+      body: bodyObj,
+    });
+    return this.request(`${this.clobUrl}${path}`, {
+      method: "POST",
+      headers,
+      body: bodyObj,
+    });
+  }
+
   async authGet(path) {
     if (!this.hasL2()) {
       return { ok: false, status: 0, latencyMs: 0, json: null, raw: "missing_l2" };
@@ -144,6 +230,8 @@ module.exports = {
   ClobClient,
   requestJson,
   l2Headers,
+  _parseList,
+  _mapTokenIds,
   DEFAULT_CLOB,
   DEFAULT_GAMMA,
 };

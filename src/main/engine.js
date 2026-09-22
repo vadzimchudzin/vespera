@@ -45,6 +45,7 @@ class Engine {
         apiSecret: this.settings.apiSecret || "",
         apiPassphrase: this.settings.apiPassphrase || "",
         walletAddress: this.settings.walletAddress || "",
+        privateKey: this.settings.privateKey || "",
         symbol: this.settings.symbol || "BTCUSDT",
         timeframe: this.settings.timeframe || "15m",
         clobUrl: this.settings.clobUrl || "https://clob.polymarket.com",
@@ -185,6 +186,22 @@ class Engine {
     }
   }
 
+  /**
+   * Load live markets from the venue and merge into this.symbols.
+   * Silently swallows errors — live trading works without this.
+   */
+  async _loadLiveMarkets() {
+    if (typeof this.live.loadMarkets !== "function") return;
+    try {
+      const markets = await this.live.loadMarkets();
+      if (markets && markets.length) {
+        this.emit("log", { level: "info", message: `live_markets_loaded: ${markets.length}` });
+      }
+    } catch (err) {
+      this.emit("log", { level: "warn", message: `live_markets_error: ${String(err.message || err)}` });
+    }
+  }
+
   async applySettings(patch = {}) {
     const next = { ...this.settings, ...patch };
     if (patch.refreshMs != null) {
@@ -230,6 +247,7 @@ class Engine {
         apiSecret: next.apiSecret,
         apiPassphrase: next.apiPassphrase,
         walletAddress: next.walletAddress,
+        privateKey: next.privateKey,
         symbol,
         timeframe,
       });
@@ -318,7 +336,10 @@ class Engine {
 
   async setMode(mode) {
     if (mode === this.mode) {
-      if (mode === "auto") await this.refreshLiveBalance();
+      if (mode === "auto") {
+        await this.refreshLiveBalance();
+        await this._loadLiveMarkets();
+      }
       return this.snapshot();
     }
     if (this.paper.openBet) {
@@ -331,6 +352,7 @@ class Engine {
     this.journal.write({ type: "mode", mode });
     if (mode === "auto") {
       await this.refreshLiveBalance();
+      await this._loadLiveMarkets();
     } else {
       this.liveBalance = {
         ok: true,
@@ -378,18 +400,19 @@ class Engine {
 
   async pingApi(creds = {}) {
     const patch = typeof creds === "string" ? { apiKey: creds } : creds || {};
-    // An empty field means "keep what is stored": the panel never re-sends a saved secret.
     const keep = (value) => value != null && String(value) !== "";
     if (keep(patch.apiKey)) this.settings.apiKey = patch.apiKey;
     if (keep(patch.apiSecret)) this.settings.apiSecret = patch.apiSecret;
     if (keep(patch.apiPassphrase)) this.settings.apiPassphrase = patch.apiPassphrase;
     if (patch.walletAddress != null) this.settings.walletAddress = patch.walletAddress;
+    if (keep(patch.privateKey)) this.settings.privateKey = patch.privateKey;
     if (typeof this.live.configure === "function") {
       this.live.configure({
         apiKey: this.settings.apiKey,
         apiSecret: this.settings.apiSecret,
         apiPassphrase: this.settings.apiPassphrase,
         walletAddress: this.settings.walletAddress,
+        privateKey: this.settings.privateKey,
         symbol: this.settings.symbol,
         timeframe: this.settings.timeframe,
       });
@@ -400,7 +423,10 @@ class Engine {
     const live = await this.live.ping();
     this.pingResult = { paper, live, at: Date.now() };
     this.journal.write({ type: "api_ping", paper, live: { ...live, apiKey: undefined } });
-    if (this.mode === "auto") await this.refreshLiveBalance();
+    if (this.mode === "auto") {
+      await this.refreshLiveBalance();
+      await this._loadLiveMarkets();
+    }
     this.emit("ping", this.pingResult);
     return this.pingResult;
   }
@@ -596,14 +622,48 @@ class Engine {
     this.notify("setup", `${ev.signal} setup`, `SMA200/20 · $${size} · S+1`);
 
     if (this.mode === "auto") {
-      this.journal.write({ type: "auto_blocked", reason: "auto_not_wired" });
-      this.emit("log", { level: "warn", message: "auto_not_wired" });
-      this.status = "watching";
-      this.markers.push({ ...marker, virtual: true });
-      this.emit("signal", { ...ev, paper: true, size });
-      return null;
+      // Live trading path — requires L2 + privateKey in the venue
+      const liveReady = typeof this.live.hasPrivateKey === "function"
+        ? this.live.hasPrivateKey()
+        : Boolean(this.settings.privateKey);
+
+      if (!liveReady) {
+        this.journal.write({ type: "auto_blocked", reason: "no_private_key" });
+        this.emit("log", { level: "warn", message: "auto_blocked: privateKey not set" });
+        this.status = "watching";
+        this.markers.push({ ...marker, virtual: true });
+        this.emit("signal", { ...ev, paper: true, size });
+        return null;
+      }
+
+      try {
+        this.status = "order_sent";
+        this.emit("status", this.status);
+        const order = await this.live.marketBuy({
+          side: ev.signal === "UP" ? 0 : 1,
+          sizeUsd: size,
+          clientOrderId,
+          round,
+        });
+        this.markers.push(marker);
+        this.journal.write({ type: "order_sent", mode: "auto", ...order });
+        this.status = "waiting_settlement";
+        this.emit("order", { ...order, live: true });
+        this.notify(
+          "order",
+          `Live ${ev.signal}`,
+          `$${size} · strike ${Number(bar.close).toFixed(2)}`
+        );
+        return order;
+      } catch (err) {
+        this.journal.write({ type: "order_error", mode: "auto", message: String(err.message || err) });
+        this.status = "watching";
+        this.emit("log", { level: "error", message: `live_order_error: ${String(err.message || err)}` });
+        return null;
+      }
     }
 
+    // Paper path
     try {
       this.status = "order_sent";
       const order = await this.paper.marketBuy({
@@ -612,7 +672,6 @@ class Engine {
         clientOrderId,
         round,
       });
-      // The arrow is drawn only for a bet that actually exists.
       this.markers.push(marker);
       this.journal.write({ type: "order_sent", ...order });
       this.status = "waiting_settlement";
@@ -652,7 +711,7 @@ class Engine {
         ? this.market.bars[this.market.bars.length - 1].close
         : null;
     return {
-      version: "0.8.9",
+      version: "0.9.0",
       running: this.running,
       status: this.status,
       mode: this.mode,
@@ -681,6 +740,7 @@ class Engine {
         hasApiSecret: Boolean(this.settings.apiSecret),
         hasApiPassphrase: Boolean(this.settings.apiPassphrase),
         walletAddress: this.settings.walletAddress || "",
+        hasPrivKey: Boolean(this.settings.privateKey),
         refreshMs: clampRefreshMs(this.settings.refreshMs || 100),
         notificationsEnabled: this.notificationsEnabled !== false,
         paperBalance: this.settings.paperBalance || "1000.00",
