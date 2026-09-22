@@ -78,7 +78,6 @@
   },
   "dependencies": {
     "lightweight-charts": "^4.2.3",
-    "viem": "^2.21.19",
     "ws": "^8.18.3"
   }
 }
