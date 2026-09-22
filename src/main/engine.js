@@ -283,6 +283,7 @@ class Engine {
         walletAddress: next.walletAddress,
         privateKey: next.privateKey,
         walletType: next.walletType,
+        proxyUrl: next.proxyUrl,
         symbol,
         timeframe,
       });
@@ -441,6 +442,7 @@ class Engine {
     if (keep(patch.apiSecret)) this.settings.apiSecret = patch.apiSecret;
     if (keep(patch.apiPassphrase)) this.settings.apiPassphrase = patch.apiPassphrase;
     if (patch.walletAddress != null) this.settings.walletAddress = patch.walletAddress;
+    if (patch.proxyUrl != null) this.settings.proxyUrl = patch.proxyUrl;
     if (keep(patch.privateKey)) this.settings.privateKey = patch.privateKey;
     if (typeof this.live.configure === "function") {
       this.live.configure({
@@ -449,6 +451,8 @@ class Engine {
         apiPassphrase: this.settings.apiPassphrase,
         walletAddress: this.settings.walletAddress,
         privateKey: this.settings.privateKey,
+        walletType: this.settings.walletType,
+        proxyUrl: this.settings.proxyUrl,
         symbol: this.settings.symbol,
         timeframe: this.settings.timeframe,
       });
@@ -477,6 +481,7 @@ class Engine {
     }
     if (patch.walletAddress != null) this.settings.walletAddress = patch.walletAddress;
     if (patch.walletType != null) this.settings.walletType = patch.walletType;
+    if (patch.proxyUrl != null) this.settings.proxyUrl = patch.proxyUrl;
     if (typeof this.live.configure === "function") {
       this.live.configure({
         privateKey: this.settings.privateKey,
@@ -857,7 +862,7 @@ class Engine {
         ? this.market.bars[this.market.bars.length - 1].close
         : null;
     return {
-      version: "0.11.0",
+      version: "0.11.1",
       running: this.running,
       status: this.status,
       mode: this.mode,
@@ -889,6 +894,7 @@ class Engine {
         walletAddress: this.settings.walletAddress || "",
         hasPrivKey: Boolean(this.settings.privateKey),
         walletType: this.settings.walletType || "AUTO",
+        proxyUrl: this.settings.proxyUrl || "",
         signerAddress: typeof this.live.signerAddress === "function" ? this.live.signerAddress() : null,
         refreshMs: clampRefreshMs(this.settings.refreshMs || 100),
         notificationsEnabled: this.notificationsEnabled !== false,

@@ -36,6 +36,10 @@ Repo: private [`VadimChudin/vespera`](https://github.com/VadimChudin/vespera)
 3. In Vespera → **API**, paste both and press **Get API keys from the private key**. The CLOB L2 credentials (`apiKey`, `secret`, `passphrase`) are derived from an `ClobAuth` signature — there is no page on polymarket.com that shows them. "Relayer API keys" in Settings is a different thing and is not used here.
 4. Press **OK** to ping. The panel shows the live UP/DOWN price, the payout multiple and the minimum order size.
 
+## Blocked regions
+
+Polymarket geoblocks a list of jurisdictions (Belarus among them) and refuses both the site and the API from those IPs. **OK** reports `Polymarket blocks this region` with the detected country when that is the cause, rather than a generic unreachable. A proxy URL in the API panel routes every CLOB and Gamma call through an allowed jurisdiction.
+
 ## Run from source
 
 ```bash

@@ -393,6 +393,10 @@
           <label>${t("privateKey")}</label>
           <input id="privateKey" type="password" placeholder="${t("privateKeyPlaceholder")}" autocomplete="off" />
         </div>
+        <div class="field">
+          <label>${t("proxyUrl")}</label>
+          <input id="proxyUrl" type="text" placeholder="${t("proxyPlaceholder")}" autocomplete="off" />
+        </div>
         <button class="ok" id="btnDerive">${t("deriveKeys")}</button>
         <p class="hint" id="deriveOut"></p>
         <button class="ok" id="btnPing">${t("ping")}</button>
@@ -408,13 +412,20 @@
       if (sApi.hasApiSecret) $("apiSecret").placeholder = storedHint;
       if (sApi.hasApiPassphrase) $("apiPassphrase").placeholder = storedHint;
       if (sApi.hasPrivKey) $("privateKey").placeholder = storedHint;
+      if (sApi.proxyUrl) $("proxyUrl").value = sApi.proxyUrl;
       $("btnDerive").onclick = async () => {
         const out = $("deriveOut");
         out.textContent = t("deriveWorking");
-        const res = await window.vespera.deriveKeys({
-          privateKey: $("privateKey").value.trim(),
-          walletAddress: $("walletAddress").value.trim(),
-        });
+        let res;
+        try {
+          res = await window.vespera.deriveKeys({
+            privateKey: $("privateKey").value.trim(),
+            walletAddress: $("walletAddress").value.trim(),
+            proxyUrl: $("proxyUrl").value.trim(),
+          });
+        } catch (err) {
+          res = { ok: false, reason: String((err && err.message) || err) };
+        }
         if (res && res.ok) {
           out.innerHTML = `<span class="ping-dot ok"></span>${t("deriveOk")} \u00b7 ${res.walletType} \u00b7 ${String(
             res.signerAddress || ""
@@ -436,6 +447,7 @@
           apiPassphrase: $("apiPassphrase").value.trim(),
           walletAddress: $("walletAddress").value.trim(),
           privateKey: $("privateKey").value.trim(),
+          proxyUrl: $("proxyUrl").value.trim(),
         };
         const res = await window.vespera.ping(creds);
         const live = res.live || {};
@@ -456,9 +468,11 @@
             ? t("l2Rejected")
             : live.ok
               ? t("reachable")
-              : live.message === "missing_key"
-                ? t("missingKey")
-                : t("unreachable")
+              : live.blocked
+                ? `${t("geoBlocked")}${live.geo && live.geo.country ? " \u00b7 " + live.geo.country : ""}`
+                : live.message === "missing_key"
+                  ? t("missingKey")
+                  : `${t("unreachable")}${live.message ? " \u00b7 " + live.message : ""}`
         }${live.latencyMs ? " · " + live.latencyMs + "ms" : ""}${extra}${l2}${quoteLine}`;
         if (res && res.live) {
           const snap = await window.vespera.snapshot();

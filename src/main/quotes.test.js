@@ -250,6 +250,50 @@ async function payoutCase({ payout, side, settleClose, expectPnl, label }) {
   const noKey = new PolymarketAdapter({ client: {} });
   assert.strictEqual((await noKey.deriveCredentials()).reason, "missing_private_key");
 
+  // ── failures must be reportable, never a hang ─────────────────────────────
+
+  const { requestJson, ClobClient, setProxy, currentProxy } = require("./brokers/clobClient");
+
+  // An unreachable host has to resolve with a reason instead of rejecting —
+  // a rejection left the API panel stuck on "signing and asking the CLOB".
+  const dead = await requestJson("https://127.0.0.1:1/time", { timeoutMs: 1500 });
+  assert.strictEqual(dead.ok, false);
+  assert.strictEqual(dead.status, 0);
+  assert.ok(dead.networkError, "a network failure is reported, not thrown");
+
+  // A blocked region is a different failure from an unreachable host.
+  const blockedClient = new ClobClient({
+    request: async (url) =>
+      url.includes("/api/geoblock")
+        ? { ok: true, status: 200, json: { blocked: true, country: "BY", region: "HM" } }
+        : { ok: false, status: 0, json: null, raw: "timeout", networkError: "timeout" },
+  });
+  const geo = await blockedClient.geoblock();
+  assert.deepStrictEqual(
+    { ok: geo.ok, blocked: geo.blocked, country: geo.country },
+    { ok: true, blocked: true, country: "BY" }
+  );
+
+  const blockedVenue = new PolymarketAdapter({ client: blockedClient });
+  const blockedPing = await blockedVenue.ping();
+  assert.strictEqual(blockedPing.ok, false);
+  assert.strictEqual(blockedPing.blocked, true, "ping says the region is blocked");
+  assert.ok(blockedPing.message.startsWith("network:"), "and still reports the transport error");
+
+  // Derivation surfaces the reason rather than hanging.
+  const blockedDerive = new PolymarketAdapter({ privateKey: TEST_PK, client: blockedClient });
+  const failed = await blockedDerive.deriveCredentials();
+  assert.strictEqual(failed.ok, false);
+  assert.ok(failed.reason, "a failed derive always carries a reason");
+
+  // Proxy toggling is idempotent and clearable.
+  setProxy("");
+  assert.strictEqual(currentProxy().active, false);
+  setProxy("http://127.0.0.1:9");
+  assert.strictEqual(currentProxy().url, "http://127.0.0.1:9");
+  setProxy("");
+  assert.strictEqual(currentProxy().active, false, "clearing the proxy restores direct calls");
+
   console.log("quote + payout tests ok");
 })().catch((err) => {
   console.error(err);

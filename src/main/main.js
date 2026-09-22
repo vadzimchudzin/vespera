@@ -109,6 +109,7 @@ ipcMain.handle("engine:ping", (_e, creds) => {
     if (patch[key] != null && String(patch[key]) !== "") save[key] = patch[key];
   }
   if (patch.walletAddress != null) save.walletAddress = patch.walletAddress;
+  if (patch.proxyUrl != null) save.proxyUrl = patch.proxyUrl;
   store.save(save);
   return engine.pingApi(patch);
 });
@@ -118,6 +119,7 @@ ipcMain.handle("engine:deriveKeys", async (_e, patch) => {
   if (p.privateKey != null && String(p.privateKey) !== "") save.privateKey = p.privateKey;
   if (p.walletAddress != null) save.walletAddress = p.walletAddress;
   if (p.walletType != null) save.walletType = p.walletType;
+  if (p.proxyUrl != null) save.proxyUrl = p.proxyUrl;
   store.save(save);
   const res = await engine.deriveApiKeys(p);
   if (res.ok) {

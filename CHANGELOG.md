@@ -2,6 +2,13 @@
 
 All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 
+## 0.11.1 — 2026-09-23
+
+- **The API panel no longer hangs.** A failed network call rejected instead of returning, so "Signing and asking the CLOB…" stayed on screen forever. Every request now resolves with a readable reason, and the derive button reports it.
+- **Geoblock is named as such.** Polymarket blocks a list of jurisdictions outright, so an unreachable CLOB and a blocked region used to look identical ("Unreachable"). The ping now checks `polymarket.com/api/geoblock` and says which one it is, with the detected country.
+- **Proxy support.** An optional proxy URL in the API panel routes every CLOB and Gamma call through it, for running from a blocked region.
+- Request timeout raised from 8s to 15s.
+
 ## 0.11.0 — 2026-09-23
 
 - **API keys are derived in the app.** Polymarket has no screen that hands out `apiKey` / `secret` / `passphrase` — they come from an L1 `ClobAuth` signature. Paste the signing key and press **Get API keys from the private key**; Vespera signs, calls `/auth/derive-api-key` (falling back to `/auth/api-key`) and stores the result encrypted. Only the private key has to be copied by hand, from Polymarket → Account → Private key → Start export.

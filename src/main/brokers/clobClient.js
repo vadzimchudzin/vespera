@@ -4,11 +4,39 @@ const https = require("https");
 const crypto = require("crypto");
 const { URL } = require("url");
 
+/**
+ * Optional outbound proxy. Polymarket geoblocks a list of jurisdictions
+ * (Belarus among them) and answers from a blocked IP with a Cloudflare
+ * rejection, so the app can route its calls through a proxy instead.
+ */
+let proxyAgent = null;
+let proxyUrl = "";
+
+function setProxy(url) {
+  const next = String(url || "").trim();
+  if (next === proxyUrl) return proxyAgent;
+  proxyUrl = next;
+  proxyAgent = null;
+  if (!next) return null;
+  try {
+    // eslint-disable-next-line global-require
+    const { HttpsProxyAgent } = require("https-proxy-agent");
+    proxyAgent = new HttpsProxyAgent(next);
+  } catch {
+    proxyAgent = null;
+  }
+  return proxyAgent;
+}
+
+function currentProxy() {
+  return { url: proxyUrl, active: Boolean(proxyAgent) };
+}
+
 const DEFAULT_CLOB = "https://clob.polymarket.com";
 const DEFAULT_GAMMA = "https://gamma-api.polymarket.com";
 
-function requestJson(url, { method = "GET", headers = {}, body, timeoutMs = 8000 } = {}) {
-  return new Promise((resolve, reject) => {
+function requestJson(url, { method = "GET", headers = {}, body, timeoutMs = 15000 } = {}) {
+  return new Promise((resolve) => {
     const started = Date.now();
     const u = new URL(url);
     const payload = body == null ? null : Buffer.from(JSON.stringify(body));
@@ -21,11 +49,12 @@ function requestJson(url, { method = "GET", headers = {}, body, timeoutMs = 8000
         method,
         headers: {
           Accept: "application/json",
-          "User-Agent": "Vespera/0.11.0",
+          "User-Agent": "Vespera/0.11.1",
           ...(payload ? { "Content-Type": "application/json", "Content-Length": payload.length } : {}),
           ...headers,
         },
         timeout: timeoutMs,
+        ...(proxyAgent ? { agent: proxyAgent } : {}),
       },
       (res) => {
         const chunks = [];
@@ -48,11 +77,21 @@ function requestJson(url, { method = "GET", headers = {}, body, timeoutMs = 8000
         });
       }
     );
+    const fail = (reason) => {
+      resolve({
+        ok: false,
+        status: 0,
+        latencyMs: Date.now() - started,
+        json: null,
+        raw: reason,
+        networkError: reason,
+      });
+    };
     req.on("timeout", () => {
       req.destroy();
-      reject(new Error("timeout"));
+      fail("timeout");
     });
-    req.on("error", reject);
+    req.on("error", (err) => fail(String((err && err.message) || err)));
     if (payload) req.write(payload);
     req.end();
   });
@@ -111,6 +150,7 @@ function _mapTokenIds(markets) {
 
 class ClobClient {
   constructor(options = {}) {
+    if (options.proxyUrl != null) setProxy(options.proxyUrl);
     this.clobUrl = String(options.clobUrl || DEFAULT_CLOB).replace(/\/$/, "");
     this.gammaUrl = String(options.gammaUrl || DEFAULT_GAMMA).replace(/\/$/, "");
     this.request = options.request || requestJson;
@@ -121,6 +161,7 @@ class ClobClient {
   }
 
   configure(patch = {}) {
+    if (patch.proxyUrl != null) setProxy(patch.proxyUrl);
     if (patch.apiKey != null) this.apiKey = patch.apiKey;
     if (patch.apiSecret != null) this.apiSecret = patch.apiSecret;
     if (patch.apiPassphrase != null) this.apiPassphrase = patch.apiPassphrase;
@@ -136,6 +177,22 @@ class ClobClient {
 
   async time() {
     return this.request(`${this.clobUrl}/time`);
+  }
+
+  /**
+   * Polymarket's own jurisdiction check. Tells us whether this IP may trade
+   * at all, which is a different failure from "the host is unreachable".
+   */
+  async geoblock() {
+    const res = await this.request("https://polymarket.com/api/geoblock", { timeoutMs: 10000 });
+    if (!res.ok || !res.json) return { ok: false, reason: res.raw || `http_${res.status}` };
+    return {
+      ok: true,
+      blocked: Boolean(res.json.blocked),
+      country: res.json.country || null,
+      region: res.json.region || null,
+      ip: res.json.ip || null,
+    };
   }
 
   async ok() {
@@ -281,6 +338,8 @@ class ClobClient {
 
 module.exports = {
   ClobClient,
+  setProxy,
+  currentProxy,
   requestJson,
   l2Headers,
   _parseList,

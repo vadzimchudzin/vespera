@@ -46,6 +46,7 @@ class PolymarketAdapter {
     this.walletAddress = options.walletAddress || "";
     this.privateKey = options.privateKey || "";
     this.walletType = options.walletType || "AUTO";
+    this.proxyUrl = options.proxyUrl || "";
     this.symbol = options.symbol || "BTCUSDT";
     this.timeframe = options.timeframe || "15m";
     this.client = options.client || new ClobClient(options);
@@ -59,6 +60,7 @@ class PolymarketAdapter {
     if (patch.walletAddress != null) this.walletAddress = patch.walletAddress;
     if (patch.privateKey != null) this.privateKey = patch.privateKey;
     if (patch.walletType != null) this.walletType = patch.walletType;
+    if (patch.proxyUrl != null) this.proxyUrl = patch.proxyUrl;
     if (patch.symbol != null) this.symbol = patch.symbol;
     if (patch.timeframe != null) this.timeframe = patch.timeframe;
     if (typeof this.client.configure === "function") this.client.configure(patch);
@@ -143,12 +145,22 @@ class PolymarketAdapter {
     try {
       const time = await this.client.time();
       if (!time.ok) {
+        // Separate "cannot reach the host" from "this jurisdiction is blocked",
+        // otherwise every failure looks the same in the UI.
+        let geo = null;
+        if (typeof this.client.geoblock === "function") {
+          geo = await this.client.geoblock();
+        }
         return {
           ok: false,
           venue: "polymarket",
           status: time.status,
           latencyMs: time.latencyMs,
-          message: `http_${time.status}`,
+          message: time.networkError
+            ? `network: ${time.networkError}`
+            : `http_${time.status}`,
+          geo,
+          blocked: Boolean(geo && geo.ok && geo.blocked),
           trading: false,
         };
       }
@@ -180,6 +192,10 @@ class PolymarketAdapter {
           minOrderSize: up.ok ? up.minOrderSize : down.ok ? down.minOrderSize : null,
         };
       }
+      let geo = null;
+      if (typeof this.client.geoblock === "function") {
+        geo = await this.client.geoblock();
+      }
       const l2Ok = l2 ? Boolean(l2.ok) : null;
       const hasSigner = this.hasL2() && this.hasPrivateKey();
       return {
@@ -194,6 +210,8 @@ class PolymarketAdapter {
         hasPrivKey: this.hasPrivateKey(),
         l2Ok,
         slug: market.slug,
+        geo,
+        blocked: Boolean(geo && geo.ok && geo.blocked),
         reason: market.ok ? null : market.reason || null,
         quotes,
         market: market.ok ? market.round : null,
