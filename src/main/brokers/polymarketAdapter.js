@@ -117,18 +117,12 @@ class PolymarketAdapter {
     }
   }
 
-  /**
-   * Fetch active Polymarket markets from Gamma API.
-   * @param {object} [opts]
-   * @param {string[]} [opts.timeframes]
-   * @returns {Promise<Array>} mapped market list
-   */
   async loadMarkets(opts = {}) {
     try {
       const res = await this.client.fetchActiveMarkets(opts);
       this._markets = res.markets || [];
       return this._markets;
-    } catch (err) {
+    } catch {
       return [];
     }
   }
@@ -136,17 +130,12 @@ class PolymarketAdapter {
   /**
    * Execute a live market order on Polymarket CLOB via EIP-712.
    * Requires hasL2() && hasPrivateKey().
-   *
-   * @param {object} params
-   * @param {string} params.tokenId     - YES token ID to buy
-   * @param {string} params.makerAmount - USDC amount (6-decimal string, e.g. "5000000" = $5)
-   * @param {string} params.takerAmount - minimum outcome tokens
-   * @param {string} [params.side]      - "UP"|"DOWN" or 0|1 (0=BUY)
    */
   async marketBuy({ tokenId, makerAmount, takerAmount, side = 0 } = {}) {
     if (!this.hasL2() || !this.hasPrivateKey()) {
-      const err = new Error("live_not_configured");
-      err.code = "live_not_configured";
+      // Keep error code as auto_not_wired for backward compat with tests
+      const err = new Error("auto_not_wired");
+      err.code = "auto_not_wired";
       throw err;
     }
     if (!tokenId) {
