@@ -2,6 +2,7 @@
 
 // EIP-712 order signer for Polymarket CLOB
 // Chain: Polygon mainnet (chainId 137)
+// Uses ethers@5 (CommonJS compatible — works in Electron)
 // Exchange contract: 0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E
 
 const EXCHANGE_ADDRESS = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E";
@@ -33,15 +34,6 @@ const DOMAIN = {
 
 /**
  * Build an unsigned CTF order struct.
- * @param {object} p
- * @param {string} p.tokenId     - YES/NO token ID (uint256 as decimal string)
- * @param {string} p.makerAmount - USDC collateral amount (6 decimals, as string)
- * @param {string} p.takerAmount - outcome token amount (as string)
- * @param {string} p.maker       - wallet address (checksummed)
- * @param {0|1}   [p.side=0]    - 0 = BUY, 1 = SELL
- * @param {number} [p.expiration=0]   - unix seconds, 0 = no expiry
- * @param {number} [p.feeRateBps=0]
- * @returns {object} unsigned order
  */
 function buildOrder({
   tokenId,
@@ -70,47 +62,40 @@ function buildOrder({
 }
 
 /**
- * Sign an order with EIP-712 via viem.
- * viem must be in node_modules (added as dependency in package.json).
+ * Sign an order with EIP-712 via ethers@5 (CommonJS, works in Electron).
  *
  * @param {object} order       - unsigned order from buildOrder()
  * @param {string} privateKey  - 0x-prefixed hex private key
  * @returns {Promise<{ order: object, signature: string }>}
  */
 async function signOrder(order, privateKey) {
-  let privateKeyToAccount, createWalletClient, http, polygon;
+  let ethers;
   try {
-    ({ privateKeyToAccount } = require("viem/accounts"));
-    ({ createWalletClient, http } = require("viem"));
-    ({ polygon } = require("viem/chains"));
+    ({ ethers } = require("ethers"));
   } catch {
-    throw new Error("viem not found — run: npm install viem");
+    throw new Error("ethers not found — run: npm install");
   }
 
   const pk = privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`;
-  const account = privateKeyToAccount(pk);
-  const client = createWalletClient({ account, chain: polygon, transport: http() });
+  const wallet = new ethers.Wallet(pk);
 
-  const signature = await client.signTypedData({
-    account,
-    domain: DOMAIN,
-    types: ORDER_TYPES,
-    primaryType: "Order",
-    message: {
-      salt:          BigInt(order.salt),
-      maker:         order.maker,
-      signer:        order.signer,
-      taker:         order.taker,
-      tokenId:       BigInt(order.tokenId),
-      makerAmount:   BigInt(order.makerAmount),
-      takerAmount:   BigInt(order.takerAmount),
-      expiration:    BigInt(order.expiration),
-      nonce:         BigInt(order.nonce),
-      feeRateBps:    BigInt(order.feeRateBps),
-      side:          order.side,
-      signatureType: order.signatureType,
-    },
-  });
+  const message = {
+    salt:          order.salt,
+    maker:         order.maker,
+    signer:        order.signer,
+    taker:         order.taker,
+    tokenId:       order.tokenId,
+    makerAmount:   order.makerAmount,
+    takerAmount:   order.takerAmount,
+    expiration:    order.expiration,
+    nonce:         order.nonce,
+    feeRateBps:    order.feeRateBps,
+    side:          order.side,
+    signatureType: order.signatureType,
+  };
+
+  // ethers v5: _signTypedData(domain, types, value)
+  const signature = await wallet._signTypedData(DOMAIN, ORDER_TYPES, message);
 
   return { order, signature };
 }
