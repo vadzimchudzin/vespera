@@ -46,6 +46,7 @@ class Engine {
         apiPassphrase: this.settings.apiPassphrase || "",
         walletAddress: this.settings.walletAddress || "",
         privateKey: this.settings.privateKey || "",
+        walletType: this.settings.walletType || "AUTO",
         symbol: this.settings.symbol || "BTCUSDT",
         timeframe: this.settings.timeframe || "15m",
         clobUrl: this.settings.clobUrl || "https://clob.polymarket.com",
@@ -281,6 +282,7 @@ class Engine {
         apiPassphrase: next.apiPassphrase,
         walletAddress: next.walletAddress,
         privateKey: next.privateKey,
+        walletType: next.walletType,
         symbol,
         timeframe,
       });
@@ -463,6 +465,45 @@ class Engine {
     }
     this.emit("ping", this.pingResult);
     return this.pingResult;
+  }
+
+  /**
+   * Pull the L2 credentials from the CLOB using the stored signing key.
+   * Polymarket has no UI for these, so the app derives them itself.
+   */
+  async deriveApiKeys(patch = {}) {
+    if (patch.privateKey != null && String(patch.privateKey) !== "") {
+      this.settings.privateKey = patch.privateKey;
+    }
+    if (patch.walletAddress != null) this.settings.walletAddress = patch.walletAddress;
+    if (patch.walletType != null) this.settings.walletType = patch.walletType;
+    if (typeof this.live.configure === "function") {
+      this.live.configure({
+        privateKey: this.settings.privateKey,
+        walletAddress: this.settings.walletAddress,
+        walletType: this.settings.walletType,
+      });
+    }
+    if (typeof this.live.deriveCredentials !== "function") {
+      return { ok: false, reason: "unsupported_venue" };
+    }
+    const res = await this.live.deriveCredentials();
+    if (!res.ok) {
+      this.journal.write({ type: "derive_keys", ok: false, reason: res.reason });
+      this.emit("log", { level: "error", message: `derive_keys_failed: ${res.reason}` });
+      return res;
+    }
+    this.settings.apiKey = res.apiKey;
+    this.settings.apiSecret = res.apiSecret;
+    this.settings.apiPassphrase = res.apiPassphrase;
+    this.journal.write({
+      type: "derive_keys",
+      ok: true,
+      signerAddress: res.signerAddress,
+      walletType: res.walletType,
+    });
+    await this.pingApi({});
+    return res;
   }
 
   async refreshLiveBalance() {
@@ -816,7 +857,7 @@ class Engine {
         ? this.market.bars[this.market.bars.length - 1].close
         : null;
     return {
-      version: "0.10.0",
+      version: "0.11.0",
       running: this.running,
       status: this.status,
       mode: this.mode,
@@ -847,6 +888,8 @@ class Engine {
         hasApiPassphrase: Boolean(this.settings.apiPassphrase),
         walletAddress: this.settings.walletAddress || "",
         hasPrivKey: Boolean(this.settings.privateKey),
+        walletType: this.settings.walletType || "AUTO",
+        signerAddress: typeof this.live.signerAddress === "function" ? this.live.signerAddress() : null,
         refreshMs: clampRefreshMs(this.settings.refreshMs || 100),
         notificationsEnabled: this.notificationsEnabled !== false,
         paperBalance: this.settings.paperBalance || "1000.00",

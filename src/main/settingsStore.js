@@ -33,6 +33,7 @@ const DEFAULTS = {
   apiSecret: "",
   apiPassphrase: "",
   privateKey: "",
+  walletType: "AUTO",
   walletAddress: "",
   apiBase: "https://clob.polymarket.com",
   clobUrl: "https://clob.polymarket.com",

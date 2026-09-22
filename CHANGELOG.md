@@ -2,6 +2,11 @@
 
 All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 
+## 0.11.0 — 2026-09-23
+
+- **API keys are derived in the app.** Polymarket has no screen that hands out `apiKey` / `secret` / `passphrase` — they come from an L1 `ClobAuth` signature. Paste the signing key and press **Get API keys from the private key**; Vespera signs, calls `/auth/derive-api-key` (falling back to `/auth/api-key`) and stores the result encrypted. Only the private key has to be copied by hand, from Polymarket → Account → Private key → Start export.
+- **Proxy accounts sign correctly.** Email and Google accounts hold funds in a proxy wallet, so the wallet address is not the signing key's address. Orders now set `maker` to the wallet, `signer` to the key, and `signatureType` to POLY_PROXY. Signing a proxy account as an EOA — which is what the previous build did — gets every order rejected. The type is detected by comparing the two addresses and can be overridden.
+
 ## 0.10.0 — 2026-09-22
 
 - **Real Polymarket quotes.** The venue now reads `/price`, `/midpoint` and `/book` for the live round. Entries are priced off the best ask, and the payout multiple is `1 / price` — Polymarket pays $1 per winning share, so an ask of 0.72 returns ×1.39, not ×2.

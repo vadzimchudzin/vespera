@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld("vespera", {
   setMode: (mode) => ipcRenderer.invoke("engine:setMode", mode),
   confirmLot: (baseUsd) => ipcRenderer.invoke("engine:confirmLot", baseUsd),
   ping: (creds) => ipcRenderer.invoke("engine:ping", creds),
+  deriveKeys: (patch) => ipcRenderer.invoke("engine:deriveKeys", patch),
   resetPaper: (startingBalance) => ipcRenderer.invoke("engine:resetPaper", startingBalance),
   setStrategy: (id) => ipcRenderer.invoke("engine:setStrategy", id),
   getSettings: () => ipcRenderer.invoke("settings:get"),

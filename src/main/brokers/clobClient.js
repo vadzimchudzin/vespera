@@ -21,7 +21,7 @@ function requestJson(url, { method = "GET", headers = {}, body, timeoutMs = 8000
         method,
         headers: {
           Accept: "application/json",
-          "User-Agent": "Vespera/0.10.0",
+          "User-Agent": "Vespera/0.11.0",
           ...(payload ? { "Content-Type": "application/json", "Content-Length": payload.length } : {}),
           ...headers,
         },
@@ -228,6 +228,35 @@ class ClobClient {
       headers,
       body: bodyObj,
     });
+  }
+
+  /**
+   * Exchange an L1 signature for L2 credentials.
+   * Tries derive first (returns the existing key pair for this signer) and
+   * falls back to create for a signer that has never had one.
+   */
+  async deriveApiKey({ address, signature, timestamp, nonce }) {
+    const headers = {
+      POLY_ADDRESS: address,
+      POLY_SIGNATURE: signature,
+      POLY_TIMESTAMP: String(timestamp),
+      POLY_NONCE: String(nonce == null ? 0 : nonce),
+    };
+    let res = await this.request(`${this.clobUrl}/auth/derive-api-key`, { headers });
+    if (!res.ok) {
+      res = await this.request(`${this.clobUrl}/auth/api-key`, { method: "POST", headers });
+    }
+    if (!res.ok) {
+      return { ok: false, status: res.status, message: res.raw || `http_${res.status}` };
+    }
+    const j = res.json || {};
+    const apiKey = j.apiKey || j.api_key;
+    const secret = j.secret || j.api_secret;
+    const passphrase = j.passphrase || j.api_passphrase;
+    if (!apiKey || !secret || !passphrase) {
+      return { ok: false, status: res.status, message: "incomplete_credentials" };
+    }
+    return { ok: true, apiKey, secret, passphrase };
   }
 
   async authGet(path) {

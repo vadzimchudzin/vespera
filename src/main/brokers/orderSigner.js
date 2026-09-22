@@ -40,15 +40,19 @@ function buildOrder({
   makerAmount,
   takerAmount,
   maker,
+  signer,
   side = 0,
   expiration = 0,
   feeRateBps = 0,
+  signatureType = 0,
 }) {
   const salt = BigInt(Math.floor(Math.random() * 1e15)).toString();
   return {
     salt,
+    // maker is the account that holds the funds (the proxy / deposit wallet
+    // for email accounts); signer is the key that actually signs.
     maker,
-    signer: maker,
+    signer: signer || maker,
     taker: "0x0000000000000000000000000000000000000000",
     tokenId: String(tokenId),
     makerAmount: String(makerAmount),
@@ -57,8 +61,22 @@ function buildOrder({
     nonce: "0",
     feeRateBps: String(feeRateBps),
     side,
-    signatureType: 0, // EOA
+    signatureType: Number(signatureType) || 0,
   };
+}
+
+/**
+ * Polymarket signature types.
+ * Email / Google accounts hold funds in a proxy wallet, so the order must be
+ * signed by the exported key but funded by the wallet address — that is type 1,
+ * not 0. Signing a proxy account as EOA gets the order rejected.
+ */
+const SIGNATURE_TYPES = { EOA: 0, POLY_PROXY: 1, POLY_GNOSIS_SAFE: 2, DEPOSIT_WALLET: 3 };
+
+function signatureTypeFor(walletType) {
+  const key = String(walletType || "").toUpperCase();
+  if (key in SIGNATURE_TYPES) return SIGNATURE_TYPES[key];
+  return SIGNATURE_TYPES.EOA;
 }
 
 /**
@@ -100,11 +118,81 @@ async function signOrder(order, privateKey) {
   return { order, signature };
 }
 
+/**
+ * L1 auth: prove control of the signer address so the CLOB will hand out
+ * (or hand back) the L2 credentials — apiKey / secret / passphrase.
+ * These are NOT created in the Polymarket web UI; they are derived from a
+ * signature, which is why the app does it instead of asking the user.
+ */
+const CLOB_AUTH_DOMAIN = {
+  name: "ClobAuthDomain",
+  version: "1",
+  chainId: CHAIN_ID,
+};
+
+const CLOB_AUTH_TYPES = {
+  ClobAuth: [
+    { name: "address",   type: "address" },
+    { name: "timestamp", type: "string"  },
+    { name: "nonce",     type: "uint256" },
+    { name: "message",   type: "string"  },
+  ],
+};
+
+const CLOB_AUTH_MESSAGE = "This message attests that I control the given wallet";
+
+function loadEthers() {
+  try {
+    // eslint-disable-next-line global-require
+    const { ethers } = require("ethers");
+    return ethers;
+  } catch {
+    throw new Error("ethers not found — run: npm install");
+  }
+}
+
+function normalizeKey(privateKey) {
+  const pk = String(privateKey || "").trim();
+  if (!pk) throw new Error("missing_private_key");
+  return pk.startsWith("0x") ? pk : `0x${pk}`;
+}
+
+/** Address of the EOA behind a signing key. */
+function addressFromPrivateKey(privateKey) {
+  const ethers = loadEthers();
+  return new ethers.Wallet(normalizeKey(privateKey)).address;
+}
+
+/**
+ * Sign the ClobAuth payload.
+ * @returns {Promise<{ address, signature, timestamp, nonce }>}
+ */
+async function signClobAuth(privateKey, { timestamp, nonce = 0 } = {}) {
+  const ethers = loadEthers();
+  const wallet = new ethers.Wallet(normalizeKey(privateKey));
+  const ts = String(timestamp || Math.floor(Date.now() / 1000));
+  const message = {
+    address: wallet.address,
+    timestamp: ts,
+    nonce: Number(nonce) || 0,
+    message: CLOB_AUTH_MESSAGE,
+  };
+  const signature = await wallet._signTypedData(CLOB_AUTH_DOMAIN, CLOB_AUTH_TYPES, message);
+  return { address: wallet.address, signature, timestamp: ts, nonce: Number(nonce) || 0 };
+}
+
 module.exports = {
   EXCHANGE_ADDRESS,
   CHAIN_ID,
   DOMAIN,
   ORDER_TYPES,
+  CLOB_AUTH_DOMAIN,
+  CLOB_AUTH_TYPES,
+  CLOB_AUTH_MESSAGE,
+  SIGNATURE_TYPES,
+  signatureTypeFor,
   buildOrder,
   signOrder,
+  signClobAuth,
+  addressFromPrivateKey,
 };

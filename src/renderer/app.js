@@ -393,6 +393,8 @@
           <label>${t("privateKey")}</label>
           <input id="privateKey" type="password" placeholder="${t("privateKeyPlaceholder")}" autocomplete="off" />
         </div>
+        <button class="ok" id="btnDerive">${t("deriveKeys")}</button>
+        <p class="hint" id="deriveOut"></p>
         <button class="ok" id="btnPing">${t("ping")}</button>
         <p class="hint" id="pingOut"></p>
         <p class="hint">${t("autoBlocked")}</p>
@@ -406,6 +408,27 @@
       if (sApi.hasApiSecret) $("apiSecret").placeholder = storedHint;
       if (sApi.hasApiPassphrase) $("apiPassphrase").placeholder = storedHint;
       if (sApi.hasPrivKey) $("privateKey").placeholder = storedHint;
+      $("btnDerive").onclick = async () => {
+        const out = $("deriveOut");
+        out.textContent = t("deriveWorking");
+        const res = await window.vespera.deriveKeys({
+          privateKey: $("privateKey").value.trim(),
+          walletAddress: $("walletAddress").value.trim(),
+        });
+        if (res && res.ok) {
+          out.innerHTML = `<span class="ping-dot ok"></span>${t("deriveOk")} \u00b7 ${res.walletType} \u00b7 ${String(
+            res.signerAddress || ""
+          ).slice(0, 10)}\u2026`;
+          $("privateKey").placeholder = t("secretStored");
+          $("privateKey").value = "";
+          const snap = await window.vespera.snapshot();
+          if (snap) state.snapshot = snap;
+        } else {
+          out.innerHTML = `<span class="ping-dot bad"></span>${t("deriveFail")}: ${
+            (res && res.reason) || "error"
+          }`;
+        }
+      };
       $("btnPing").onclick = async () => {
         const creds = {
           apiKey: $("apiKey").value.trim(),

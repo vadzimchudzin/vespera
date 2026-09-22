@@ -112,6 +112,30 @@ ipcMain.handle("engine:ping", (_e, creds) => {
   store.save(save);
   return engine.pingApi(patch);
 });
+ipcMain.handle("engine:deriveKeys", async (_e, patch) => {
+  const p = patch || {};
+  const save = {};
+  if (p.privateKey != null && String(p.privateKey) !== "") save.privateKey = p.privateKey;
+  if (p.walletAddress != null) save.walletAddress = p.walletAddress;
+  if (p.walletType != null) save.walletType = p.walletType;
+  store.save(save);
+  const res = await engine.deriveApiKeys(p);
+  if (res.ok) {
+    store.save({
+      apiKey: res.apiKey,
+      apiSecret: res.apiSecret,
+      apiPassphrase: res.apiPassphrase,
+    });
+  }
+  // never hand the secrets back to the window
+  return {
+    ok: res.ok,
+    reason: res.reason || null,
+    status: res.status || null,
+    signerAddress: res.signerAddress || null,
+    walletType: res.walletType || null,
+  };
+});
 ipcMain.handle("engine:setStrategy", (_e, id) => {
   const result = engine.setStrategy(id);
   if (result.ok) store.save({ strategyId: result.strategyId });

@@ -171,6 +171,85 @@ async function payoutCase({ payout, side, settleClose, expectPnl, label }) {
   assert.strictEqual(unsupported.ok, false);
   assert.strictEqual(unsupported.reason, "timeframe_unsupported");
 
+  // ── L1 auth, key derivation and proxy signing ──────────────────────────────
+
+  const {
+    signClobAuth,
+    addressFromPrivateKey,
+    signatureTypeFor,
+    buildOrder,
+    CLOB_AUTH_DOMAIN,
+    CLOB_AUTH_TYPES,
+    CLOB_AUTH_MESSAGE,
+  } = require("./brokers/orderSigner");
+  const { ethers } = require("ethers");
+
+  const TEST_PK = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
+  const signerAddr = addressFromPrivateKey(TEST_PK);
+
+  const auth = await signClobAuth(TEST_PK, { timestamp: 1790110800, nonce: 0 });
+  assert.strictEqual(auth.address, signerAddr);
+  assert.strictEqual(
+    ethers.utils.verifyTypedData(CLOB_AUTH_DOMAIN, CLOB_AUTH_TYPES, {
+      address: auth.address,
+      timestamp: "1790110800",
+      nonce: 0,
+      message: CLOB_AUTH_MESSAGE,
+    }, auth.signature),
+    signerAddr,
+    "the ClobAuth signature must recover to the signing key"
+  );
+
+  assert.strictEqual(signatureTypeFor("EOA"), 0);
+  assert.strictEqual(signatureTypeFor("POLY_PROXY"), 1);
+  assert.strictEqual(signatureTypeFor("POLY_GNOSIS_SAFE"), 2);
+
+  // Wallet address == signer address means a plain EOA.
+  const eoa = new PolymarketAdapter({ privateKey: TEST_PK, walletAddress: signerAddr, client: {} });
+  assert.strictEqual(eoa.resolvedWalletType(), "EOA");
+
+  // An email account funds from a proxy, so the addresses differ and the
+  // order must be signed as POLY_PROXY or the CLOB rejects it.
+  const proxyAddr = "0x1111111111111111111111111111111111111111";
+  const proxy = new PolymarketAdapter({ privateKey: TEST_PK, walletAddress: proxyAddr, client: {} });
+  assert.strictEqual(proxy.resolvedWalletType(), "POLY_PROXY");
+
+  const proxyOrder = buildOrder({
+    tokenId: "1",
+    makerAmount: "1000000",
+    takerAmount: "2000000",
+    maker: proxyAddr,
+    signer: signerAddr,
+    signatureType: signatureTypeFor(proxy.resolvedWalletType()),
+  });
+  assert.strictEqual(proxyOrder.maker, proxyAddr, "funds come from the proxy wallet");
+  assert.strictEqual(proxyOrder.signer, signerAddr, "the exported key signs");
+  assert.strictEqual(proxyOrder.signatureType, 1);
+
+  // Derivation stores the credentials on the adapter.
+  let asked = null;
+  const deriving = new PolymarketAdapter({
+    privateKey: TEST_PK,
+    walletAddress: proxyAddr,
+    client: {
+      deriveApiKey: async (payload) => {
+        asked = payload;
+        return { ok: true, apiKey: "A", secret: "B", passphrase: "C" };
+      },
+      configure: () => {},
+    },
+  });
+  const derived = await deriving.deriveCredentials();
+  assert.strictEqual(derived.ok, true);
+  assert.strictEqual(deriving.apiKey, "A");
+  assert.strictEqual(deriving.apiSecret, "B");
+  assert.strictEqual(deriving.apiPassphrase, "C");
+  assert.strictEqual(asked.address, signerAddr, "L1 auth is sent for the signer address");
+  assert.ok(deriving.hasL2(), "a derived key pair completes L2");
+
+  const noKey = new PolymarketAdapter({ client: {} });
+  assert.strictEqual((await noKey.deriveCredentials()).reason, "missing_private_key");
+
   console.log("quote + payout tests ok");
 })().catch((err) => {
   console.error(err);

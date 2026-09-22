@@ -29,6 +29,13 @@ Repo: private [`VadimChudin/vespera`](https://github.com/VadimChudin/vespera)
 
 **OK** in the API panel pings the Polymarket CLOB. It does not place trades. Live `marketBuy` stays `auto_not_wired` until a signer is plugged into `src/main/brokers`.
 
+## Keys
+
+1. Polymarket → **Account → Private key → Start export**. That key only signs; it is stored encrypted on this machine and never leaves it.
+2. Copy your Polymarket wallet address from the profile menu.
+3. In Vespera → **API**, paste both and press **Get API keys from the private key**. The CLOB L2 credentials (`apiKey`, `secret`, `passphrase`) are derived from an `ClobAuth` signature — there is no page on polymarket.com that shows them. "Relayer API keys" in Settings is a different thing and is not used here.
+4. Press **OK** to ping. The panel shows the live UP/DOWN price, the payout multiple and the minimum order size.
+
 ## Run from source
 
 ```bash

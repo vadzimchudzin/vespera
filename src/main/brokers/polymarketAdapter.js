@@ -2,7 +2,13 @@
 
 const { ClobClient } = require("./clobClient");
 const { resolveUpDown } = require("./polymarketMarkets");
-const { buildOrder, signOrder } = require("./orderSigner");
+const {
+  buildOrder,
+  signOrder,
+  signClobAuth,
+  addressFromPrivateKey,
+  signatureTypeFor,
+} = require("./orderSigner");
 
 const DEFAULT_MIN_SHARES = 5;
 const DEFAULT_TICK = 0.01;
@@ -39,6 +45,7 @@ class PolymarketAdapter {
     this.apiPassphrase = options.apiPassphrase || "";
     this.walletAddress = options.walletAddress || "";
     this.privateKey = options.privateKey || "";
+    this.walletType = options.walletType || "AUTO";
     this.symbol = options.symbol || "BTCUSDT";
     this.timeframe = options.timeframe || "15m";
     this.client = options.client || new ClobClient(options);
@@ -51,6 +58,7 @@ class PolymarketAdapter {
     if (patch.apiPassphrase != null) this.apiPassphrase = patch.apiPassphrase;
     if (patch.walletAddress != null) this.walletAddress = patch.walletAddress;
     if (patch.privateKey != null) this.privateKey = patch.privateKey;
+    if (patch.walletType != null) this.walletType = patch.walletType;
     if (patch.symbol != null) this.symbol = patch.symbol;
     if (patch.timeframe != null) this.timeframe = patch.timeframe;
     if (typeof this.client.configure === "function") this.client.configure(patch);
@@ -63,6 +71,70 @@ class PolymarketAdapter {
 
   hasPrivateKey() {
     return Boolean(this.privateKey);
+  }
+
+  /** Address of the signing key, or null when no key is set. */
+  signerAddress() {
+    if (!this.privateKey) return null;
+    try {
+      return addressFromPrivateKey(this.privateKey);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * How this account must sign. Email / Google accounts keep funds in a proxy
+   * wallet, so the wallet address differs from the signing key's address and
+   * the order has to be POLY_PROXY, not EOA.
+   */
+  resolvedWalletType() {
+    const explicit = String(this.walletType || "AUTO").toUpperCase();
+    if (explicit !== "AUTO") return explicit;
+    const signer = this.signerAddress();
+    if (!signer || !this.walletAddress) return "EOA";
+    return signer.toLowerCase() === String(this.walletAddress).toLowerCase() ? "EOA" : "POLY_PROXY";
+  }
+
+  /**
+   * Fetch the L2 credentials (apiKey / secret / passphrase) from the CLOB
+   * using the signing key. Polymarket does not expose these in its web UI.
+   */
+  async deriveCredentials() {
+    if (!this.hasPrivateKey()) {
+      return { ok: false, reason: "missing_private_key" };
+    }
+    if (typeof this.client.deriveApiKey !== "function") {
+      return { ok: false, reason: "unsupported_client" };
+    }
+    let auth;
+    try {
+      auth = await signClobAuth(this.privateKey, { timestamp: Math.floor(Date.now() / 1000), nonce: 0 });
+    } catch (err) {
+      return { ok: false, reason: String(err.message || err) };
+    }
+    const res = await this.client.deriveApiKey(auth);
+    if (!res.ok) {
+      return { ok: false, reason: res.message || "derive_failed", status: res.status };
+    }
+    this.apiKey = res.apiKey;
+    this.apiSecret = res.secret;
+    this.apiPassphrase = res.passphrase;
+    if (typeof this.client.configure === "function") {
+      this.client.configure({
+        apiKey: res.apiKey,
+        apiSecret: res.secret,
+        apiPassphrase: res.passphrase,
+      });
+    }
+    return {
+      ok: true,
+      apiKey: res.apiKey,
+      apiSecret: res.secret,
+      apiPassphrase: res.passphrase,
+      signerAddress: auth.address,
+      walletType: this.resolvedWalletType(),
+    };
   }
 
   // ── public methods ────────────────────────────────────────────────────────
@@ -242,12 +314,17 @@ class PolymarketAdapter {
       err.code = "missing_tokenId";
       throw err;
     }
+    const signerAddress = this.signerAddress();
+    const walletType = this.resolvedWalletType();
     const order = buildOrder({
       tokenId,
       makerAmount: String(makerAmount),
       takerAmount: String(takerAmount || "0"),
+      // funds live on the wallet address, the exported key only signs
       maker: this.walletAddress,
+      signer: signerAddress || this.walletAddress,
       side,
+      signatureType: signatureTypeFor(walletType),
     });
     const signed = await signOrder(order, this.privateKey);
     const res = await this.client.postOrder(signed, this.walletAddress);
