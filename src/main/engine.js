@@ -514,6 +514,14 @@ class Engine {
       this.emit("status", this.status);
       return { ok: false, reason: "daily_limit" };
     }
+    if (this.isLiveMoney() && typeof this.live.region === "function") {
+      // an unknown answer does not block: the order error still pauses Auto
+      const geo = await this.live.region();
+      if (geo && geo.ok && geo.blocked) {
+        this.journal.write({ type: "start_refused", reason: "geoblocked", country: geo.country || null });
+        return { ok: false, reason: "geoblocked", country: geo.country || null };
+      }
+    }
     if (this.isLiveMoney() && !opts.confirmLive) {
       return { ok: false, reason: "live_confirm_required" };
     }
@@ -723,6 +731,16 @@ class Engine {
         ? { id: "network", status: "ok", latencyMs: health.latencyMs }
         : { id: "network", status: "fail", reason: health.reason, blocked: /^geoblocked/.test(String(health.reason)) }
     );
+
+    // 1b. region: reads work from a blocked IP, only orders are refused, so ask explicitly
+    if (netOk && typeof this.live.region === "function") {
+      const geo = await this.live.region({ maxAgeMs: 0 });
+      add(
+        geo && geo.ok
+          ? { id: "region", status: geo.blocked ? "fail" : "ok", country: geo.country || null, proxied: Boolean(this.settings.proxyUrl) }
+          : { id: "region", status: "warn", reason: (geo && geo.reason) || "unknown" }
+      );
+    }
 
     // 2. signing key
     const signer = typeof this.live.signerAddress === "function" ? this.live.signerAddress() : null;
@@ -1359,7 +1377,7 @@ class Engine {
   _onOrderError(err, message) {
     const code = err && err.code;
     const status = err && err.response ? Number(err.response.status) : null;
-    if (code === "insufficient_balance" || code === "below_min_size" || code === "auto_not_wired") {
+    if (code === "insufficient_balance" || code === "below_min_size" || code === "auto_not_wired" || code === "geoblocked") {
       this.pause(`${code}: ${message}`);
       return;
     }

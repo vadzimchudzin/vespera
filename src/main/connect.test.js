@@ -78,6 +78,7 @@ const status = (res) => Object.fromEntries(res.checks.map((c) => [c.id, c.status
     const res = await e.connect({ walletAddress: WALLET, privateKey: TEST_PK, walletType: "AUTO" });
     assert.deepStrictEqual(status(res), {
       network: "ok",
+      region: "ok",
       key: "ok",
       wallet: "ok",
       walletType: "ok",
@@ -122,6 +123,18 @@ const status = (res) => Object.fromEntries(res.checks.map((c) => [c.id, c.status
     assert.strictEqual(s.clobKeys, "skip");
     assert.strictEqual(s.balance, "skip");
     assert.strictEqual(res.ready, false);
+  }
+
+  // ── reachable but geoblocked: reads still work, region fails, not ready ───
+  {
+    const e = engineWith(fakeClient({ geo: { ok: true, blocked: true, country: "BY" } }));
+    const res = await e.connect({ walletAddress: WALLET, privateKey: TEST_PK });
+    const s = status(res);
+    assert.strictEqual(s.network, "ok", "/time answers from a blocked IP");
+    assert.strictEqual(s.region, "fail");
+    assert.strictEqual(res.checks.find((c) => c.id === "region").country, "BY");
+    assert.strictEqual(s.balance, "warn", "balance is still read and shown");
+    assert.strictEqual(res.ready, false, "orders would be refused, so not ready");
   }
 
   // ── missing key / bad wallet ───────────────────────────────────────────────

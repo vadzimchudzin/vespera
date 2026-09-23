@@ -125,6 +125,9 @@
       detail = `${row.count} \u00b7 ${row.reason || ""}`;
     } else if (type === "connect") {
       title = row.ready ? t("connectReady") : t("connectNotReady");
+    } else if (type === "start_refused") {
+      title = t("logStartRefused");
+      detail = `${reasonText(row.reason)}${row.country ? ` (${row.country})` : ""}`;
     } else if (type === "dry_run") {
       title = row.on ? t("logDryOn") : t("logDryOff");
     } else if (type === "stake_capped") {
@@ -620,6 +623,11 @@
           network: {
             ok: () => [t("chkNetworkOk"), c.latencyMs ? `${c.latencyMs} ms` : ""],
             fail: () => [c.blocked ? t("chkNetworkBlocked") : t("chkNetworkFail"), c.blocked ? t("chkNetworkBlockedFix") : reasonOf(c)],
+          },
+          region: {
+            ok: () => [t("chkRegionOk"), `${esc(c.country || "")}${c.proxied ? ` \u00b7 ${t("chkRegionViaProxy")}` : ""}`],
+            fail: () => [`${t("chkRegionBlocked")}${c.country ? ` (${esc(c.country)})` : ""}`, t("chkRegionBlockedFix")],
+            warn: () => [t("chkRegionUnknown"), reasonOf(c)],
           },
           key: {
             ok: () => [t("chkKeyOk"), esc(short(c.address))],
@@ -1303,7 +1311,7 @@
           closePanel();
           try {
             const res = await window.vespera.start({ confirmLive: true });
-            if (res && res.ok === false) logNote(reasonText(res.reason));
+            if (res && res.ok === false) logNote(`${reasonText(res.reason)}${res.country ? ` (${res.country})` : ""}`);
           } catch (err) {
             logNote(`${t("logError")}: ${String((err && err.message) || err)}`);
           }
@@ -1484,7 +1492,9 @@
             openPanel("liveConfirm");
             return;
           }
-          if (res && res.ok === false) logNote(res.reason === "daily_limit" ? t("dailyLimitHit") : reasonText(res.reason));
+          if (res && res.ok === false) {
+            logNote(res.reason === "daily_limit" ? t("dailyLimitHit") : `${reasonText(res.reason)}${res.country ? ` (${res.country})` : ""}`);
+          }
         }
       } catch (err) {
         logNote(`${t("logError")}: ${String((err && err.message) || err)}`);
