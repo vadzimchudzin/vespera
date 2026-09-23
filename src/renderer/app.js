@@ -118,6 +118,8 @@
     } else if (type === "venue_failure") {
       title = t("logVenueFailure");
       detail = `${row.count} \u00b7 ${row.reason || ""}`;
+    } else if (type === "connect") {
+      title = row.ready ? t("connectReady") : t("connectNotReady");
     } else if (type === "dry_run") {
       title = row.on ? t("logDryOn") : t("logDryOff");
     } else if (type === "stake_capped") {
@@ -439,57 +441,56 @@
 
     if (kind === "api") {
       title.textContent = t("api");
-      const ping = state.snapshot?.ping;
+      const sApi = state.snapshot?.settings || {};
+      const storedHint = t("secretStored");
       body.innerHTML = `
-        <p class="hint">${t("pingHint")}</p>
-        <div class="field">
-          <label>${t("api")}</label>
-          <div class="api-row">
-            <img class="api-mark" src="assets/polymarket.png" width="22" height="22" alt="Polymarket" />
-            <input id="apiKey" type="password" placeholder="${t("apiPlaceholder")}" autocomplete="off" />
-          </div>
-        </div>
-        <div class="field">
-          <label>${t("apiSecret")}</label>
-          <input id="apiSecret" type="password" placeholder="${t("apiSecretPlaceholder")}" autocomplete="off" />
-        </div>
-        <div class="field">
-          <label>${t("apiPassphrase")}</label>
-          <input id="apiPassphrase" type="password" placeholder="${t("apiPassphrasePlaceholder")}" autocomplete="off" />
-        </div>
+        <p class="hint">${t("connectHint")}</p>
         <div class="field">
           <label>${t("walletAddress")}</label>
-          <input id="walletAddress" type="text" placeholder="${t("walletPlaceholder")}" autocomplete="off" />
+          <div class="api-row">
+            <img class="api-mark" src="assets/polymarket.png" width="22" height="22" alt="Polymarket" />
+            <input id="walletAddress" type="text" placeholder="${t("walletPlaceholder")}" autocomplete="off" spellcheck="false" />
+          </div>
+          <p class="hint">${t("walletWhere")}</p>
+        </div>
+        <div class="field">
+          <label>${t("privateKey")}</label>
+          <input id="privateKey" type="password" placeholder="${sApi.hasPrivKey ? storedHint : t("privateKeyPlaceholder")}" autocomplete="off" spellcheck="false" />
+          <p class="hint">${t("privateKeyWhere")}</p>
         </div>
         <div class="field">
           <label>${t("walletType")}</label>
           <div id="walletTypeHost"></div>
           <p class="hint" id="walletTypeHint"></p>
         </div>
-        <div class="field">
-          <label>${t("privateKey")}</label>
-          <input id="privateKey" type="password" placeholder="${t("privateKeyPlaceholder")}" autocomplete="off" />
-        </div>
-        <div class="field">
-          <label>${t("proxyUrl")}</label>
-          <input id="proxyUrl" type="text" placeholder="${t("proxyPlaceholder")}" autocomplete="off" />
-        </div>
-        <button class="ok" id="btnDerive">${t("deriveKeys")}</button>
-        <p class="hint" id="deriveOut"></p>
-        <button class="ok" id="btnPing">${t("ping")}</button>
-        <p class="hint" id="pingOut"></p>
-        <p class="hint">${t("autoBlocked")}</p>
+        <details class="adv" id="apiAdvanced">
+          <summary>${t("advanced")}</summary>
+          <div class="field">
+            <label>${t("proxyUrl")}</label>
+            <input id="proxyUrl" type="text" placeholder="${t("proxyPlaceholder")}" autocomplete="off" spellcheck="false" />
+          </div>
+          <p class="hint">${t("manualKeysHint")}</p>
+          <div class="field">
+            <label>${t("api")}</label>
+            <input id="apiKey" type="password" placeholder="${sApi.hasApiKey ? storedHint : t("apiPlaceholder")}" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label>${t("apiSecret")}</label>
+            <input id="apiSecret" type="password" placeholder="${sApi.hasApiSecret ? storedHint : t("apiSecretPlaceholder")}" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label>${t("apiPassphrase")}</label>
+            <input id="apiPassphrase" type="password" placeholder="${sApi.hasApiPassphrase ? storedHint : t("apiPassphrasePlaceholder")}" autocomplete="off" />
+          </div>
+        </details>
+        <button class="ok" id="btnConnect">${t("connect")}</button>
+        <div class="checks" id="checks"></div>
       `;
-      const sApi = state.snapshot?.settings || {};
       if (sApi.walletAddress) $("walletAddress").value = sApi.walletAddress;
-      // Stored secrets are never sent back to the renderer. Show that they exist
-      // and keep them when the field is left empty.
-      const storedHint = t("secretStored");
-      if (sApi.hasApiKey) $("apiKey").placeholder = storedHint;
-      if (sApi.hasApiSecret) $("apiSecret").placeholder = storedHint;
-      if (sApi.hasApiPassphrase) $("apiPassphrase").placeholder = storedHint;
-      if (sApi.hasPrivKey) $("privateKey").placeholder = storedHint;
-      if (sApi.proxyUrl) $("proxyUrl").value = sApi.proxyUrl;
+      if (sApi.proxyUrl) {
+        $("proxyUrl").value = sApi.proxyUrl;
+        $("apiAdvanced").open = true;
+      }
       // Custom list: the native <select> popup ignores the dark theme on Windows.
       const walletTypeLabel = {
         AUTO: t("walletTypeAuto"),
@@ -498,6 +499,7 @@
         POLY_GNOSIS_SAFE: t("walletTypeSafe"),
         EOA: t("walletTypeEoa"),
       };
+      const typeName = (v) => walletTypeLabel[v] || v || "";
       let walletType = sApi.walletType || "AUTO";
       let detected = sApi.detectedWalletType || null;
       const paintWalletType = () => {
@@ -507,9 +509,9 @@
         if (!detected) {
           hint.textContent = walletType === "AUTO" ? t("walletTypeNeedKey") : "";
         } else if (walletType === "AUTO") {
-          hint.textContent = `${t("walletTypeDetected")}: ${walletTypeLabel[detected] || detected}`;
+          hint.textContent = `${t("walletTypeDetected")}: ${typeName(detected)}`;
         } else if (walletType !== detected) {
-          hint.textContent = `${t("walletTypeMismatch")}: ${walletTypeLabel[detected] || detected}`;
+          hint.textContent = `${t("walletTypeMismatch")}: ${typeName(detected)}`;
           hint.classList.add("warn");
         } else {
           hint.textContent = "";
@@ -530,7 +532,6 @@
           async (value) => {
             walletType = value;
             paintWalletType();
-            // saved right away, not only on Derive / OK
             await window.vespera.saveSettings({ walletType: value });
             await refreshDetected();
           }
@@ -541,81 +542,109 @@
         await window.vespera.saveSettings({ walletAddress: $("walletAddress").value.trim() });
         await refreshDetected();
       };
-      $("btnDerive").onclick = async () => {
-        const out = $("deriveOut");
-        out.textContent = t("deriveWorking");
+
+      const short = (a) => (a ? `${String(a).slice(0, 6)}\u2026${String(a).slice(-4)}` : "");
+      const usd = (n) => `$${Number(n).toFixed(2)}`;
+      const reasonOf = (c) => esc(c.reason || "");
+      const checkText = (c) => {
+        const x = {
+          network: {
+            ok: () => [t("chkNetworkOk"), c.latencyMs ? `${c.latencyMs} ms` : ""],
+            fail: () => [c.blocked ? t("chkNetworkBlocked") : t("chkNetworkFail"), c.blocked ? t("chkNetworkBlockedFix") : reasonOf(c)],
+          },
+          key: {
+            ok: () => [t("chkKeyOk"), esc(short(c.address))],
+            fail: () => [c.reason === "missing" ? t("chkKeyMissing") : t("chkKeyInvalid"), ""],
+          },
+          wallet: {
+            ok: () => [t("chkWalletOk"), esc(short(c.address))],
+            fail: () => [c.reason === "missing" ? t("chkWalletMissing") : t("chkWalletInvalid"), ""],
+          },
+          walletType: {
+            ok: () => [`${t("walletType")}: ${esc(typeName(c.used))}`, ""],
+            warn: () => [`${t("walletType")}: ${esc(typeName(c.used))}`, `${t("walletTypeMismatch")}: ${esc(typeName(c.detected))}`],
+          },
+          clobKeys: {
+            ok: () => [c.source === "manual" ? t("chkKeysManual") : t("chkKeysDerived"), ""],
+            fail: () => [t("chkKeysFail"), `${reasonOf(c)}${c.httpStatus ? ` (${c.httpStatus})` : ""}`],
+          },
+          market: {
+            ok: () => [t("chkMarketOk"), `${esc(c.slug)} \u00b7 UP ${Number(c.price).toFixed(3)} \u00b7 min ${c.minOrderSize}`],
+            fail: () => [t("chkMarketFail"), reasonOf(c)],
+          },
+          balance: {
+            ok: () => [`${t("chkBalance")}: ${usd(c.balance)}`, t("chkBalanceSeriesOk")],
+            warn: () =>
+              c.balance == null
+                ? [t("chkBalance"), t("chkBalanceUnknown")]
+                : [`${t("chkBalance")}: ${usd(c.balance)}`, `${t("chkBalanceSeriesShort")} ${usd(c.seriesNeed)}`],
+            fail: () => [`${t("chkBalance")}: ${usd(c.balance)}`, `${t("chkBalanceFirstShort")} ${usd(c.firstNeed)}`],
+          },
+          allowance: {
+            ok: () => [t("chkAllowanceOk"), ""],
+            warn: () => [t("chkAllowanceUnknown"), ""],
+            fail: () => [t("chkAllowanceFail"), t("chkAllowanceFix")],
+          },
+        }[c.id];
+        const fn = x && x[c.status];
+        return fn ? fn() : [t(`chk_${c.id}`), t("chkSkipped")];
+      };
+      const icon = { ok: "\u2713", warn: "!", fail: "\u2715", skip: "\u2013" };
+      const paintChecks = (res) => {
+        const host = $("checks");
+        if (!host) return;
+        if (!res) {
+          host.innerHTML = "";
+          return;
+        }
+        const rows = res.checks
+          .map((c) => {
+            const [head, detail] = checkText(c);
+            return `<div class="chk chk-${c.status}"><span class="chk-ico">${icon[c.status] || ""}</span><div><div>${head}</div>${
+              detail ? `<div class="hint">${detail}</div>` : ""
+            }</div></div>`;
+          })
+          .join("");
+        const extra = [];
+        const bal = res.checks.find((c) => c.id === "balance");
+        if (bal && bal.baseBelowMin) extra.push(`${t("chkBaseBelowMin")} ${usd(bal.minStake)}`);
+        const when = res.at ? new Date(res.at).toLocaleTimeString() : "";
+        host.innerHTML = `
+          <div class="chk-head" data-ready="${res.ready ? "1" : "0"}">${res.ready ? t("connectReady") : t("connectNotReady")}<span class="hint">${esc(when)}</span></div>
+          ${rows}
+          ${extra.map((e) => `<p class="hint warn">${e}</p>`).join("")}`;
+      };
+      paintChecks(state.snapshot?.lastConnect);
+      $("btnConnect").onclick = async () => {
+        const btn = $("btnConnect");
+        btn.disabled = true;
+        $("checks").innerHTML = `<p class="hint">${t("connectWorking")}</p>`;
         let res;
         try {
-          res = await window.vespera.deriveKeys({
-            privateKey: $("privateKey").value.trim(),
+          res = await window.vespera.connect({
             walletAddress: $("walletAddress").value.trim(),
+            privateKey: $("privateKey").value.trim(),
             walletType,
             proxyUrl: $("proxyUrl").value.trim(),
+            apiKey: $("apiKey").value.trim(),
+            apiSecret: $("apiSecret").value.trim(),
+            apiPassphrase: $("apiPassphrase").value.trim(),
           });
         } catch (err) {
-          res = { ok: false, reason: String((err && err.message) || err) };
+          res = { ready: false, checks: [{ id: "network", status: "fail", reason: String((err && err.message) || err) }] };
         }
-        if (res && res.ok) {
-          out.innerHTML = `<span class="ping-dot ok"></span>${t("deriveOk")} \u00b7 ${esc(res.walletType)} \u00b7 ${esc(
-            String(res.signerAddress || "").slice(0, 10)
-          )}\u2026`;
-          $("privateKey").placeholder = t("secretStored");
-          $("privateKey").value = "";
-          await refreshDetected();
-        } else {
-          out.innerHTML = `<span class="ping-dot bad"></span>${t("deriveFail")}: ${esc(
-            (res && res.reason) || "error"
-          )}`;
+        btn.disabled = false;
+        // entered secrets are stored encrypted; never keep them in the DOM
+        for (const id of ["privateKey", "apiKey", "apiSecret", "apiPassphrase"]) {
+          if ($(id).value) {
+            $(id).value = "";
+            $(id).placeholder = storedHint;
+          }
         }
+        paintChecks(res);
+        await refreshDetected();
+        renderSnap(state.snapshot);
       };
-      $("btnPing").onclick = async () => {
-        const creds = {
-          apiKey: $("apiKey").value.trim(),
-          apiSecret: $("apiSecret").value.trim(),
-          apiPassphrase: $("apiPassphrase").value.trim(),
-          walletAddress: $("walletAddress").value.trim(),
-          privateKey: $("privateKey").value.trim(),
-          walletType,
-          proxyUrl: $("proxyUrl").value.trim(),
-        };
-        $("pingOut").textContent = t("pinging");
-        let res;
-        try {
-          res = await window.vespera.ping(creds);
-        } catch (err) {
-          res = { live: { ok: false, message: String((err && err.message) || err) } };
-        }
-        const live = res.live || {};
-        const l2Failed = live.l2Ok === false;
-        const ok = Boolean(live.ok) && !l2Failed;
-        const extra = live.slug ? ` · ${esc(live.slug)}` : "";
-        const q = live.quotes || {};
-        const fmt = (side) =>
-          q[side] ? `${side} ${q[side].price.toFixed(2)} → ×${q[side].payout.toFixed(2)}` : "";
-        const quoteLine = q.UP || q.DOWN
-          ? `<br/><span class="hint">${[fmt("UP"), fmt("DOWN")].filter(Boolean).join(" · ")}${
-              q.minOrderSize ? ` · min ${q.minOrderSize}` : ""
-            }</span>`
-          : "";
-        const l2 = live.hasSigner ? (l2Failed ? ` · ${t("l2Fail")}` : ` · ${t("l2Ok")}`) : "";
-        $("pingOut").innerHTML = `<span class="ping-dot ${ok ? "ok" : "bad"}"></span>${
-          l2Failed
-            ? t("l2Rejected")
-            : live.ok
-              ? t("reachable")
-              : live.blocked
-                ? `${t("geoBlocked")}${live.geo && live.geo.country ? " \u00b7 " + esc(live.geo.country) : ""}`
-                : live.message === "missing_key"
-                  ? t("missingKey")
-                  : `${t("unreachable")}${live.message ? " \u00b7 " + esc(live.message) : ""}`
-        }${live.latencyMs ? " · " + live.latencyMs + "ms" : ""}${extra}${l2}${quoteLine}`;
-        if (res && res.live) await refreshDetected();
-      };
-      if (ping?.live) {
-        const m = ping.live.message;
-        const known = { reachable: "reachable", l2_failed: "l2Rejected", missing_key: "missingKey" };
-        $("pingOut").textContent = known[m] ? t(known[m]) : m || ping.live.slug || "";
-      }
     }
 
     if (kind === "theme") {

@@ -2,6 +2,20 @@
 
 All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 
+## 0.15.0 — 2026-09-23
+
+- **API panel: three fields and one button.** Wallet address, private key and wallet type, each with where to find it, then **Connect**. The CLOB key / secret / passphrase and the proxy moved under *Advanced*; the separate "Get API keys" and "OK" buttons are replaced by Connect.
+- **Connect runs the whole setup in one pass:** saves the fields, gets the CLOB keys from the private key (unless keys were typed under *Advanced*), then shows a checklist with a reason and a fix for each item:
+  - Polymarket reachable, or blocked in this region
+  - private key valid (signer address shown), wallet address valid
+  - wallet type used vs detected
+  - CLOB keys received and accepted
+  - current round found, with the live price and minimum size
+  - pUSD balance against the first bet (stake + fee, at least the 5-share minimum) and against a full losing series
+  - exchange allowed to spend pUSD (from `/balance-allowance`); if not, one trade on polymarket.com sets it
+  - Items that depend on a failed one are marked skipped. The last result stays in the panel after reopening.
+- Secrets typed into the panel are cleared from the window after Connect; they are stored encrypted and never returned to the renderer.
+
 ## 0.14.0 — 2026-09-23
 
 - **Dry run for Auto, on by default.** Auto does everything except post the order: live Polymarket price, stake sizing, taker fee, the stake + fee balance check (when CLOB keys are set) and a real EIP-712 signature with your key. Dry-run bets settle and feed the series like live ones, but are booked separately from real money in the journal, *Today* and Statistics. A header badge shows **DRY RUN** or **REAL MONEY** whenever Auto is selected.

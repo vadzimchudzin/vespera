@@ -115,6 +115,22 @@ ipcMain.handle("engine:ping", (_e, creds) => {
   store.save(save);
   return engine.pingApi(patch);
 });
+ipcMain.handle("engine:connect", async (_e, patch) => {
+  const p = patch || {};
+  const save = {};
+  for (const key of ["apiKey", "apiSecret", "apiPassphrase", "privateKey"]) {
+    if (p[key] != null && String(p[key]).trim() !== "") save[key] = String(p[key]).trim();
+  }
+  for (const key of ["walletAddress", "walletType", "proxyUrl"]) {
+    if (p[key] != null) save[key] = String(p[key]).trim();
+  }
+  store.save(save);
+  const res = await engine.connect(p);
+  if (res.credentials) store.save(res.credentials);
+  // secrets stay in the main process
+  const { credentials, ...safe } = res;
+  return safe;
+});
 ipcMain.handle("engine:deriveKeys", async (_e, patch) => {
   const p = patch || {};
   const save = {};

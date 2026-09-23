@@ -10,6 +10,8 @@ const {
   signatureTypeFor,
   normalizeWalletType,
   detectWalletType,
+  EXCHANGE_ADDRESS,
+  NEG_RISK_EXCHANGE_ADDRESS,
 } = require("./orderSigner");
 
 const { CRYPTO_TAKER_RATE, DEFAULT_EXPONENT, takerFee } = require("../fees");
@@ -402,6 +404,43 @@ class PolymarketAdapter {
    *  - engine: { side: "UP"|"DOWN", sizeUsd, clientOrderId, round }
    * The engine shape resolves the round, prices the book and sizes the order.
    */
+  /**
+   * pUSD balance and exchange allowances as the CLOB sees them
+   * (GET /balance-allowance → { balance, allowances: { spender: amount } }).
+   * An allowance of 0 for the V2 exchange means every order will be refused
+   * with "not enough balance / allowance".
+   */
+  async account() {
+    if (!this.hasL2() || typeof this.client.balanceAllowance !== "function") {
+      return { ok: false, reason: "missing_l2" };
+    }
+    let res;
+    try {
+      res = await this.client.balanceAllowance();
+    } catch (err) {
+      return { ok: false, reason: String((err && err.message) || err) };
+    }
+    if (!res || !res.ok || !res.json) {
+      return { ok: false, status: res && res.status, reason: (res && (res.raw || `http_${res.status}`)) || "no_response" };
+    }
+    const raw = Number(res.json.balance ?? res.json.collateral ?? 0);
+    const allowances = res.json.allowances && typeof res.json.allowances === "object" ? res.json.allowances : null;
+    const read = (addr) => {
+      if (!allowances) return null;
+      const hit = Object.keys(allowances).find((k) => k.toLowerCase() === addr.toLowerCase());
+      if (!hit) return null;
+      // values are uint256 strings, often 2^256−1; only zero vs non-zero matters
+      return /^0*$/.test(String(allowances[hit]).replace(/\D/g, "")) ? "zero" : "set";
+    };
+    const single = res.json.allowance != null ? (Number(res.json.allowance) > 0 ? "set" : "zero") : null;
+    return {
+      ok: true,
+      balanceUsd: Number.isFinite(raw) ? raw / 1e6 : null,
+      exchange: read(EXCHANGE_ADDRESS) || single,
+      negRiskExchange: read(NEG_RISK_EXCHANGE_ADDRESS),
+    };
+  }
+
   /** Cheap reachability check for the Auto watchdog: CLOB /time, plus geoblock on failure. */
   async health() {
     try {

@@ -1050,3 +1050,81 @@ html[data-theme="glass-light"] .ghost {
 button.ok.danger {
   background: #ff453a;
 }
+
+details.adv {
+  margin: 4px 0 14px;
+  border: 1px solid var(--hair);
+  border-radius: 14px;
+  padding: 8px 12px;
+}
+details.adv > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 13px;
+  list-style: none;
+}
+details.adv > summary::before {
+  content: "\25B8  ";
+}
+details.adv[open] > summary::before {
+  content: "\25BE  ";
+}
+details.adv[open] > summary {
+  margin-bottom: 10px;
+}
+#btnConnect {
+  width: 100%;
+}
+#btnConnect:disabled {
+  opacity: 0.6;
+}
+.checks {
+  margin-top: 14px;
+}
+.chk-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.chk-head[data-ready="1"] {
+  color: #30d158;
+}
+.chk-head[data-ready="0"] {
+  color: #ff453a;
+}
+.chk {
+  display: flex;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--hair);
+  font-size: 13px;
+}
+.chk .hint {
+  margin: 2px 0 0;
+}
+.chk-ico {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  border-radius: 99px;
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  background: rgba(118, 118, 128, 0.4);
+}
+.chk-ok .chk-ico {
+  background: #30d158;
+}
+.chk-warn .chk-ico {
+  background: #ff9f0a;
+}
+.chk-fail .chk-ico {
+  background: #ff453a;
+}
+.chk-skip {
+  opacity: 0.55;
+}
