@@ -26,6 +26,7 @@
     chromeKey: "",
     saveTimer: 0,
     savingPanel: false,
+    depositTimer: 0,
   };
 
   function applyI18n() {
@@ -277,6 +278,36 @@
     state.openMenu = null;
   }
 
+  /** Coin / network mark: bundled SVG, or a letter badge when there is none. */
+  function coinMark(icon, label) {
+    if (icon) {
+      const img = document.createElement("img");
+      img.className = "coin";
+      img.src = `assets/crypto/${icon}.svg`;
+      img.alt = "";
+      return img;
+    }
+    const span = document.createElement("span");
+    span.className = "coin coin-letter";
+    span.textContent = String(label || "?").charAt(0).toUpperCase();
+    return span;
+  }
+
+  function fillOpt(node, opt) {
+    node.textContent = "";
+    if (opt.icon !== undefined) node.appendChild(coinMark(opt.icon, opt.label));
+    const label = document.createElement("span");
+    label.className = "v-opt-label";
+    label.textContent = opt.label;
+    node.appendChild(label);
+    if (opt.note) {
+      const note = document.createElement("span");
+      note.className = "v-opt-note";
+      note.textContent = opt.note;
+      node.appendChild(note);
+    }
+  }
+
   function buildSelect(id, options, value, onChange) {
     const wrap = document.createElement("div");
     wrap.className = "v-select";
@@ -285,14 +316,21 @@
     btn.type = "button";
     btn.className = "v-select-btn";
     const current = options.find((o) => o.value === value) || options[0];
-    btn.innerHTML = `<span>${current ? current.label : ""}</span><span class="chev">▾</span>`;
+    const face = document.createElement("span");
+    face.className = "v-face";
+    if (current) fillOpt(face, current);
+    const chev = document.createElement("span");
+    chev.className = "chev";
+    chev.textContent = "▾";
+    btn.append(face, chev);
     const menu = document.createElement("div");
     menu.className = "v-menu";
     options.forEach((opt) => {
       const item = document.createElement("button");
       item.type = "button";
       item.className = "v-opt";
-      item.textContent = opt.label;
+      if (opt.icon !== undefined || opt.note) fillOpt(item, opt);
+      else item.textContent = opt.label;
       if (opt.tag) {
         const tag = document.createElement("span");
         tag.className = "v-opt-tag";
@@ -304,7 +342,7 @@
       if (opt.value === value) item.classList.add("on");
       item.onclick = (e) => {
         e.stopPropagation();
-        btn.querySelector("span").textContent = opt.label;
+        fillOpt(face, opt);
         wrap.dataset.value = opt.value;
         menu.querySelectorAll(".v-opt").forEach((n) => n.classList.remove("on"));
         item.classList.add("on");
@@ -361,6 +399,8 @@
   }
 
   function closePanel() {
+    clearInterval(state.depositTimer);
+    state.depositTimer = 0;
     $("panel").hidden = true;
     $("backdrop").hidden = true;
     const foot = $("panelFoot");
@@ -460,6 +500,8 @@
     const foot = $("panelFoot");
     $("panel").hidden = false;
     $("backdrop").hidden = false;
+    clearInterval(state.depositTimer);
+    state.depositTimer = 0;
     if (foot) {
       foot.hidden = true;
       foot.innerHTML = "";
@@ -636,10 +678,16 @@
         const bal = res.checks.find((c) => c.id === "balance");
         if (bal && bal.baseBelowMin) extra.push(`${t("chkBaseBelowMin")} ${usd(bal.minStake)}`);
         const when = res.at ? new Date(res.at).toLocaleTimeString() : "";
+        const fund =
+          bal && (bal.status === "fail" || bal.status === "warn")
+            ? `<button type="button" class="ghost dep-fund" id="btnFund">${t("depFund")}</button>`
+            : "";
         host.innerHTML = `
           <div class="chk-head" data-ready="${res.ready ? "1" : "0"}">${res.ready ? t("connectReady") : t("connectNotReady")}<span class="hint">${esc(when)}</span></div>
           ${rows}
-          ${extra.map((e) => `<p class="hint warn">${e}</p>`).join("")}`;
+          ${extra.map((e) => `<p class="hint warn">${e}</p>`).join("")}
+          ${fund}`;
+        if ($("btnFund")) $("btnFund").onclick = () => openPanel("deposit");
       };
       paintChecks(state.snapshot?.lastConnect);
       $("btnConnect").onclick = async () => {
@@ -672,6 +720,167 @@
         await refreshDetected();
         renderSnap(state.snapshot);
       };
+    }
+
+    if (kind === "deposit") {
+      title.textContent = t("deposit");
+      body.innerHTML = `
+        <p class="hint">${t("depHint")}</p>
+        <div class="dep-picks">
+          <div class="field"><label>${t("depToken")}</label><div id="depTokenHost"></div></div>
+          <div class="field"><label>${t("depNetwork")}</label><div id="depChainHost"></div></div>
+        </div>
+        <div id="depBody"><p class="hint">${t("depLoading")}</p></div>
+        <div class="dep-history" id="depHistory" hidden>
+          <div class="dep-history-h"><span>${t("depHistory")}</span><button type="button" class="dep-link" id="depRefresh">${t("depRefresh")}</button></div>
+          <div id="depTx"></div>
+        </div>
+      `;
+      const short = (a) => (a ? `${String(a).slice(0, 6)}\u2026${String(a).slice(-4)}` : "");
+      const STABLES = ["USDT", "USDC", "DAI", "USDe", "USDT0", "USDC.e"];
+      // Native coins come with placeholder contracts (0xEeee…); only show a real token contract.
+      const showContract = (sym, net) =>
+        STABLES.includes(sym) &&
+        !/^0xe{40}$/i.test(net.tokenAddress) &&
+        (/^0x[0-9a-f]{40}$/i.test(net.tokenAddress) || /^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(net.tokenAddress) || /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(net.tokenAddress));
+      const stateLabel = { done: t("depDone"), pending: t("depPending"), failed: t("depFailed") };
+      let tokens = [];
+      let symbol = "USDT";
+      let chainId = "";
+      let address = "";
+      let seq = 0;
+      const alive = () => !$("panel").hidden && $("depBody");
+
+      const paintTx = async () => {
+        if (!address || !alive()) return;
+        const mine = address;
+        const res = await window.vespera.depositStatus(mine);
+        if (!alive() || mine !== address) return;
+        $("depHistory").hidden = false;
+        const host = $("depTx");
+        if (!res || !res.ok) {
+          host.innerHTML = `<p class="hint warn">${esc((res && res.reason) || "")}</p>`;
+          return;
+        }
+        if (!res.transactions.length) {
+          host.innerHTML = `<p class="hint">${t("depNone")}</p>`;
+          return;
+        }
+        host.innerHTML = res.transactions
+          .map((tx) => {
+            const when = tx.createdTimeMs ? new Date(tx.createdTimeMs).toLocaleString() : "";
+            const amount = tx.amount != null ? `${esc(tx.amount)} ${esc(tx.symbol)}` : esc(tx.symbol || "");
+            return `<div class="dep-tx" data-state="${esc(tx.state)}">
+              <div><div>${amount} <span class="hint">· ${esc(tx.chainName)}</span></div><div class="hint">${esc(when)}</div></div>
+              <span class="dep-pill" title="${esc(tx.status)}">${esc(stateLabel[tx.state] || tx.status)}</span>
+            </div>`;
+          })
+          .join("");
+      };
+
+      const paintAddress = async () => {
+        const tok = tokens.find((x) => x.symbol === symbol);
+        const net = tok && tok.networks.find((n) => n.chainId === chainId);
+        const host = $("depBody");
+        if (!tok || !net || !host) return;
+        const mySeq = ++seq;
+        address = "";
+        $("depHistory").hidden = true;
+        host.innerHTML = `<p class="hint">${t("depLoading")}</p>`;
+        const res = await window.vespera.depositAddress(net.addressType);
+        if (mySeq !== seq || !alive()) return;
+        if (!res || !res.ok) {
+          if (res && (res.reason === "wallet_missing" || res.reason === "wallet_invalid")) {
+            host.innerHTML = `<p class="hint warn">${t("depWalletMissing")}</p>
+              <button type="button" class="ghost" id="depOpenApi">${t("depOpenApi")}</button>`;
+            $("depOpenApi").onclick = () => openPanel("api");
+          } else {
+            host.innerHTML = `<p class="hint warn">${t("depFail")}: ${esc((res && res.reason) || "")}</p><p class="hint">${t("depProxyHint")}</p>`;
+          }
+          return;
+        }
+        address = res.address;
+        const only = t("depOnly").replace("{token}", tok.symbol).replace("{network}", net.chainName);
+        const contract = showContract(tok.symbol, net)
+          ? `<div class="dep-kv"><span>${t("depContract")}</span><span class="mono" title="${esc(net.tokenAddress)}">${esc(short(net.tokenAddress))}</span></div>`
+          : "";
+        host.innerHTML = `
+          <div class="dep-card">
+            <img class="dep-qr" src="${esc(res.qr)}" alt="QR" width="132" height="132" />
+            <div class="dep-info">
+              <label>${t("depAddress")} · ${esc(tok.symbol)} (${esc(net.chainName)})</label>
+              <div class="dep-addr mono" id="depAddr">${esc(res.address)}</div>
+              <button type="button" class="ghost dep-copy" id="depCopy">${t("depCopy")}</button>
+            </div>
+          </div>
+          <div class="dep-kvs">
+            <div class="dep-kv"><span>${t("depMinDeposit")}</span><span>$${esc(net.minUsd)}</span></div>
+            ${contract}
+            <div class="dep-kv"><span>${t("depArrives")}</span><span class="mono" title="${esc(res.wallet)}">pUSD · ${esc(short(res.wallet))}</span></div>
+          </div>
+          <p class="hint warn">${esc(only)}</p>`;
+        $("depCopy").onclick = async () => {
+          await window.vespera.copyText(res.address);
+          const b = $("depCopy");
+          if (!b) return;
+          b.textContent = t("depCopied");
+          setTimeout(() => {
+            if ($("depCopy")) $("depCopy").textContent = t("depCopy");
+          }, 1400);
+        };
+        paintTx();
+      };
+
+      const paintChains = () => {
+        const tok = tokens.find((x) => x.symbol === symbol) || tokens[0];
+        if (!tok) return;
+        symbol = tok.symbol;
+        if (!tok.networks.some((n) => n.chainId === chainId)) chainId = tok.networks[0].chainId;
+        const host = $("depChainHost");
+        host.innerHTML = "";
+        host.appendChild(
+          buildSelect(
+            "dep-chain",
+            tok.networks.map((n) => ({ value: n.chainId, label: n.chainName, icon: n.icon, note: `${t("depMin")} $${n.minUsd}` })),
+            chainId,
+            (v) => {
+              chainId = v;
+              window.vespera.saveSettings({ depositChain: v });
+              paintAddress();
+            }
+          )
+        );
+        paintAddress();
+      };
+
+      (async () => {
+        const [saved, res] = await Promise.all([window.vespera.getSettings(), window.vespera.depositAssets()]);
+        if (!alive()) return;
+        if (saved && saved.depositToken) symbol = saved.depositToken;
+        if (saved && saved.depositChain) chainId = saved.depositChain;
+        if (!res || !res.ok || !res.tokens.length) {
+          $("depBody").innerHTML = `<p class="hint warn">${t("depFail")}: ${esc((res && res.reason) || "")}</p><p class="hint">${t("depProxyHint")}</p>`;
+          return;
+        }
+        tokens = res.tokens;
+        if (!tokens.some((x) => x.symbol === symbol)) symbol = tokens[0].symbol;
+        $("depTokenHost").appendChild(
+          buildSelect(
+            "dep-token",
+            tokens.map((x) => ({ value: x.symbol, label: x.symbol, icon: x.icon })),
+            symbol,
+            (v) => {
+              symbol = v;
+              window.vespera.saveSettings({ depositToken: v });
+              paintChains();
+            }
+          )
+        );
+        paintChains();
+      })();
+      $("depRefresh").onclick = () => paintTx();
+      // deposits take minutes; poll while the panel stays open
+      state.depositTimer = setInterval(paintTx, 15000);
     }
 
     if (kind === "theme") {
@@ -1092,8 +1301,12 @@
         $("liveCancel").onclick = () => closePanel();
         $("liveGo").onclick = async () => {
           closePanel();
-          const res = await window.vespera.start({ confirmLive: true });
-          if (res && res.ok === false) logNote(reasonText(res.reason));
+          try {
+            const res = await window.vespera.start({ confirmLive: true });
+            if (res && res.ok === false) logNote(reasonText(res.reason));
+          } catch (err) {
+            logNote(`${t("logError")}: ${String((err && err.message) || err)}`);
+          }
           renderSnap(await window.vespera.snapshot());
         };
       }
@@ -1215,9 +1428,14 @@
 
     $("btnMenu").onclick = () => openSheet(true);
     $("sheetClose").onclick = () => openSheet(false);
-    $("backdrop").onclick = () => {
+    $("backdrop").onclick = (e) => {
       openSheet(false);
       closePanel();
+      // The backdrop covers the header while a panel is open; pass a click on a
+      // header button (Start/Stop, Paper/Auto) through instead of swallowing it.
+      const under = document.elementFromPoint(e.clientX, e.clientY);
+      const hit = under && under.closest && under.closest(".chrome button");
+      if (hit) hit.click();
     };
     $("panelClose").onclick = () => closePanel();
     document.querySelectorAll("[data-open]").forEach((btn) => {
@@ -1252,16 +1470,26 @@
     });
     $("btnRun").onclick = async () => {
       if (!window.vespera) return;
-      if (state.running) {
-        await window.vespera.stop();
-      } else {
-        const res = await window.vespera.start();
-        if (res && res.reason === "live_confirm_required") {
-          renderSnap(await window.vespera.snapshot());
-          openPanel("liveConfirm");
-          return;
+      const btn = $("btnRun");
+      if (btn.disabled) return;
+      // Start can wait on candle history; show that the click landed.
+      btn.disabled = true;
+      try {
+        if (state.running) {
+          await window.vespera.stop();
+        } else {
+          const res = await window.vespera.start();
+          if (res && res.reason === "live_confirm_required") {
+            renderSnap(await window.vespera.snapshot());
+            openPanel("liveConfirm");
+            return;
+          }
+          if (res && res.ok === false) logNote(res.reason === "daily_limit" ? t("dailyLimitHit") : reasonText(res.reason));
         }
-        if (res && res.reason === "daily_limit") logNote(t("dailyLimitHit"));
+      } catch (err) {
+        logNote(`${t("logError")}: ${String((err && err.message) || err)}`);
+      } finally {
+        btn.disabled = false;
       }
       renderSnap(await window.vespera.snapshot());
     };

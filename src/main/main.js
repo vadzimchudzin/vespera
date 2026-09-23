@@ -1,15 +1,19 @@
 "use strict";
 
-const { app, BrowserWindow, ipcMain, shell, Notification, dialog } = require("electron");
+const { app, BrowserWindow, ipcMain, shell, Notification, dialog, clipboard } = require("electron");
 const fs = require("fs");
+const QRCode = require("qrcode");
 const { toCsv } = require("./stats");
 const path = require("path");
 const { Engine } = require("./engine");
 const { SettingsStore } = require("./settingsStore");
+const { BridgeClient } = require("./brokers/bridge");
+const { setProxy } = require("./brokers/clobClient");
 
 let win;
 let engine;
 let store;
+const bridge = new BridgeClient();
 
 process.on("uncaughtException", (err) => {
   const msg = String((err && err.message) || err);
@@ -206,6 +210,45 @@ ipcMain.handle("settings:save", async (_e, patch) => {
   return engine.snapshot();
 });
 ipcMain.handle("window:minimize", () => win.minimize());
+
+// ── Deposit (Polymarket Bridge) ─────────────────────────────────────────────
+function failOf(err) {
+  return { ok: false, reason: String((err && err.message) || err) };
+}
+ipcMain.handle("deposit:assets", async () => {
+  setProxy(store.value.proxyUrl); // the bridge is geoblocked like the CLOB
+  try {
+    return { ok: true, tokens: await bridge.assets() };
+  } catch (err) {
+    return failOf(err);
+  }
+});
+ipcMain.handle("deposit:address", async (_e, addressType) => {
+  setProxy(store.value.proxyUrl);
+  const wallet = store.value.walletAddress || "";
+  if (!wallet) return { ok: false, reason: "wallet_missing" };
+  try {
+    const all = await bridge.addresses(wallet);
+    const address = all[addressType];
+    if (!address) return { ok: false, reason: "type_unsupported" };
+    const qr = await QRCode.toDataURL(address, { margin: 1, width: 320, errorCorrectionLevel: "M" });
+    return { ok: true, wallet, address, qr };
+  } catch (err) {
+    return failOf(err);
+  }
+});
+ipcMain.handle("deposit:status", async (_e, address) => {
+  setProxy(store.value.proxyUrl);
+  try {
+    return { ok: true, transactions: await bridge.status(address) };
+  } catch (err) {
+    return failOf(err);
+  }
+});
+ipcMain.handle("clipboard:write", (_e, text) => {
+  clipboard.writeText(String(text || ""));
+  return true;
+});
 ipcMain.handle("window:close", () => win.close());
 ipcMain.handle("window:maximize", () => {
   if (win.isMaximized()) win.unmaximize();
