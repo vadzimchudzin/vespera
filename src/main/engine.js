@@ -6,7 +6,7 @@ const { MarketData } = require("./marketData");
 const { INTERVAL_MS, SYMBOLS, TIMEFRAMES, HISTORY_BARS, clampRefreshMs, symbolLabel, fallbackTick, fetchExchangeSymbols } = require("./markets");
 const { createVenue } = require("./brokers");
 const { Journal } = require("./journal");
-const { SIZING_MODES } = require("./risk");
+const { SIZING_MODES, perDollar } = require("./risk");
 const { computeStats, todayPnl } = require("./stats");
 const { Decimal } = require("./money");
 const { outcomeOf } = require("./paperBroker");
@@ -101,6 +101,7 @@ class Engine {
     this.venueFailures = 0;
     this.orderRejects = 0;
     this._healthTimer = null;
+    this.lastConnect = null;
     this.notificationsEnabled = this.settings.notificationsEnabled !== false;
     this.strategyId = this.settings.strategyId || DEFAULT_STRATEGY_ID;
     this.symbols = SYMBOLS.map((s) => ({ ...s, tickSize: fallbackTick(s.id) }));
@@ -664,6 +665,159 @@ class Engine {
   notify(kind, title, body) {
     if (!this.notificationsEnabled) return;
     this.emit("notify", { kind, title, body, at: Date.now() });
+  }
+
+  /**
+   * One-button setup: store the wallet / key / type, fetch the CLOB keys from
+   * the private key when needed, and run every check a live order depends on.
+   * Each check is { id, status: ok|warn|fail|skip, ...data }; a failed check
+   * skips the ones that depend on it. Secrets are returned only for main.js
+   * to persist and never reach the window.
+   */
+  async connect(patch = {}) {
+    const keep = (v) => v != null && String(v).trim() !== "";
+    for (const key of ["apiKey", "apiSecret", "apiPassphrase", "privateKey"]) {
+      if (keep(patch[key])) this.settings[key] = String(patch[key]).trim();
+    }
+    if (patch.walletAddress != null) this.settings.walletAddress = String(patch.walletAddress).trim();
+    if (patch.walletType != null) this.settings.walletType = patch.walletType;
+    if (patch.proxyUrl != null) this.settings.proxyUrl = String(patch.proxyUrl).trim();
+    const manualKeys = keep(patch.apiKey) || keep(patch.apiSecret) || keep(patch.apiPassphrase);
+    if (typeof this.live.configure === "function") {
+      this.live.configure({
+        apiKey: this.settings.apiKey,
+        apiSecret: this.settings.apiSecret,
+        apiPassphrase: this.settings.apiPassphrase,
+        walletAddress: this.settings.walletAddress,
+        privateKey: this.settings.privateKey,
+        walletType: this.settings.walletType,
+        proxyUrl: this.settings.proxyUrl,
+        symbol: this.settings.symbol,
+        timeframe: this.settings.timeframe,
+      });
+    }
+
+    const checks = [];
+    const add = (c) => {
+      checks.push(c);
+      return c.status === "ok" || c.status === "warn";
+    };
+    const skip = (id) => checks.push({ id, status: "skip" });
+    let credentials = null;
+
+    // 1. network / region
+    const health = typeof this.live.health === "function" ? await this.live.health() : { ok: false, reason: "unsupported" };
+    const netOk = add(
+      health.ok
+        ? { id: "network", status: "ok", latencyMs: health.latencyMs }
+        : { id: "network", status: "fail", reason: health.reason, blocked: /^geoblocked/.test(String(health.reason)) }
+    );
+
+    // 2. signing key
+    const signer = typeof this.live.signerAddress === "function" ? this.live.signerAddress() : null;
+    const keyOk = add(
+      signer
+        ? { id: "key", status: "ok", address: signer }
+        : { id: "key", status: "fail", reason: this.settings.privateKey ? "invalid" : "missing" }
+    );
+
+    // 3. wallet address
+    const wallet = this.settings.walletAddress || "";
+    const walletOk = add(
+      /^0x[0-9a-fA-F]{40}$/.test(wallet)
+        ? { id: "wallet", status: "ok", address: wallet }
+        : { id: "wallet", status: "fail", reason: wallet ? "invalid" : "missing" }
+    );
+
+    // 4. wallet type
+    if (keyOk && walletOk) {
+      const detected = this.live.detectedWalletType();
+      const used = this.live.resolvedWalletType();
+      add({ id: "walletType", status: used === detected ? "ok" : "warn", used, detected });
+    } else skip("walletType");
+
+    // 5. CLOB keys: derive unless the user typed their own
+    let l2Ok = false;
+    if (netOk && keyOk && walletOk) {
+      if (!manualKeys && typeof this.live.deriveCredentials === "function") {
+        const res = await this.live.deriveCredentials();
+        if (res.ok) {
+          this.settings.apiKey = res.apiKey;
+          this.settings.apiSecret = res.apiSecret;
+          this.settings.apiPassphrase = res.apiPassphrase;
+          credentials = { apiKey: res.apiKey, apiSecret: res.apiSecret, apiPassphrase: res.apiPassphrase };
+        } else {
+          add({ id: "clobKeys", status: "fail", reason: res.reason || "derive_failed" });
+        }
+      }
+      if (!checks.some((c) => c.id === "clobKeys")) {
+        const acct = await this.live.account();
+        if (acct.ok) {
+          l2Ok = add({ id: "clobKeys", status: "ok", source: manualKeys ? "manual" : "derived" });
+          this._lastAccount = acct;
+        } else {
+          add({ id: "clobKeys", status: "fail", reason: acct.reason, httpStatus: acct.status || null });
+        }
+      }
+    } else skip("clobKeys");
+
+    // 6. current round and price
+    let quote = null;
+    if (netOk) {
+      const q = typeof this.live.getQuote === "function" ? await this.live.getQuote({ side: "UP", tsMs: Date.now() }) : null;
+      if (q && q.ok) {
+        quote = q;
+        const { asks, ...light } = q;
+        this.lastQuote = light;
+        add({ id: "market", status: "ok", slug: q.slug, price: q.price, minOrderSize: q.minOrderSize, feeRate: q.feeRate });
+      } else {
+        add({ id: "market", status: "fail", reason: (q && q.reason) || "no_quote" });
+      }
+    } else skip("market");
+
+    // 7. balance against what the series needs
+    if (l2Ok) {
+      const acct = this._lastAccount;
+      const price = quote ? quote.price : 0.5;
+      const schedule = quote ? { rate: quote.feeRate, exponent: quote.feeExponent } : undefined;
+      const minShares = quote ? Number(quote.minOrderSize) || 5 : 5;
+      const minStake = Math.ceil(minShares * price * 100) / 100;
+      const firstStake = Math.max(this.risk.baseUsd.toNumber(), minStake);
+      const perDollarFee = perDollar(price, schedule).fee;
+      const firstNeed = Number((firstStake * (1 + perDollarFee)).toFixed(2));
+      const series = this.risk.plan(price, schedule);
+      const seriesNeed = series.steps.reduce((sum, s) => sum + s.stake * (1 + perDollarFee), 0);
+      const bal = acct.balanceUsd;
+      add({
+        id: "balance",
+        status: bal == null ? "warn" : bal < firstNeed ? "fail" : bal < seriesNeed ? "warn" : "ok",
+        balance: bal,
+        firstNeed,
+        seriesNeed: Number(seriesNeed.toFixed(2)),
+        baseBelowMin: this.risk.baseUsd.toNumber() < minStake,
+        minStake,
+      });
+      // 8. exchange allowance
+      add({
+        id: "allowance",
+        status: acct.exchange === "set" ? "ok" : acct.exchange === "zero" ? "fail" : "warn",
+        state: acct.exchange || "unknown",
+      });
+    } else {
+      skip("balance");
+      skip("allowance");
+    }
+
+    const ready = checks.every((c) => c.status === "ok" || c.status === "warn");
+    this.lastConnect = { at: Date.now(), ready, checks };
+    this.journal.write({
+      type: "connect",
+      ready,
+      checks: checks.map((c) => `${c.id}:${c.status}`).join(" "),
+    });
+    if (this.mode === "auto") await this.refreshLiveBalance();
+    this.emit("connect", this.lastConnect);
+    return { ...this.lastConnect, credentials };
   }
 
   async pingApi(creds = {}) {
@@ -1279,6 +1433,7 @@ class Engine {
       stats: computeStats(this.journal.entries, { book: this._book(), maxSteps: this.risk.maxSteps }),
       book: this._book(),
       pauseReason: this.pauseReason,
+      lastConnect: this.lastConnect || null,
       paper: this.paper.snapshot(),
       liveBalance: this.liveBalance,
       liveBet: this.liveBet,
