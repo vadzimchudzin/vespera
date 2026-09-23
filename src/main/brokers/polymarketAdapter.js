@@ -12,15 +12,30 @@ const {
   detectWalletType,
 } = require("./orderSigner");
 
+const { CRYPTO_TAKER_RATE, DEFAULT_EXPONENT, takerFee } = require("../fees");
+
 const DEFAULT_MIN_SHARES = 5;
 const DEFAULT_TICK = 0.01;
-// Crypto Up/Down taker fee: shares × rate × p × (1 − p), see docs.polymarket.com/trading/fees
-const DEFAULT_FEE_RATE = 0.07;
 
 function decimalsOf(tick) {
   const s = String(tick);
   const i = s.indexOf(".");
   return i < 0 ? 0 : s.length - i - 1;
+}
+
+/**
+ * Filled amount from an order response. The docs describe 6-decimal fixed
+ * math, live responses have been seen as plain decimals ("4.999999"), so pick
+ * the reading closest to what was sent.
+ */
+function filledAmount(value, expectedMicro) {
+  if (value == null || value === "") return null;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  if (String(value).includes(".")) return n;
+  const expected = Number(expectedMicro) / 1e6;
+  if (!Number.isFinite(expected) || expected <= 0) return n / 1e6;
+  return Math.abs(n - expected) <= Math.abs(n / 1e6 - expected) ? n : n / 1e6;
 }
 
 /**
@@ -345,22 +360,29 @@ class PolymarketAdapter {
       tickSize,
       negRisk,
       asks,
-      feeRate: await this._feeRate(resolved.round.conditionId),
+      ...(await this._feeSchedule(resolved.round.conditionId)),
       acceptingOrders: resolved.round.acceptingOrders,
       endDate: resolved.round.endDate,
     };
   }
 
-  async _feeRate(conditionId) {
-    if (!conditionId || typeof this.client.clobMarketInfo !== "function") return DEFAULT_FEE_RATE;
+  /** Fee schedule from /clob-markets (fd: { r, e, to }); crypto defaults when unavailable. */
+  async _feeSchedule(conditionId) {
+    const fallback = { feeRate: CRYPTO_TAKER_RATE, feeExponent: DEFAULT_EXPONENT };
+    if (!conditionId || typeof this.client.clobMarketInfo !== "function") return fallback;
     try {
       const res = await this.client.clobMarketInfo(conditionId);
-      const fd = res && res.ok && res.json && res.json.fd;
-      if (!fd) return DEFAULT_FEE_RATE;
+      if (!res || !res.ok || !res.json) return fallback;
+      const fd = res.json.fd;
+      if (!fd) return { feeRate: 0, feeExponent: DEFAULT_EXPONENT }; // market without fees
       const r = Number(fd.r);
-      return Number.isFinite(r) && r >= 0 ? r : DEFAULT_FEE_RATE;
+      const e = Number(fd.e);
+      return {
+        feeRate: Number.isFinite(r) && r >= 0 ? r : CRYPTO_TAKER_RATE,
+        feeExponent: Number.isFinite(e) && e > 0 ? e : DEFAULT_EXPONENT,
+      };
     } catch {
-      return DEFAULT_FEE_RATE;
+      return fallback;
     }
   }
 
@@ -390,6 +412,16 @@ class PolymarketAdapter {
       err.code = "missing_tokenId";
       throw err;
     }
+    if (quote) {
+      // V2 charges the taker fee in USDC on top of the stake: the wallet must hold both.
+      const balance = await this.getBalance();
+      const need = Number(quote.sizeUsd) + Number(quote.feeUsd || 0);
+      if (balance != null && Number.isFinite(Number(balance)) && Number(balance) < need) {
+        const err = new Error(`insufficient_balance: $${Number(balance).toFixed(2)} < $${need.toFixed(2)} (stake + fee)`);
+        err.code = "insufficient_balance";
+        throw err;
+      }
+    }
     const signerAddress = this.signerAddress();
     const walletType = this.resolvedWalletType();
     this._syncClientIdentity();
@@ -412,6 +444,21 @@ class PolymarketAdapter {
       err.response = res;
       throw err;
     }
+    // Book what actually filled (price improvement gives more shares than asked).
+    const spent = filledAmount(res.json && res.json.makingAmount, makerAmount);
+    const got = filledAmount(res.json && res.json.takingAmount, takerAmount);
+    let fill = null;
+    if (quote && spent && got) {
+      const avg = spent / got;
+      fill = {
+        sizeUsd: spent.toFixed(2),
+        shares: Number(got.toFixed(4)),
+        price: Number(avg.toFixed(5)),
+        payout: got / spent,
+        feeUsd: takerFee(got, avg, { rate: quote.feeRate, exponent: quote.feeExponent }).toFixed(5),
+      };
+    }
+    const booked = fill || quote;
     return {
       ok: true,
       accepted: true,
@@ -422,11 +469,13 @@ class PolymarketAdapter {
       tokenId,
       clientOrderId: params.clientOrderId || null,
       side: quote ? quote.side : side === 1 ? "DOWN" : "UP",
-      sizeUsd: quote ? quote.sizeUsd : null,
-      price: quote ? quote.price : null,
-      shares: quote ? quote.shares : null,
-      payout: quote ? quote.payout : null,
-      feeUsd: quote ? quote.feeUsd : null,
+      sizeUsd: booked ? booked.sizeUsd : null,
+      price: booked ? booked.price : null,
+      limitPrice: quote ? quote.price : null,
+      shares: booked ? booked.shares : null,
+      payout: booked ? booked.payout : null,
+      feeUsd: booked ? booked.feeUsd : null,
+      filled: Boolean(fill),
       slug: quote ? quote.slug : null,
       strike: params.round ? params.round.strike : null,
       roundOpenTs: params.round ? params.round.openTs : null,
@@ -462,14 +511,16 @@ class PolymarketAdapter {
       err.code = "bad_size";
       throw err;
     }
-    // Price on the tick, shares down to 2 decimals, USD from the two — the
-    // precision rules the CLOB enforces (docs.polymarket.com/trading/place-orders).
+    // Marketable BUY precision the CLOB enforces: USD (maker) to 2 decimals,
+    // shares (taker) to 4 decimals, price on the market tick.
     const tick = Number(quote.tickSize) > 0 ? Number(quote.tickSize) : DEFAULT_TICK;
     const priceDp = decimalsOf(tick);
     const swept = sweepPrice(quote.asks, usd);
     const limit = Math.min(1 - tick, Math.max(quote.price, swept || 0));
     const price = Number((Math.ceil(limit / tick - 1e-9) * tick).toFixed(priceDp));
-    const shares = Math.floor((usd / price) * 100 + 1e-9) / 100;
+    const makerMicro = Math.floor(usd * 100 + 1e-9) * 10_000;
+    const takerMicro = Math.floor(makerMicro / price / 100 + 1e-9) * 100;
+    const shares = takerMicro / 1e6;
     if (shares < quote.minOrderSize) {
       const minUsd = Math.ceil(quote.minOrderSize * price * 100) / 100;
       const err = new Error(
@@ -479,10 +530,8 @@ class PolymarketAdapter {
       err.minSizeUsd = minUsd;
       throw err;
     }
-    const makerMicro = Math.round(shares * price * 1e6);
-    const takerMicro = Math.round(shares * 1e6);
-    const feeRate = Number.isFinite(Number(quote.feeRate)) ? Number(quote.feeRate) : DEFAULT_FEE_RATE;
-    const feeUsd = shares * feeRate * price * (1 - price);
+    const schedule = { rate: quote.feeRate, exponent: quote.feeExponent };
+    const feeUsd = takerFee(shares, price, schedule);
     return {
       tokenId: quote.tokenId,
       makerAmount: String(makerMicro),
@@ -492,10 +541,10 @@ class PolymarketAdapter {
         ...quote,
         asks: undefined,
         price,
-        payout: 1 / price,
+        payout: shares / (makerMicro / 1e6),
         sizeUsd: (makerMicro / 1e6).toFixed(2),
         shares,
-        feeUsd: feeUsd.toFixed(4),
+        feeUsd: feeUsd.toFixed(5),
       },
     };
   }

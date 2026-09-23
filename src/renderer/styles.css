@@ -948,3 +948,18 @@ html[data-theme="glass-light"] .ghost {
   object-fit: contain;
   background: transparent;
 }
+
+.v-opt.dim {
+  opacity: 0.55;
+}
+.v-opt-tag {
+  float: right;
+  margin-left: 8px;
+  padding: 0 6px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  color: var(--apple);
+  background: color-mix(in srgb, var(--apple) 16%, transparent);
+}

@@ -321,7 +321,7 @@ function paintLongTicks(bars, i, nTicks, tickSize) {
 }
 
 async function paperCases() {
-  // no quote → flat 0.5% fallback fee
+  // no quote → priced at even odds (0.50) with the crypto taker fee
   const p = new PaperBroker({ startingBalance: "100" });
   await p.marketBuy({
     side: "UP",
@@ -331,8 +331,10 @@ async function paperCases() {
   });
   const win = p.settle({ close: 101 });
   assert(win.status === "win", "paper win");
-  assert(p.balance.toFixed(2) === "100.99", `paper payout minus fee ${p.balance.toFixed(2)}`);
-  assert(win.feeUsd === "0.01", "0.5% fee");
+  // fee = 2 shares × 0.07 × 0.5 × 0.5 = $0.035, charged rounded up to $0.04
+  assert(p.balance.toFixed(2) === "100.96", `paper payout minus fee ${p.balance.toFixed(2)}`);
+  assert(win.feeUsd === "0.04", `taker fee at 0.50, got ${win.feeUsd}`);
+  assert(win.quoteSource === "assumed_0.50", "offline paper says it assumed even odds");
 
   await p.marketBuy({
     side: "DOWN",

@@ -154,7 +154,8 @@ async function run() {
     assert(engine.paper.openBet.side === "UP", "UP");
     assert(engine.paper.openBet.sizeUsd === "1.00", "base size");
     assert(engine.status === "waiting_settlement", "waiting");
-    assert(engine.paper.balance.toFixed(2) === "998.99", `stake+fee deducted ${engine.paper.balance.toFixed(2)}`);
+    // offline: even odds, fee 2 × 0.07 × 0.25 = $0.035 → $0.04
+    assert(engine.paper.balance.toFixed(2) === "998.96", `stake+fee deducted ${engine.paper.balance.toFixed(2)}`);
 
     engine.stop();
     assert(engine.running === false, "stopped running");
@@ -170,7 +171,7 @@ async function run() {
     await next(engine, bars, 220);
     assert(!engine.paper.openBet, "settled after stop");
     assert(engine.paper.history[0].status === "win", "win");
-    assert(engine.paper.balance.toFixed(2) === "1000.99", `balance ${engine.paper.balance.toFixed(2)}`);
+    assert(engine.paper.balance.toFixed(2) === "1000.96", `balance ${engine.paper.balance.toFixed(2)}`);
     assert(engine.risk.step === 1, "win resets step");
     assert(engine.status === "stopped", "idle after settle while stopped");
   }
@@ -572,6 +573,69 @@ async function run() {
     engine._reconcileLive(settled, { attempts: 1, delayMs: 1 });
     await new Promise((r) => setTimeout(r, 30));
     assert(logs.some((m) => m.startsWith("settle_mismatch")), "a venue disagreement is reported");
+  }
+
+  {
+    // Auto only trades pairs/timeframes that have a Polymarket round.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vsp-auto-market-"));
+    const bars = makeTrendBars({ n: 220, close: 110, trend: 0.05 });
+    const market = { ...fakeMarket(bars.slice(0, 219)), configured: [], async configure(p) { this.configured.push(p); } };
+    const engine = new Engine({
+      userDataDir: dir,
+      settings: { mode: "paper", symbol: "ADAUSDT", timeframe: "1h", baseUsd: "1.00", maxSteps: 6 },
+      live: stubLive(),
+      market,
+    });
+    await engine.setMode("auto");
+    assert(engine.settings.symbol === "BTCUSDT" && engine.settings.timeframe === "15m", "auto moves onto a Polymarket round");
+    await engine.applySettings({ symbol: "PEPEUSDT", timeframe: "4h" });
+    assert(engine.settings.symbol === "BTCUSDT" && engine.settings.timeframe === "15m", "auto refuses pairs without a round");
+    await engine.applySettings({ symbol: "ETHUSDT", timeframe: "5m" });
+    assert(engine.settings.symbol === "ETHUSDT" && engine.settings.timeframe === "5m", "supported picks go through");
+    const snap = engine.snapshot();
+    assert(snap.polymarketTimeframes.join() === "5m,15m", "UI learns the Polymarket timeframes");
+    assert(snap.symbols.find((x) => x.id === "BTCUSDT").polymarket === true, "BTC flagged");
+    assert(snap.symbols.find((x) => x.id === "PEPEUSDT").polymarket === false, "PEPE not flagged");
+    await engine.setMode("paper");
+    await engine.applySettings({ symbol: "PEPEUSDT", timeframe: "4h" });
+    assert(engine.settings.symbol === "PEPEUSDT", "paper keeps the full list");
+
+    const boot = new Engine({
+      userDataDir: fs.mkdtempSync(path.join(os.tmpdir(), "vsp-auto-boot-")),
+      settings: { mode: "auto", symbol: "PEPEUSDT", timeframe: "1d" },
+      live: stubLive(),
+      market: fakeMarket([]),
+    });
+    assert(boot.settings.symbol === "BTCUSDT" && boot.settings.timeframe === "15m", "a saved auto config is fitted at boot");
+  }
+
+  {
+    // A restart mid-round restores the paper bet with its fee and shares, and the balance after the stake.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vsp-restore-"));
+    const bars = makeTrendBars({ n: 220, close: 110, trend: 0.05 });
+    const first = new Engine({ userDataDir: dir, settings: { mode: "paper" }, live: stubLive(), market: fakeMarket(bars) });
+    const order = await first.paper.marketBuy({
+      side: "UP",
+      sizeUsd: "10.00",
+      clientOrderId: "r1",
+      round: { strike: 100, openTs: 1, closeTs: 2 },
+      price: 0.5,
+    });
+    first.journal.write({ type: "order_sent", ...order });
+    const again = new Engine({ userDataDir: dir, settings: { mode: "paper" }, live: stubLive(), market: fakeMarket(bars) });
+    assert(again.paper.balance.toFixed(2) === "989.65", `restored balance after stake + fee, got ${again.paper.balance.toFixed(2)}`);
+    const settled = again.paper.settle({ close: 101, closeTs: 2 });
+    assert(settled.pnl === "9.65", `restored bet settles with its fee, got ${settled.pnl}`);
+    assert(settled.balanceAfter === "1009.65", settled.balanceAfter);
+  }
+
+  {
+    // An unsettled live bet survives a restart.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vsp-restore-live-"));
+    const first = new Engine({ userDataDir: dir, settings: { mode: "auto" }, live: stubLive(), market: fakeMarket([]) });
+    first.journal.write({ type: "order_sent", mode: "auto", side: "DOWN", sizeUsd: "5.00", shares: 9.8, feeUsd: "0.17", slug: "s", strike: 1, roundCloseTs: 2 });
+    const again = new Engine({ userDataDir: dir, settings: { mode: "auto" }, live: stubLive(), market: fakeMarket([]) });
+    assert(again.liveBet && again.liveBet.side === "DOWN" && again.liveBet.shares === 9.8, "live bet restored");
   }
 
   console.log("paper engine tests ok");

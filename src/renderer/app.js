@@ -1,6 +1,16 @@
 (() => {
   const $ = (id) => document.getElementById(id);
   const t = (key) => (window.VSP_I18N[state.locale] || window.VSP_I18N.en)[key] || key;
+  // "one|few|many" unit forms (RU needs three); a plain unit is used as is.
+  const plural = (n, forms) => {
+    const f = String(forms).split("|");
+    if (f.length < 3) return f.length === 2 ? (n === 1 ? f[0] : f[1]) : f[0];
+    const m10 = n % 10;
+    const m100 = n % 100;
+    if (m10 === 1 && m100 !== 11) return f[0];
+    if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return f[1];
+    return f[2];
+  };
   // Venue responses end up in innerHTML; never let them inject markup.
   const esc = (value) =>
     String(value == null ? "" : value).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -230,6 +240,14 @@
       item.type = "button";
       item.className = "v-opt";
       item.textContent = opt.label;
+      if (opt.tag) {
+        const tag = document.createElement("span");
+        tag.className = "v-opt-tag";
+        tag.textContent = opt.tag;
+        item.appendChild(tag);
+      }
+      if (opt.dim) item.classList.add("dim");
+      if (opt.title) item.title = opt.title;
       if (opt.value === value) item.classList.add("on");
       item.onclick = (e) => {
         e.stopPropagation();
@@ -328,12 +346,29 @@
     const hostTf = $("hdrTf");
     if (!hostSym || !hostTf || !snap) return;
     const s = snap.settings || {};
-    const symbols = (snap.symbols || []).map((x) => ({ value: x.id, label: x.label }));
-    const tfs = (snap.timeframes || ["1m", "5m", "15m", "1h", "4h", "1d"]).map((tf) => ({
-      value: tf,
-      label: tf,
+    const auto = snap.mode === "auto";
+    const pmTfs = snap.polymarketTimeframes || ["5m", "15m"];
+    // Auto lists only what Polymarket has rounds for; Paper lists everything,
+    // Polymarket pairs first, the rest dimmed (no real quote, priced at 0.50).
+    const rows = (snap.symbols || []).filter((x) => !auto || x.polymarket);
+    const ordered = auto ? rows : [...rows.filter((x) => x.polymarket), ...rows.filter((x) => !x.polymarket)];
+    const symbols = ordered.map((x) => ({
+      value: x.id,
+      label: x.label,
+      tag: !auto && x.polymarket ? "P" : "",
+      dim: !x.polymarket,
+      title: x.polymarket ? t("pmRound") : t("pmNoRound"),
     }));
-    const key = `${s.symbol || ""}|${s.timeframe || ""}|${symbols.length}|${tfs.length}|${state.locale}`;
+    const tfs = (snap.timeframes || ["1m", "5m", "15m", "1h", "4h", "1d"])
+      .filter((tf) => !auto || pmTfs.includes(tf))
+      .map((tf) => ({
+        value: tf,
+        label: tf,
+        tag: !auto && pmTfs.includes(tf) ? "P" : "",
+        dim: !pmTfs.includes(tf),
+        title: pmTfs.includes(tf) ? t("pmRound") : t("pmNoRound"),
+      }));
+    const key = `${s.symbol || ""}|${s.timeframe || ""}|${symbols.length}|${tfs.length}|${state.locale}|${snap.mode}`;
     if (state.chromeKey === key && hostSym.firstChild && hostTf.firstChild) return;
     state.chromeKey = key;
     hostSym.innerHTML = "";
@@ -569,7 +604,7 @@
           <span class="field-label">${t("minCross")}${helpBtn("minCrossHint")}</span>
           <div class="range-row">
             <input id="crossTicks" type="range" min="0" max="2000" step="1" />
-            <span class="range-val" id="crossVal">0 ${t("minCrossUnit")}</span>
+            <span class="range-val" id="crossVal">0 ${plural(0, t("minCrossUnit"))}</span>
           </div>
         </div>
         <div class="field">
@@ -647,7 +682,7 @@
         const usdLabel =
           usd >= 1 ? usd.toFixed(2) : usd >= 0.01 ? usd.toFixed(4) : usd.toFixed(8).replace(/0+$/, "").replace(/\.$/, "");
         $("crossVal").textContent =
-          n === 0 ? `0 ${t("minCrossUnit")}` : `${n} ${t("minCrossUnit")} · $${usdLabel}`;
+          n === 0 ? `0 ${plural(0, t("minCrossUnit"))}` : `${n} ${plural(n, t("minCrossUnit"))} · $${usdLabel}`;
       };
       paintCross();
       $("crossTicks").oninput = () => {
@@ -657,7 +692,7 @@
       $("confirms").value = String(Math.max(0, Math.min(10, Number(s.confirmCount || 0))));
       const paintConfirms = () => {
         const n = Number($("confirms").value) || 0;
-        $("confirmsVal").textContent = `${n} ${t("confirmCountUnit")}`;
+        $("confirmsVal").textContent = `${n} ${plural(n, t("confirmCountUnit"))}`;
       };
       paintConfirms();
       $("confirms").oninput = () => {
@@ -719,7 +754,7 @@
         const btn = e.target.closest("button[data-ma]");
         if (!btn) return;
         for (const b of maSeg.querySelectorAll("button")) b.classList.toggle("on", b === btn);
-        syncPeriods();
+        paintPeriods();
         debounceSave({ maType: btn.dataset.ma });
       };
       const notifyBtn = $("notifyToggle");

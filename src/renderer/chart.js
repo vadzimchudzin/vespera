@@ -331,6 +331,18 @@
     if (!raf) raf = requestAnimationFrame(paintPending);
   }
 
+  let priceTick = 0;
+  /** Axis precision follows the exchange tick, so low-priced pairs are not shown as 0.00. */
+  function applyPriceFormat(tick) {
+    if (!(tick > 0) || tick === priceTick || !candleSeries) return;
+    priceTick = tick;
+    const precision = Math.min(10, Math.max(0, Math.round(-Math.log10(tick))));
+    const priceFormat = { type: "price", precision, minMove: Number(tick.toFixed(precision)) || tick };
+    for (const series of [candleSeries, ma20Series, ma200Series]) {
+      if (series) series.applyOptions({ priceFormat });
+    }
+  }
+
   function render(snap) {
     ensure();
     if (!chart || !snap) return;
@@ -346,6 +358,7 @@
       lastMarkerKey = "";
     }
     applyTheme();
+    applyPriceFormat(Number(snap.settings && snap.settings.tickSize));
     const closed = (snap.bars || []).map(toCandle).filter(Boolean);
     const forming = toCandle(snap.forming);
     const candles = forming ? closed.concat(forming) : closed.slice();

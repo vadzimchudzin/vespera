@@ -93,7 +93,8 @@ ipcMain.handle("engine:start", () => engine.start());
 ipcMain.handle("engine:stop", () => engine.stop());
 ipcMain.handle("engine:setMode", async (_e, mode) => {
   await engine.setMode(mode);
-  store.save({ mode: engine.mode });
+  // Auto may have moved the pair/timeframe onto a Polymarket round
+  store.save({ mode: engine.mode, symbol: engine.settings.symbol, timeframe: engine.settings.timeframe });
   return engine.snapshot();
 });
 ipcMain.handle("engine:confirmLot", (_e, baseUsd) => {
@@ -161,8 +162,13 @@ ipcMain.handle("settings:get", () => {
   };
 });
 ipcMain.handle("settings:save", async (_e, patch) => {
-  store.save(patch);
-  await engine.applySettings(patch);
+  const p = patch || {};
+  await engine.applySettings(p);
+  // persist what the engine accepted (Auto refuses pairs without a Polymarket round)
+  const accepted = { ...p };
+  if (p.symbol != null) accepted.symbol = engine.settings.symbol;
+  if (p.timeframe != null) accepted.timeframe = engine.settings.timeframe;
+  store.save(accepted);
   return engine.snapshot();
 });
 ipcMain.handle("window:minimize", () => win.minimize());
