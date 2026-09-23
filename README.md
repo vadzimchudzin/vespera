@@ -2,9 +2,11 @@
 
 Glass desktop terminal for BTC 15m Polymarket Up/Down.
 
-**v0.10.0.** SMA/EMA 200/20 on a **closed** candle `S`, bet on **S+1**. Arrow sits on the entry candle. Auto prices the live Polymarket round and can send signed CLOB orders once an L2 key pair and a signing key are in Settings.
+**v0.12.0.** SMA/EMA 200/20 on a **closed** candle `S`, bet on **S+1**. Arrow sits on the entry candle. Auto prices the live Polymarket round and sends **CLOB V2** signed orders once the wallet, a signing key and the derived CLOB keys are in the API panel.
 
-**Payout is not ×2.** Polymarket pays $1 per winning share, so the multiple is `1 / price`. At an ask of 0.72 a $1 stake returns $1.39 while a loss still costs the full $1 — Paper now books results on that same number. A flat ×2 martingale does **not** recover a loss at those odds; size the series accordingly.
+**Payout is not ×2.** Polymarket pays $1 per winning share, so the multiple is `1 / price`. At an ask of 0.72 a $1 stake returns $1.39 while a loss still costs the full $1 — Paper books results on that same number. Crypto rounds also charge a taker fee of `0.07 × p × (1 − p)` per share (≈3.5% of the stake at 0.50), which Paper and live P&L both deduct. A flat ×2 martingale does **not** recover a loss at those odds; size the series accordingly.
+
+**Resolution.** A round resolves **Up** when the Chainlink BTC/USD TWAP at the end is **greater than or equal to** the start. Vespera books the result on the Binance close so the series can continue immediately, then checks Polymarket's actual resolution and raises a `settle_mismatch` alert if the two disagree.
 
 Repo: private [`VadimChudin/vespera`](https://github.com/VadimChudin/vespera)
 
@@ -25,9 +27,11 @@ Repo: private [`VadimChudin/vespera`](https://github.com/VadimChudin/vespera)
 | Mode | Name in UI | Orders |
 |---|---|---|
 | Paper | Paper / Пейпер | Virtual Up/Down fills |
-| Auto | Auto / Авто | Prices the live round on `clob.polymarket.com`, signs EIP-712 orders and posts them. Needs apiKey, secret, passphrase, wallet **and** private key. Polymarket lists only **5m and 15m** Up/Down rounds; other timeframes report `timeframe_unsupported`. Minimum order is 5 shares. |
+| Auto | Auto / Авто | Prices the live round on `clob.polymarket.com`, signs CLOB V2 EIP-712 orders and posts them as FOK. Needs wallet, private key and the derived CLOB keys. Polymarket lists only **5m and 15m** Up/Down rounds; other timeframes report `timeframe_unsupported`. Minimum order is 5 shares. |
 
-**OK** in the API panel pings the Polymarket CLOB. It does not place trades. Live `marketBuy` stays `auto_not_wired` until a signer is plugged into `src/main/brokers`.
+**OK** in the API panel pings the Polymarket CLOB and checks the pUSD balance. It does not place trades.
+
+**Wallet type.** Auto-detect compares the wallet with the signing key: same address → EOA, the key's legacy proxy → Proxy, its legacy Safe → Safe, anything else → **Deposit Wallet** (every account created since May 2026). Override it in the API panel if detection is wrong. Collateral is **pUSD**; polymarket.com wraps USDC into it automatically.
 
 ## Keys
 
@@ -38,7 +42,7 @@ Repo: private [`VadimChudin/vespera`](https://github.com/VadimChudin/vespera)
 
 ## Blocked regions
 
-Polymarket geoblocks a list of jurisdictions (Belarus among them) and refuses both the site and the API from those IPs. **OK** reports `Polymarket blocks this region` with the detected country when that is the cause, rather than a generic unreachable. A proxy URL in the API panel routes every CLOB and Gamma call through an allowed jurisdiction.
+Polymarket geoblocks a list of jurisdictions (Belarus among them) and refuses both the site and the API from those IPs. **OK** reports `Polymarket blocks this region` with the detected country when that is the cause, rather than a generic unreachable. A proxy URL in the API panel routes every CLOB and Gamma call through an allowed jurisdiction. If the proxy cannot be used, calls fail with `proxy_unavailable` instead of silently going direct.
 
 ## Run from source
 
@@ -53,8 +57,8 @@ npm start
 Bump `version` in `package.json`, add a `CHANGELOG` line, tag:
 
 ```bash
-git tag v0.3.0
-git push origin v0.3.0
+git tag v0.12.0
+git push origin v0.12.0
 ```
 
 GitHub Actions builds:

@@ -11,26 +11,37 @@ const { URL } = require("url");
  */
 let proxyAgent = null;
 let proxyUrl = "";
+let proxyError = null;
 
 function setProxy(url) {
   const next = String(url || "").trim();
   if (next === proxyUrl) return proxyAgent;
   proxyUrl = next;
   proxyAgent = null;
+  proxyError = null;
   if (!next) return null;
   try {
     // eslint-disable-next-line global-require
     const { HttpsProxyAgent } = require("https-proxy-agent");
     proxyAgent = new HttpsProxyAgent(next);
-  } catch {
+  } catch (err) {
     proxyAgent = null;
+    proxyError = String((err && err.message) || err);
   }
   return proxyAgent;
 }
 
 function currentProxy() {
-  return { url: proxyUrl, active: Boolean(proxyAgent) };
+  return { url: proxyUrl, active: Boolean(proxyAgent), error: proxyError };
 }
+
+const APP_VERSION = (() => {
+  try {
+    return require("../../../package.json").version;
+  } catch {
+    return "dev";
+  }
+})();
 
 const DEFAULT_CLOB = "https://clob.polymarket.com";
 const DEFAULT_GAMMA = "https://gamma-api.polymarket.com";
@@ -38,6 +49,18 @@ const DEFAULT_GAMMA = "https://gamma-api.polymarket.com";
 function requestJson(url, { method = "GET", headers = {}, body, timeoutMs = 15000 } = {}) {
   return new Promise((resolve) => {
     const started = Date.now();
+    // A configured but unusable proxy must not silently fall back to a direct call.
+    if (proxyUrl && !proxyAgent) {
+      resolve({
+        ok: false,
+        status: 0,
+        latencyMs: 0,
+        json: null,
+        raw: `proxy_unavailable: ${proxyError || "agent not loaded"}`,
+        networkError: `proxy_unavailable: ${proxyError || "agent not loaded"}`,
+      });
+      return;
+    }
     const u = new URL(url);
     const payload = body == null ? null : Buffer.from(JSON.stringify(body));
     const req = https.request(
@@ -49,7 +72,7 @@ function requestJson(url, { method = "GET", headers = {}, body, timeoutMs = 1500
         method,
         headers: {
           Accept: "application/json",
-          "User-Agent": "Vespera/0.11.1",
+          "User-Agent": `Vespera/${APP_VERSION}`,
           ...(payload ? { "Content-Type": "application/json", "Content-Length": payload.length } : {}),
           ...headers,
         },
@@ -158,6 +181,13 @@ class ClobClient {
     this.apiSecret = options.apiSecret || "";
     this.apiPassphrase = options.apiPassphrase || "";
     this.walletAddress = options.walletAddress || "";
+    // L2 headers identify the signing key, not the funding wallet
+    this.signerAddress = options.signerAddress || "";
+    this.signatureType = options.signatureType == null ? null : Number(options.signatureType);
+  }
+
+  authAddress() {
+    return this.signerAddress || this.walletAddress;
   }
 
   configure(patch = {}) {
@@ -166,6 +196,10 @@ class ClobClient {
     if (patch.apiSecret != null) this.apiSecret = patch.apiSecret;
     if (patch.apiPassphrase != null) this.apiPassphrase = patch.apiPassphrase;
     if (patch.walletAddress != null) this.walletAddress = patch.walletAddress;
+    if (patch.signerAddress !== undefined) this.signerAddress = patch.signerAddress || "";
+    if (patch.signatureType !== undefined) {
+      this.signatureType = patch.signatureType == null ? null : Number(patch.signatureType);
+    }
     if (patch.clobUrl != null) this.clobUrl = String(patch.clobUrl).replace(/\/$/, "");
     if (patch.gammaUrl != null) this.gammaUrl = String(patch.gammaUrl).replace(/\/$/, "");
     return this;
@@ -231,6 +265,11 @@ class ClobClient {
     );
   }
 
+  /** V2 market parameters: tick (mts), min size (mos), fee details (fd). Public. */
+  async clobMarketInfo(conditionId) {
+    return this.request(`${this.clobUrl}/clob-markets/${encodeURIComponent(conditionId)}`);
+  }
+
   /**
    * Fetch active markets from Gamma, optionally filtered by resolution timeframe tags.
    * @param {object} [opts]
@@ -247,32 +286,39 @@ class ClobClient {
   }
 
   /**
-   * POST a signed order to the CLOB.
-   * @param {object} signedOrder - { order, signature } from orderSigner.signOrder()
-   * @param {string} walletAddress
+   * POST a signed V2 order to the CLOB.
+   * @param {object} signedOrder - { order, signature, orderType? } from orderSigner.signOrder()
    */
-  async postOrder(signedOrder, walletAddress) {
-    const addr = walletAddress || this.walletAddress;
+  async postOrder(signedOrder) {
     if (!this.hasL2()) {
       return { ok: false, status: 0, latencyMs: 0, json: null, raw: "missing_l2" };
     }
-    // The CLOB expects the signature INSIDE the order object, `side` as a
-    // string, `salt` as a number, and `owner` set to the API key (not the
-    // wallet). The wallet address is only used for the L2 auth header.
+    // Signature goes inside the order, `side` is a string on the wire, `salt`
+    // a number, `owner` the API key. `expiration` is wire-only in V2.
     const o = signedOrder.order || {};
     const bodyObj = {
       order: {
-        ...o,
         salt: Number(o.salt),
+        maker: o.maker,
+        signer: o.signer,
+        tokenId: String(o.tokenId),
+        makerAmount: String(o.makerAmount),
+        takerAmount: String(o.takerAmount),
         side: o.side === 1 || o.side === "SELL" ? "SELL" : "BUY",
+        signatureType: Number(o.signatureType) || 0,
+        timestamp: String(o.timestamp),
+        metadata: o.metadata,
+        builder: o.builder,
+        expiration: String(o.expiration || "0"),
         signature: signedOrder.signature,
       },
       owner: this.apiKey,
       orderType: signedOrder.orderType || "FOK",
+      deferExec: false,
     };
     const path = "/order";
     const headers = l2Headers({
-      address: addr,
+      address: this.authAddress(),
       apiKey: this.apiKey,
       secret: this.apiSecret,
       passphrase: this.apiPassphrase,
@@ -280,11 +326,16 @@ class ClobClient {
       path,
       body: bodyObj,
     });
-    return this.request(`${this.clobUrl}${path}`, {
+    const res = await this.request(`${this.clobUrl}${path}`, {
       method: "POST",
       headers,
       body: bodyObj,
     });
+    // HTTP 200 is not enough: a refused order comes back as success:false + errorMsg.
+    if (res.ok && res.json && res.json.success === false) {
+      return { ...res, ok: false, raw: res.json.errorMsg || res.raw || "order_rejected" };
+    }
+    return res;
   }
 
   /**
@@ -320,19 +371,23 @@ class ClobClient {
     if (!this.hasL2()) {
       return { ok: false, status: 0, latencyMs: 0, json: null, raw: "missing_l2" };
     }
+    // query parameters are not part of the signed path
+    const signedPath = path.split("?")[0];
     const headers = l2Headers({
-      address: this.walletAddress,
+      address: this.authAddress(),
       apiKey: this.apiKey,
       secret: this.apiSecret,
       passphrase: this.apiPassphrase,
       method: "GET",
-      path,
+      path: signedPath,
     });
     return this.request(`${this.clobUrl}${path}`, { method: "GET", headers });
   }
 
   async balanceAllowance() {
-    return this.authGet("/balance-allowance?asset_type=COLLATERAL");
+    const qs = new URLSearchParams({ asset_type: "COLLATERAL" });
+    if (this.signatureType != null) qs.set("signature_type", String(this.signatureType));
+    return this.authGet(`/balance-allowance?${qs}`);
   }
 }
 

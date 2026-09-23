@@ -7,6 +7,7 @@ const { INTERVAL_MS, SYMBOLS, TIMEFRAMES, HISTORY_BARS, clampRefreshMs, symbolLa
 const { createVenue } = require("./brokers");
 const { Journal } = require("./journal");
 const { Decimal } = require("./money");
+const { outcomeOf } = require("./paperBroker");
 const { fastPeriodOf, slowPeriodOf, confirmCountOf, fullBodyOnSOf, maTypeOf } = require("./strategy");
 
 const STATUSES = [
@@ -130,7 +131,8 @@ class Engine {
         this.emit("log", { level: "warn", message: `quote_unavailable: ${(quote && quote.reason) || "unknown"}` });
         return null;
       }
-      this.lastQuote = quote;
+      const { asks, ...light } = quote;
+      this.lastQuote = light;
       return quote;
     } catch (err) {
       this.emit("log", { level: "warn", message: `quote_error: ${String(err.message || err)}` });
@@ -443,6 +445,7 @@ class Engine {
     if (keep(patch.apiPassphrase)) this.settings.apiPassphrase = patch.apiPassphrase;
     if (patch.walletAddress != null) this.settings.walletAddress = patch.walletAddress;
     if (patch.proxyUrl != null) this.settings.proxyUrl = patch.proxyUrl;
+    if (patch.walletType != null) this.settings.walletType = patch.walletType;
     if (keep(patch.privateKey)) this.settings.privateKey = patch.privateKey;
     if (typeof this.live.configure === "function") {
       this.live.configure({
@@ -601,11 +604,13 @@ class Engine {
     if (bet.roundCloseTs && bar.closeTs && bar.closeTs < bet.roundCloseTs) return null;
     const strike = Number(bet.strike);
     const close = Number(bar.close);
-    const outcome = close > strike ? "UP" : close < strike ? "DOWN" : "FLAT";
+    const outcome = outcomeOf(close, strike);
     const won = bet.side === outcome;
     const size = Decimal(bet.sizeUsd);
     const mult = Number(bet.payout) > 1 ? Number(bet.payout) : 2;
-    const pnl = won ? size.mul(mult).sub(size) : size.mul(-1);
+    // taker fee is charged at match time on either outcome
+    const fee = Decimal(Number(bet.feeUsd) > 0 ? Number(bet.feeUsd).toFixed(4) : "0");
+    const pnl = (won ? size.mul(mult).sub(size) : size.mul(-1)).sub(fee);
     const settled = {
       ...bet,
       mode: "auto",
@@ -636,7 +641,58 @@ class Engine {
       this.notify("halt", "Series halted", `${this.risk.maxSteps} losses \u2014 confirm lot`);
     }
     this.refreshLiveBalance().catch(() => {});
+    this._reconcileLive(settled);
     return settled;
+  }
+
+  /**
+   * The series steps on the Binance close so the next bet is not delayed, but
+   * Polymarket resolves on the Chainlink TWAP. Check the real resolution
+   * afterwards and flag any disagreement loudly instead of hiding it.
+   */
+  _reconcileLive(settled, { attempts = 30, delayMs = 30_000 } = {}) {
+    if (!settled.slug || typeof this.live.resolvedOutcome !== "function") return;
+    let left = attempts;
+    const tick = async () => {
+      left -= 1;
+      let res = null;
+      try {
+        res = await this.live.resolvedOutcome(settled.slug);
+      } catch {
+        res = null;
+      }
+      if (!res || !res.resolved) {
+        if (left > 0) schedule();
+        return;
+      }
+      if (res.outcome === settled.outcome) {
+        this.journal.write({ type: "settle_confirmed", slug: settled.slug, outcome: res.outcome });
+        return;
+      }
+      this.journal.write({
+        type: "settle_mismatch",
+        slug: settled.slug,
+        local: settled.outcome,
+        venue: res.outcome,
+        side: settled.side,
+        localPnl: settled.pnl,
+      });
+      this.emit("log", {
+        level: "error",
+        message: `settle_mismatch: ${settled.slug} booked ${settled.outcome}, Polymarket resolved ${res.outcome}`,
+      });
+      this.notify(
+        "halt",
+        "Result differs from Polymarket",
+        `${settled.slug}: booked ${settled.outcome}, venue ${res.outcome} \u2014 check the series`
+      );
+      this.refreshLiveBalance().catch(() => {});
+    };
+    const schedule = () => {
+      const timer = setTimeout(tick, delayMs);
+      if (timer && typeof timer.unref === "function") timer.unref();
+    };
+    schedule();
   }
 
   _settleIfOpen(bar) {
@@ -781,10 +837,11 @@ class Engine {
         this.liveBet = {
           clientOrderId,
           side: ev.signal,
-          sizeUsd: size,
+          sizeUsd: order.sizeUsd || size,
           payout: order.payout || (quote && quote.payout) || null,
           entryPrice: order.price || (quote && quote.price) || null,
           shares: order.shares || null,
+          feeUsd: order.feeUsd || null,
           orderId: order.orderId || null,
           slug: order.slug || (quote && quote.slug) || null,
           strike: round.strike,
@@ -821,6 +878,7 @@ class Engine {
         round,
         payout: quote ? quote.payout : null,
         price: quote ? quote.price : null,
+        feeRate: quote ? quote.feeRate : null,
         quoteSource: quote ? "polymarket" : "fixed_2x",
       });
       this.markers.push(marker);
@@ -894,6 +952,10 @@ class Engine {
         walletAddress: this.settings.walletAddress || "",
         hasPrivKey: Boolean(this.settings.privateKey),
         walletType: this.settings.walletType || "AUTO",
+        resolvedWalletType:
+          typeof this.live.resolvedWalletType === "function" && this.settings.walletAddress
+            ? this.live.resolvedWalletType()
+            : null,
         proxyUrl: this.settings.proxyUrl || "",
         signerAddress: typeof this.live.signerAddress === "function" ? this.live.signerAddress() : null,
         refreshMs: clampRefreshMs(this.settings.refreshMs || 100),

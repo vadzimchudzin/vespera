@@ -2,7 +2,15 @@
 
 const { Decimal } = require("./money");
 
+// Flat fallback when no live quote exists.
 const FEE_RATE = 0.005;
+// Polymarket crypto taker fee: shares × rate × p × (1 − p) = stake × rate × (1 − p).
+const TAKER_FEE_RATE = 0.07;
+
+/** Polymarket Up/Down rule: end >= start is UP. */
+function outcomeOf(close, strike) {
+  return Number(close) >= Number(strike) ? "UP" : "DOWN";
+}
 
 class PaperBroker {
   constructor(options = {}) {
@@ -12,6 +20,7 @@ class PaperBroker {
     this.history = [];
     this.connected = true;
     this.feeRate = Number(options.feeRate ?? FEE_RATE);
+    this.takerFeeRate = Number(options.takerFeeRate ?? TAKER_FEE_RATE);
   }
 
   async ping() {
@@ -27,8 +36,13 @@ class PaperBroker {
     return this.balance.toFixed(2);
   }
 
-  feeOn(sizeUsd) {
+  feeOn(sizeUsd, price, takerFeeRate) {
     const size = Decimal(sizeUsd);
+    const p = Number(price);
+    if (Number.isFinite(p) && p > 0 && p < 1) {
+      const rate = Number.isFinite(Number(takerFeeRate)) ? Number(takerFeeRate) : this.takerFeeRate;
+      return Decimal(size.toNumber() * rate * (1 - p));
+    }
     return Decimal(size.toNumber() * this.feeRate);
   }
 
@@ -40,12 +54,12 @@ class PaperBroker {
     return this.snapshot();
   }
 
-  async marketBuy({ side, sizeUsd, clientOrderId, round, payout, price, quoteSource }) {
+  async marketBuy({ side, sizeUsd, clientOrderId, round, payout, price, quoteSource, feeRate }) {
     if (this.openBet) {
       throw new Error("already_open");
     }
     const size = Decimal(sizeUsd);
-    const fee = this.feeOn(size);
+    const fee = this.feeOn(size, price, feeRate);
     const cost = size.add(fee);
     if (!this.balance.gte(cost)) {
       const err = new Error("insufficient_balance");
@@ -65,7 +79,10 @@ class PaperBroker {
       quoteSource: quoteSource || "fixed_2x",
       sizeUsd: size.toFixed(2),
       feeUsd: fee.toFixed(2),
-      feeRate: this.feeRate,
+      feeRate: Number.isFinite(Number(price)) && Number(price) > 0 && Number(price) < 1
+        ? (Number.isFinite(Number(feeRate)) ? Number(feeRate) : this.takerFeeRate)
+        : this.feeRate,
+      feeModel: Number.isFinite(Number(price)) && Number(price) > 0 && Number(price) < 1 ? "polymarket_taker" : "flat",
       strike: round.strike,
       fillPrice: round.strike,
       roundOpenTs: round.openTs,
@@ -79,7 +96,7 @@ class PaperBroker {
 
   /**
    * TZ: signal on closed S, bet on S+1. Settle when S+1 closes vs strike (close of S).
-   * Flat (close === strike) is a loss.
+   * Flat (close === strike) resolves UP, as Polymarket's ">= start price" rule does.
    */
   settle(nextBar) {
     if (!this.openBet) return null;
@@ -88,9 +105,7 @@ class PaperBroker {
     }
     const strike = Number(this.openBet.strike);
     const close = Number(nextBar.close);
-    let outcome = "FLAT";
-    if (close > strike) outcome = "UP";
-    else if (close < strike) outcome = "DOWN";
+    const outcome = outcomeOf(close, strike);
 
     const won = this.openBet.side === outcome;
     const size = Decimal(this.openBet.sizeUsd);
@@ -130,4 +145,4 @@ class PaperBroker {
   }
 }
 
-module.exports = { PaperBroker, FEE_RATE };
+module.exports = { PaperBroker, FEE_RATE, TAKER_FEE_RATE, outcomeOf };

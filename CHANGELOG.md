@@ -2,6 +2,19 @@
 
 All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 
+## 0.12.0 — 2026-09-23
+
+- **Orders are signed for CLOB V2.** Polymarket switched production to CLOB V2 on 2026-04-28 and rejects V1-signed orders, so every live order from earlier builds failed. The signer now uses the V2 exchange (`0xE111…996B`, EIP-712 version `"2"`), the new Order struct (`timestamp`, `metadata`, `builder` instead of `nonce`, `feeRateBps`, `taker`), the neg-risk exchange when the book says so, and the V2 wire body.
+- **Deposit Wallets are supported.** Every Polymarket account created since May 2026 trades through a Deposit Wallet (signature type 3, ERC-7739 wrapped signature). Auto-detect now tells EOA, legacy Proxy, legacy Safe and Deposit Wallet apart, and the API panel has a wallet-type override. Before, any non-EOA account was signed as a proxy and rejected.
+- **L2 auth identifies the signing key.** `POLY_ADDRESS` carries the key's address, the balance check sends `signature_type`, and signed GET paths exclude the query string, as the CLOB expects.
+- **A refused order is a refusal.** The CLOB answers some rejections with HTTP 200 and `success: false`; those used to be booked as open bets. The reason (`errorMsg`) is now reported.
+- **Order amounts follow the CLOB precision rules.** Price on the market tick (0.001 on BTC 15m), shares to 2 decimals, and the FOK limit sweeps the book far enough to fill the stake instead of dying on a thin best ask.
+- **Flat rounds resolve UP**, matching Polymarket's "end ≥ start" rule, in Paper and live. Live results are also checked against Polymarket's actual resolution (Chainlink TWAP); a disagreement is journaled and raised as `settle_mismatch`.
+- **Taker fees are counted.** Paper charges `stake × 0.07 × (1 − p)` when a live quote exists (the market's own rate from `/clob-markets`), live P&L deducts the same estimate. The old flat 0.5% applies only without a quote.
+- **Secrets no longer reach the window.** `settings:get` returned the decrypted private key and CLOB secrets to the renderer; it now returns only whether they are set.
+- **The proxy actually works in the installed app.** `https-proxy-agent` was only present as a build-tool dependency and was not packaged, so the proxy URL was silently ignored and calls went out directly. It is now a runtime dependency, and a proxy that cannot load fails with `proxy_unavailable` instead of leaking a direct call.
+- Live balance is always read as 6-decimal pUSD (small balances were shown unscaled). Venue text in the API panel is HTML-escaped. `package-lock.json` is regenerated (it was stuck at 0.9.0 without `ethers`).
+
 ## 0.11.1 — 2026-09-23
 
 - **The API panel no longer hangs.** A failed network call rejected instead of returning, so "Signing and asking the CLOB…" stayed on screen forever. Every request now resolves with a readable reason, and the derive button reports it.
