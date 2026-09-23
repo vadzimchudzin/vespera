@@ -2,7 +2,7 @@
 
 Glass desktop terminal for BTC 15m Polymarket Up/Down.
 
-**v0.16.1.** SMA/EMA 200/20 on a **closed** candle `S`, bet on **S+1**. Arrow sits on the entry candle. Auto prices the live Polymarket round and sends **CLOB V2** signed orders once the wallet, a signing key and the derived CLOB keys are in the API panel.
+**v0.17.0.** SMA/EMA 200/20 on a **closed** candle `S`, bet on **S+1**. Arrow sits on the entry candle. Auto prices the live Polymarket round and sends **CLOB V2** signed orders once the wallet, a signing key and the derived CLOB keys are in the API panel.
 
 **Payout is not ×2.** Polymarket pays $1 per winning share, so the multiple is `1 / price`. At an ask of 0.72 a $1 stake returns $1.39 while a loss still costs the full $1 — Paper books results on that same number. Crypto rounds also charge a taker fee of `0.07 × p × (1 − p)` per share (≈3.5% of the stake at 0.50), paid in USDC on top of the stake and lost on either outcome. Paper and live P&L both deduct it; Paper without a live quote assumes a price of 0.50. A flat ×2 martingale does **not** recover a loss at those odds; size the series accordingly.
 
@@ -62,8 +62,8 @@ npm start
 Bump `version` in `package.json`, add a `CHANGELOG` line, tag:
 
 ```bash
-git tag v0.16.1
-git push origin v0.16.1
+git tag v0.17.0
+git push origin v0.17.0
 ```
 
 GitHub Actions builds:

@@ -84,6 +84,13 @@ const { Journal } = require("./journal");
   let back = j.restoreRisk(6);
   assert.strictEqual(back.step, 3);
   assert.strictEqual(Number(back.seriesLossUsd.toFixed(2)), 3.19);
+  j.write({ type: "lot_confirmed", baseUsd: "1.00" }); // Settings → Save mid-series
+  assert.strictEqual(j.restoreRisk(6).step, 3, "saving settings mid-series keeps the step after a restart");
+  const h = new Journal(path.join(dir, "halt.jsonl"));
+  for (let i = 0; i < 3; i += 1) h.write({ type: "settled", status: "loss", pnl: "-1" });
+  assert.strictEqual(h.restoreRisk(3).halted, true);
+  h.write({ type: "lot_confirmed", baseUsd: "1.00" });
+  assert.deepStrictEqual([h.restoreRisk(3).halted, h.restoreRisk(3).step], [false, 1], "confirming a halted series restarts it");
   j.write({ type: "paper_reset", balance: "1000.00" });
   back = j.restoreRisk(6);
   assert.strictEqual(back.step, 1, "paper reset starts a new series after restart too");

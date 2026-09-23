@@ -686,6 +686,21 @@ async function run() {
     assert(snap.stats && snap.stats.book === "paper", "stats are exposed");
   }
 
+  {
+    // The pair / timeframe cannot move under an open bet.
+    const bars = makeTrendBars({ n: 220, close: 110, trend: 0.05 });
+    const market = { ...fakeMarket(bars.slice(0, 219)), configured: 0, async configure() { this.configured += 1; } };
+    const engine = new Engine({ userDataDir: tmpDir(), settings: { mode: "paper", symbol: "BTCUSDT", timeframe: "15m" }, live: stubLive(), market });
+    await engine.paper.marketBuy({ side: "UP", sizeUsd: "1.00", clientOrderId: "x", round: { strike: 100, openTs: 1, closeTs: 2 } });
+    await engine.applySettings({ symbol: "ETHUSDT", timeframe: "5m", confirmCount: 2 });
+    assert(engine.settings.symbol === "BTCUSDT" && engine.settings.timeframe === "15m", "market locked while a bet is open");
+    assert(market.configured === 0, "the feed was not switched");
+    assert(engine.settings.confirmCount === 2, "other settings in the same save still apply");
+    engine.paper.settle({ close: 101, closeTs: 2 });
+    await engine.applySettings({ symbol: "ETHUSDT" });
+    assert(engine.settings.symbol === "ETHUSDT" && market.configured === 1, "unlocked after settlement");
+  }
+
   console.log("paper engine tests ok");
 }
 

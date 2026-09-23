@@ -39,7 +39,10 @@
     if (lamp && lamp.dataset.status) lamp.title = statusLabel(lamp.dataset.status);
   }
 
+  const THEMES = ["glass-dark", "glass-light", "glass-blue"];
+
   function applyTheme() {
+    if (!THEMES.includes(state.theme)) state.theme = "glass-dark";
     document.documentElement.setAttribute("data-theme", state.theme);
     if (window.VesperaChart && window.VesperaChart.applyTheme) {
       window.VesperaChart.applyTheme();
@@ -128,7 +131,8 @@
       detail = `$${row.needed} \u2192 $${row.cap}`;
     }
     if (type === "order_sent" && row.dryRun) title = t("logDryOrder");
-    return { when, title, detail, kind: type };
+    const kind = type === "settled" ? (row.status === "win" ? "win" : "loss") : type;
+    return { when, title, detail, kind };
   }
 
   function logNote(text) {
@@ -215,7 +219,7 @@
     $("series").textContent = `${snap.risk.step}/${snap.risk.maxSteps} · $${snap.risk.size}`;
     const pnl = Number(snap.todayPnl);
     $("pnl").textContent = `${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)}`;
-    $("pnl").style.color = pnl >= 0 ? "var(--accent)" : "var(--danger)";
+    $("pnl").style.color = pnl > 0 ? "var(--pos)" : pnl < 0 ? "var(--neg)" : "var(--ink)";
     $("btnRun").textContent = snap.running ? t("stop") : t("start");
     $("btnRun").classList.toggle("stop", snap.running);
     document.querySelectorAll("#modeSeg button").forEach((b) => {
@@ -262,6 +266,10 @@
       };
       host.appendChild(btn);
     });
+  }
+
+  function themeKey(id) {
+    return { "glass-dark": "glassDark", "glass-light": "glassLight", "glass-blue": "glassBlue" }[id] || "glassDark";
   }
 
   function closeMenus() {
@@ -421,7 +429,17 @@
     const onMarket = async (patch) => {
       if (!window.vespera) return;
       const next = await window.vespera.saveSettings(patch);
-      if (next && next.settings) renderSnap(next);
+      if (!next || !next.settings) return;
+      const refused =
+        (patch.symbol != null && next.settings.symbol !== patch.symbol) ||
+        (patch.timeframe != null && next.settings.timeframe !== patch.timeframe);
+      if (refused) {
+        // the engine kept the old market: rebuild the pickers so they show it again
+        state.chromeKey = "";
+        const openBet = (next.paper && next.paper.openBet) || next.liveBet;
+        logNote(t(openBet || next.mode !== "auto" ? "marketBlocked" : "marketAutoOnly"));
+      }
+      renderSnap(next);
     };
     hostSym.appendChild(
       buildSelect("hdr-sym", symbols.length ? symbols : [{ value: "BTCUSDT", label: "BTC/USDT" }], s.symbol || "BTCUSDT", (v) =>
@@ -658,10 +676,12 @@
 
     if (kind === "theme") {
       title.textContent = t("theme");
-      body.innerHTML = `<div class="field"><label>${t("theme")}</label><div class="seg" id="themeSeg">
-        <button data-theme="glass-dark">${t("glassDark")}</button>
-        <button data-theme="glass-light">${t("glassLight")}</button>
-      </div></div>`;
+      body.innerHTML = `<div class="theme-grid" id="themeSeg">${THEMES.map(
+        (id) => `<button type="button" class="theme-card" data-theme="${id}" aria-label="${t(themeKey(id))}">
+          <span class="theme-swatch" data-swatch="${id}"><i></i><i></i><i></i></span>
+          <span class="theme-name">${t(themeKey(id))}</span>
+        </button>`
+      ).join("")}</div>`;
       document.querySelectorAll("#themeSeg button").forEach((b) => {
         b.classList.toggle("on", b.dataset.theme === state.theme);
         b.onclick = async () => {
