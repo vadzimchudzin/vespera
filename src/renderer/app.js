@@ -91,7 +91,8 @@
       detail = `${row.side || ""} · $${row.sizeUsd || ""}`.trim();
     } else if (type === "settled") {
       title = row.status === "win" ? t("logWin") : t("logLoss");
-      detail = `${row.side || ""} · $${row.pnl || ""}`.trim();
+      const n = Number(row.pnl);
+      detail = `${row.side || ""} · ${Number.isFinite(n) ? `${n < 0 ? "\u2212" : "+"}$${Math.abs(n).toFixed(2)}` : ""}`.trim();
     } else if (type === "halt") title = t("logHalt");
     else if (type === "lot_confirmed") {
       title = t("logLot");
@@ -1100,7 +1101,27 @@
         <div class="field-label" style="margin-top:12px">${t("statsSteps")}</div>
         <div class="plan-steps">${steps}</div>
         ${st.count && st.count < 50 ? `<p class="hint">${t("statsFew")}</p>` : ""}
+        <div class="field-label" style="margin-top:14px">${t("statsByDay")}</div>
+        ${
+          (snap.daily || []).length
+            ? `<table class="day-table"><thead><tr><th>${t("statsDay")}</th><th>${t("statsBetsShort")}</th><th>${t("statsWinRate")}</th><th>${t("statsFees")}</th><th>${t("statsPnl")}</th></tr></thead><tbody>${snap.daily
+                .map(
+                  (d) =>
+                    `<tr><td>${esc(d.day)}</td><td>${d.bets}</td><td>${pct(d.winRate)}</td><td>${usd(d.fees)}</td><td class="${d.pnl < 0 ? "neg" : d.pnl > 0 ? "pos" : ""}">${usd(d.pnl)}</td></tr>`
+                )
+                .join("")}</tbody></table>`
+            : `<p class="hint">${t("logEmpty")}</p>`
+        }
+        <button type="button" class="ghost" id="btnExportCsv" style="margin-top:12px">${t("exportCsv")}</button>
+        <p class="hint" id="exportOut">${t("exportCsvHint")}</p>
       `;
+      $("btnExportCsv").onclick = async () => {
+        const out = $("exportOut");
+        const res = await window.vespera.exportCsv();
+        if (res && res.ok) out.textContent = `${t("exportCsvDone")} ${res.count} \u2192 ${res.path}`;
+        else if (res && res.reason === "canceled") out.textContent = t("exportCsvHint");
+        else out.textContent = res && res.reason === "empty" ? t("exportCsvEmpty") : `${t("exportCsvFail")}: ${(res && res.reason) || ""}`;
+      };
     }
 
     if (kind === "journal") {

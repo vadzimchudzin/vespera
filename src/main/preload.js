@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld("vespera", {
   ping: (creds) => ipcRenderer.invoke("engine:ping", creds),
   deriveKeys: (patch) => ipcRenderer.invoke("engine:deriveKeys", patch),
   connect: (patch) => ipcRenderer.invoke("engine:connect", patch),
+  exportCsv: () => ipcRenderer.invoke("journal:exportCsv"),
   resetPaper: (startingBalance) => ipcRenderer.invoke("engine:resetPaper", startingBalance),
   setStrategy: (id) => ipcRenderer.invoke("engine:setStrategy", id),
   getSettings: () => ipcRenderer.invoke("settings:get"),

@@ -1,6 +1,8 @@
 "use strict";
 
-const { app, BrowserWindow, ipcMain, shell, Notification } = require("electron");
+const { app, BrowserWindow, ipcMain, shell, Notification, dialog } = require("electron");
+const fs = require("fs");
+const { toCsv } = require("./stats");
 const path = require("path");
 const { Engine } = require("./engine");
 const { SettingsStore } = require("./settingsStore");
@@ -167,6 +169,22 @@ ipcMain.handle("engine:resetPaper", (_e, startingBalance) => {
   return snap;
 });
 // Secrets stay in the main process; the window only learns whether they exist.
+ipcMain.handle("journal:exportCsv", async () => {
+  const { csv, count } = toCsv(engine.journal.readAll());
+  if (!count) return { ok: false, reason: "empty" };
+  const day = new Date().toISOString().slice(0, 10);
+  const pick = await dialog.showSaveDialog(win, {
+    defaultPath: path.join(app.getPath("documents"), `vespera-trades-${day}.csv`),
+    filters: [{ name: "CSV", extensions: ["csv"] }],
+  });
+  if (pick.canceled || !pick.filePath) return { ok: false, reason: "canceled" };
+  try {
+    fs.writeFileSync(pick.filePath, csv, "utf8");
+  } catch (err) {
+    return { ok: false, reason: String((err && err.message) || err) };
+  }
+  return { ok: true, count, path: pick.filePath };
+});
 ipcMain.handle("settings:get", () => {
   const { apiKey, apiSecret, apiPassphrase, privateKey, ...safe } = store.value;
   return {
