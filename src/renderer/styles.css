@@ -963,3 +963,6 @@ html[data-theme="glass-light"] .ghost {
   color: var(--apple);
   background: color-mix(in srgb, var(--apple) 16%, transparent);
 }
+.hint.warn {
+  color: #ff9f0a;
+}

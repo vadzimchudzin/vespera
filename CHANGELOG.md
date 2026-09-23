@@ -2,6 +2,16 @@
 
 All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 
+## 0.12.2 — 2026-09-23
+
+- **Wallet type list matches the rest of the app.** The native drop-down opened as a white Windows list with unreadable items; it is now the same glass menu as the pair/timeframe pickers, in both themes.
+- **Wallet type logic.**
+  - The choice is saved the moment it is picked (it used to be kept only after **Get API keys** or **OK**).
+  - Without a stored private key the hint said "Detected: EOA", which was never true; it now asks for the key and wallet.
+  - The hint shows readable names instead of codes, and warns when a manual choice differs from what the addresses imply.
+  - Changing the wallet address re-runs detection.
+- The last ping result under **OK** is translated instead of showing `reachable`.
+
 ## 0.12.1 — 2026-09-23
 
 - **Auto lists only what Polymarket trades.** Up/Down rounds exist for BTC, ETH, SOL, XRP, DOGE, BNB and HYPE on 5m and 15m only (HYPE appears when Binance lists it). In Auto the pair and timeframe menus show just those; switching to Auto moves an unsupported pick to BTC 15m, and the engine refuses unsupported picks even if asked. Paper keeps the full Binance list, with Polymarket pairs first and marked **P**, the rest dimmed.
