@@ -552,6 +552,77 @@ async function payoutCase({ payout, side, settleClose, expectPnl, label }) {
   assert.strictEqual(currentProxy().active, true, "https-proxy-agent must load");
   setProxy("");
 
+  // ── proxy formats: HTTP CONNECT and SOCKS5 really route, typos never go direct ──
+  {
+    const net = require("net");
+    const http = require("http");
+    const { normalizeProxyUrl } = require("./brokers/clobClient");
+    assert.strictEqual(normalizeProxyUrl("1.2.3.4:8080"), "http://1.2.3.4:8080", "host:port is HTTP");
+    assert.strictEqual(normalizeProxyUrl(" socks5://h:1 "), "socks5://h:1");
+    assert.strictEqual(normalizeProxyUrl(""), "");
+
+    // local target so the test never needs the internet
+    const target = net.createServer((s) => s.end()).listen(0, "127.0.0.1");
+    await new Promise((r) => target.once("listening", r));
+    const targetPort = target.address().port;
+    const seen = [];
+    const pipeTo = (client, host, port, onReady) => {
+      const upstream = net.connect(port, host, () => onReady(upstream));
+      upstream.on("error", () => client.destroy());
+    };
+    const httpProxy = http.createServer();
+    httpProxy.on("connect", (req, client) => {
+      seen.push(`http ${req.url}`);
+      const [host, port] = req.url.split(":");
+      pipeTo(client, host, Number(port), (up) => {
+        client.write("HTTP/1.1 200 OK\r\n\r\n");
+        up.pipe(client);
+        client.pipe(up);
+      });
+    });
+    // minimal SOCKS5, no auth, IPv4 / domain CONNECT
+    const socks = net.createServer((client) => {
+      client.once("data", () => {
+        client.write(Buffer.from([5, 0]));
+        client.once("data", (req) => {
+          let host;
+          let off;
+          if (req[3] === 1) {
+            host = [...req.slice(4, 8)].join(".");
+            off = 8;
+          } else {
+            const len = req[4];
+            host = req.slice(5, 5 + len).toString();
+            off = 5 + len;
+          }
+          const port = req.readUInt16BE(off);
+          seen.push(`socks ${host}:${port}`);
+          pipeTo(client, host, port, (up) => {
+            client.write(Buffer.from([5, 0, 0, 1, 0, 0, 0, 0, 0, 0]));
+            up.pipe(client);
+            client.pipe(up);
+          });
+        });
+      });
+      client.on("error", () => {});
+    });
+    await Promise.all([httpProxy, socks].map((s) => new Promise((r) => s.listen(0, "127.0.0.1", r))));
+    const url = `https://127.0.0.1:${targetPort}/api/geoblock`;
+    const hop = async (proxy) => {
+      setProxy(proxy);
+      return requestJson(url, { timeoutMs: 3000 });
+    };
+    await hop(`127.0.0.1:${httpProxy.address().port}`);
+    await hop(`socks5://127.0.0.1:${socks.address().port}`);
+    assert.deepStrictEqual(seen, [`http 127.0.0.1:${targetPort}`, `socks 127.0.0.1:${targetPort}`], "both proxy kinds carry the call");
+    const bad = await hop("ftp://127.0.0.1:1");
+    assert.ok(/^proxy_unavailable: unsupported proxy scheme/.test(bad.networkError), "unknown scheme is refused, not sent direct");
+    setProxy("http://user:secret@127.0.0.1:1");
+    assert.ok(!currentProxy().url.includes("secret"), "proxy password is not echoed");
+    setProxy("");
+    for (const s of [target, httpProxy, socks]) s.close();
+  }
+
   console.log("quote + payout tests ok");
 })().catch((err) => {
   console.error(err);

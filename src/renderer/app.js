@@ -618,6 +618,9 @@
       const short = (a) => (a ? `${String(a).slice(0, 6)}\u2026${String(a).slice(-4)}` : "");
       const usd = (n) => `$${Number(n).toFixed(2)}`;
       const reasonOf = (c) => esc(c.reason || "");
+      // what Polymarket sees: country and IP, so a proxy that is not applied (or sits in a blocked country) is obvious
+      const where = (c) =>
+        [esc(c.country || ""), esc(c.ip || ""), c.proxied ? t("chkRegionViaProxy") : t("chkRegionDirect")].filter(Boolean).join(" \u00b7 ");
       const checkText = (c) => {
         const x = {
           network: {
@@ -625,8 +628,8 @@
             fail: () => [c.blocked ? t("chkNetworkBlocked") : t("chkNetworkFail"), c.blocked ? t("chkNetworkBlockedFix") : reasonOf(c)],
           },
           region: {
-            ok: () => [t("chkRegionOk"), `${esc(c.country || "")}${c.proxied ? ` \u00b7 ${t("chkRegionViaProxy")}` : ""}`],
-            fail: () => [`${t("chkRegionBlocked")}${c.country ? ` (${esc(c.country)})` : ""}`, t("chkRegionBlockedFix")],
+            ok: () => [t("chkRegionOk"), where(c)],
+            fail: () => [`${t("chkRegionBlocked")}${c.country ? ` (${esc(c.country)})` : ""}`, `${where(c)}. ${c.proxied ? t("chkRegionProxyBlocked") : t("chkRegionBlockedFix")}`],
             warn: () => [t("chkRegionUnknown"), reasonOf(c)],
           },
           key: {

@@ -7,6 +7,8 @@ All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 - **Connect now checks whether Polymarket accepts orders from your region.** From a blocked country (Belarus, US, …) the CLOB still answers the time, prices, balances and key derivation, so every check was green, yet every order came back `403 Trading restricted in your region`. Connect has a new *Trading region* row that asks Polymarket's geoblock endpoint (through the proxy when one is set) and is red when orders would be refused.
 - **Real-money Start is refused in a blocked region**, with the reason and country in the log, instead of starting and failing on the first signal. Dry run still starts, since it never posts.
 - A `403 … restricted in your region` order response pauses Auto at once (it used to count as an ordinary rejection).
+- The *Trading region* row shows what Polymarket sees: country, IP and whether the proxy was used, so a proxy exiting in a blocked country (Germany, Netherlands, Poland, UK, Russia…) is obvious.
+- **SOCKS proxies work.** `socks5://` / `socks4://` addresses used to be sent as HTTP CONNECT and every call failed; they now go through a SOCKS agent. `host:port` without a scheme is read as `http://`, an unknown scheme is refused instead of going direct, and the proxy password is never echoed.
 - Checked against the official `@polymarket/clob-client-v2` 1.1.0: Vespera's V2 order signatures are byte-identical for EOA, Proxy/Safe and Deposit Wallet orders on both exchanges, and the CLOB still runs order version 2.
 
 ## 0.18.0 — 2026-09-23

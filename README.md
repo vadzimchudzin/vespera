@@ -51,7 +51,7 @@ Polymarket trades in **pUSD on Polygon**, but it accepts deposits from other net
 
 ## Blocked regions
 
-Polymarket geoblocks a list of jurisdictions (Belarus among them) and refuses both the site and the API from those IPs. Prices, balances and key derivation still work from a blocked IP; only orders are refused (`403 Trading restricted in your region`). **Connect** therefore asks Polymarket's geoblock endpoint and shows a red *Trading region* row with the country, and real-money **Start** is refused while the region is blocked. A proxy URL in the API panel routes every CLOB and Gamma call through an allowed jurisdiction. If the proxy cannot be used, calls fail with `proxy_unavailable` instead of silently going direct.
+Polymarket geoblocks a list of jurisdictions (Belarus among them) and refuses both the site and the API from those IPs. Prices, balances and key derivation still work from a blocked IP; only orders are refused (`403 Trading restricted in your region`). **Connect** therefore asks Polymarket's geoblock endpoint and shows a red *Trading region* row with the country, and real-money **Start** is refused while the region is blocked. A proxy URL in the API panel (`http://user:pass@host:port`, `socks5://host:port` or plain `host:port`) routes every CLOB, Gamma, bridge and geoblock call through an allowed jurisdiction. If the proxy cannot be used, calls fail with `proxy_unavailable` instead of silently going direct.
 
 ## Run from source
 

@@ -13,17 +13,36 @@ let proxyAgent = null;
 let proxyUrl = "";
 let proxyError = null;
 
+/**
+ * "host:port" without a scheme is read as HTTP; socks4/5 go through a SOCKS
+ * agent. Anything else is refused so a typo never silently goes direct.
+ */
+function normalizeProxyUrl(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return "";
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(s) ? s : `http://${s}`;
+}
+
 function setProxy(url) {
-  const next = String(url || "").trim();
+  const next = normalizeProxyUrl(url);
   if (next === proxyUrl) return proxyAgent;
   proxyUrl = next;
   proxyAgent = null;
   proxyError = null;
   if (!next) return null;
   try {
-    // eslint-disable-next-line global-require
-    const { HttpsProxyAgent } = require("https-proxy-agent");
-    proxyAgent = new HttpsProxyAgent(next);
+    const scheme = new URL(next).protocol.replace(/:$/, "").toLowerCase();
+    if (/^socks(4a?|5h?)?$/.test(scheme)) {
+      // eslint-disable-next-line global-require
+      const { SocksProxyAgent } = require("socks-proxy-agent");
+      proxyAgent = new SocksProxyAgent(next);
+    } else if (scheme === "http" || scheme === "https") {
+      // eslint-disable-next-line global-require
+      const { HttpsProxyAgent } = require("https-proxy-agent");
+      proxyAgent = new HttpsProxyAgent(next);
+    } else {
+      throw new Error(`unsupported proxy scheme: ${scheme}`);
+    }
   } catch (err) {
     proxyAgent = null;
     proxyError = String((err && err.message) || err);
@@ -32,7 +51,7 @@ function setProxy(url) {
 }
 
 function currentProxy() {
-  return { url: proxyUrl, active: Boolean(proxyAgent), error: proxyError };
+  return { url: proxyUrl.replace(/\/\/[^@/]*@/, "//***@"), active: Boolean(proxyAgent), error: proxyError };
 }
 
 const APP_VERSION = (() => {
@@ -394,6 +413,7 @@ class ClobClient {
 module.exports = {
   ClobClient,
   setProxy,
+  normalizeProxyUrl,
   currentProxy,
   requestJson,
   l2Headers,

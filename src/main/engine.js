@@ -737,7 +737,7 @@ class Engine {
       const geo = await this.live.region({ maxAgeMs: 0 });
       add(
         geo && geo.ok
-          ? { id: "region", status: geo.blocked ? "fail" : "ok", country: geo.country || null, proxied: Boolean(this.settings.proxyUrl) }
+          ? { id: "region", status: geo.blocked ? "fail" : "ok", country: geo.country || null, ip: geo.ip || null, proxied: Boolean(this.settings.proxyUrl) }
           : { id: "region", status: "warn", reason: (geo && geo.reason) || "unknown" }
       );
     }
