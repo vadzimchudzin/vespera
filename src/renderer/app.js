@@ -1301,8 +1301,12 @@
         $("liveCancel").onclick = () => closePanel();
         $("liveGo").onclick = async () => {
           closePanel();
-          const res = await window.vespera.start({ confirmLive: true });
-          if (res && res.ok === false) logNote(reasonText(res.reason));
+          try {
+            const res = await window.vespera.start({ confirmLive: true });
+            if (res && res.ok === false) logNote(reasonText(res.reason));
+          } catch (err) {
+            logNote(`${t("logError")}: ${String((err && err.message) || err)}`);
+          }
           renderSnap(await window.vespera.snapshot());
         };
       }
@@ -1424,9 +1428,14 @@
 
     $("btnMenu").onclick = () => openSheet(true);
     $("sheetClose").onclick = () => openSheet(false);
-    $("backdrop").onclick = () => {
+    $("backdrop").onclick = (e) => {
       openSheet(false);
       closePanel();
+      // The backdrop covers the header while a panel is open; pass a click on a
+      // header button (Start/Stop, Paper/Auto) through instead of swallowing it.
+      const under = document.elementFromPoint(e.clientX, e.clientY);
+      const hit = under && under.closest && under.closest(".chrome button");
+      if (hit) hit.click();
     };
     $("panelClose").onclick = () => closePanel();
     document.querySelectorAll("[data-open]").forEach((btn) => {
@@ -1461,16 +1470,26 @@
     });
     $("btnRun").onclick = async () => {
       if (!window.vespera) return;
-      if (state.running) {
-        await window.vespera.stop();
-      } else {
-        const res = await window.vespera.start();
-        if (res && res.reason === "live_confirm_required") {
-          renderSnap(await window.vespera.snapshot());
-          openPanel("liveConfirm");
-          return;
+      const btn = $("btnRun");
+      if (btn.disabled) return;
+      // Start can wait on candle history; show that the click landed.
+      btn.disabled = true;
+      try {
+        if (state.running) {
+          await window.vespera.stop();
+        } else {
+          const res = await window.vespera.start();
+          if (res && res.reason === "live_confirm_required") {
+            renderSnap(await window.vespera.snapshot());
+            openPanel("liveConfirm");
+            return;
+          }
+          if (res && res.ok === false) logNote(res.reason === "daily_limit" ? t("dailyLimitHit") : reasonText(res.reason));
         }
-        if (res && res.reason === "daily_limit") logNote(t("dailyLimitHit"));
+      } catch (err) {
+        logNote(`${t("logError")}: ${String((err && err.message) || err)}`);
+      } finally {
+        btn.disabled = false;
       }
       renderSnap(await window.vespera.snapshot());
     };

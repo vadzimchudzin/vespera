@@ -7,6 +7,7 @@ All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 - **Deposit from any network.** Menu → *Deposit* (or *Top up the wallet* under a short balance in Connect). Pick the coin and the network your funds are on, each with its icon and minimum: USDT on Tron, Polygon, Ethereum, BNB Chain, Arbitrum, Base, Optimism, Solana; USDC, ETH, SOL, BTC, BNB, POL, DAI, USDe and more. Vespera asks the Polymarket bridge (`bridge.polymarket.com`) for the deposit address tied to your Polymarket wallet and shows it with a QR code, a copy button, the minimum, the token contract and a warning to send only that coin on that network. The bridge converts the deposit to pUSD in the wallet; trading still uses pUSD.
 - The panel lists the deposits seen at that address (credited / processing / failed) and refreshes every 15 s while open. The last coin and network are remembered. Bridge calls use the proxy from the API panel.
 - The glass pickers can show icons and a secondary note.
+- **Start works with a panel open.** The dimmed backdrop used to swallow the first click on Start / Stop (and Paper / Auto) while Settings was open: the panel closed and nothing started. The click now goes through. Start also shows that it is busy and writes to the log why it refused or failed instead of doing nothing.
 
 ## 0.17.0 — 2026-09-23
 
