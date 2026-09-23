@@ -152,7 +152,9 @@ class Journal {
           }
         }
       }
-      if (e.type === "lot_confirmed") {
+      // Mirrors Risk.confirmLot: confirming only restarts a halted series.
+      // Settings → Save confirms the lot every time; mid-series that must not reset.
+      if (e.type === "lot_confirmed" && halted) {
         halted = false;
         step = 1;
         losses = 0;

@@ -319,6 +319,17 @@ class Engine {
         delete patch.timeframe;
       }
     }
+    // An open bet settles on its own market's next bar; switching the chart
+    // under it would settle a BTC strike against an ETH candle.
+    const moves =
+      (patch.symbol != null && patch.symbol !== this.settings.symbol) ||
+      (patch.timeframe != null && patch.timeframe !== this.settings.timeframe);
+    if (moves && (this.paper.openBet || this.liveBet)) {
+      this.emit("log", { level: "warn", message: "market_blocked_open_bet" });
+      this.journal.write({ type: "market_blocked", reason: "open_bet" });
+      delete patch.symbol;
+      delete patch.timeframe;
+    }
     const next = { ...this.settings, ...patch };
     if (patch.refreshMs != null) {
       next.refreshMs = clampRefreshMs(patch.refreshMs);
@@ -1001,7 +1012,13 @@ class Engine {
     const outcome = outcomeOf(close, strike);
     const won = bet.side === outcome;
     const size = Number(bet.sizeUsd);
-    const shares = Number(bet.shares) > 0 ? Number(bet.shares) : size * (Number(bet.payout) > 1 ? Number(bet.payout) : 2);
+    const entry = Number(bet.entryPrice);
+    const shares =
+      Number(bet.shares) > 0
+        ? Number(bet.shares)
+        : entry > 0 && entry < 1
+          ? size / entry
+          : size * (Number(bet.payout) > 1 ? Number(bet.payout) : 2);
     // taker fee is charged in USDC at match time, so it is lost on either outcome
     const fee = Number(bet.feeUsd) > 0 ? Number(bet.feeUsd) : 0;
     const pnl = Decimal((won ? shares - size : -size) - fee);

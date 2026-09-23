@@ -429,7 +429,17 @@
     const onMarket = async (patch) => {
       if (!window.vespera) return;
       const next = await window.vespera.saveSettings(patch);
-      if (next && next.settings) renderSnap(next);
+      if (!next || !next.settings) return;
+      const refused =
+        (patch.symbol != null && next.settings.symbol !== patch.symbol) ||
+        (patch.timeframe != null && next.settings.timeframe !== patch.timeframe);
+      if (refused) {
+        // the engine kept the old market: rebuild the pickers so they show it again
+        state.chromeKey = "";
+        const openBet = (next.paper && next.paper.openBet) || next.liveBet;
+        logNote(t(openBet || next.mode !== "auto" ? "marketBlocked" : "marketAutoOnly"));
+      }
+      renderSnap(next);
     };
     hostSym.appendChild(
       buildSelect("hdr-sym", symbols.length ? symbols : [{ value: "BTCUSDT", label: "BTC/USDT" }], s.symbol || "BTCUSDT", (v) =>

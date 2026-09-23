@@ -2,6 +2,21 @@
 
 All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 
+## 0.17.0 — 2026-09-23
+
+- **Three themes from one design system.** Every colour in the app is now a theme token (surfaces, fills, text, status, chart, markers), so Dark glass, Light glass and the new **Blue glass** share the same hierarchy and spacing. The chart reads its colours from the same tokens, including trade markers.
+- **Light glass reworked.** Soft paper background with a faint blue/violet glow instead of flat white, denser dialogs so the chart does not bleed through, and status colours tuned for contrast on white (the neon green and pink of the dark theme were near-invisible there). Sliders, toggles and inputs got the Apple treatment: white thumbs with a hairline, a blue focus ring.
+- **Blue glass (new).** Deep ocean-blue backdrop, blue call-to-action, cyan and orange averages, teal/rose candles.
+- **Theme picker** shows a live preview card of each theme.
+- The journal now colours a result by outcome: a loss is red, a win green (every settled row used to be green, losses included).
+- *Today* is green only when positive, red when negative and neutral at zero; in Blue glass it no longer takes the button colour.
+
+### Fixes from the audit
+
+- **The pair and timeframe are locked while a bet is open.** Switching them used to settle the open bet against the new market's candle (a BTC strike against an ETH close). The picker shows the old market again and says why.
+- **Saving settings mid-series no longer resets the series after a restart.** Every Save confirms the lot, and the journal restore treated that as a new series; it now restarts the series only when it was halted, exactly as the running engine does.
+- Live settlement falls back to stake / entry price for shares if the fill size is missing.
+
 ## 0.16.1 — 2026-09-23
 
 - **Mode indicator next to Paper/Auto.** Dry run stays a blue **DRY RUN** pill. Real money is now green and folds into a small pulsing green dot; hover it (or focus it with Tab) and it unfolds into **REAL MONEY** with the hint. The indicator sits outside the layout, so unfolding it never shifts the Paper/Auto switch. Motion is turned off when the system asks for reduced motion.
