@@ -2,6 +2,12 @@
 
 All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 
+## 0.18.0 — 2026-09-23
+
+- **Deposit from any network.** Menu → *Deposit* (or *Top up the wallet* under a short balance in Connect). Pick the coin and the network your funds are on, each with its icon and minimum: USDT on Tron, Polygon, Ethereum, BNB Chain, Arbitrum, Base, Optimism, Solana; USDC, ETH, SOL, BTC, BNB, POL, DAI, USDe and more. Vespera asks the Polymarket bridge (`bridge.polymarket.com`) for the deposit address tied to your Polymarket wallet and shows it with a QR code, a copy button, the minimum, the token contract and a warning to send only that coin on that network. The bridge converts the deposit to pUSD in the wallet; trading still uses pUSD.
+- The panel lists the deposits seen at that address (credited / processing / failed) and refreshes every 15 s while open. The last coin and network are remembered. Bridge calls use the proxy from the API panel.
+- The glass pickers can show icons and a secondary note.
+
 ## 0.17.0 — 2026-09-23
 
 - **Three themes from one design system.** Every colour in the app is now a theme token (surfaces, fills, text, status, chart, markers), so Dark glass, Light glass and the new **Blue glass** share the same hierarchy and spacing. The chart reads its colours from the same tokens, including trade markers.

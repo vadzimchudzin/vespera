@@ -2,7 +2,7 @@
 
 Glass desktop terminal for BTC 15m Polymarket Up/Down.
 
-**v0.17.0.** SMA/EMA 200/20 on a **closed** candle `S`, bet on **S+1**. Arrow sits on the entry candle. Auto prices the live Polymarket round and sends **CLOB V2** signed orders once the wallet, a signing key and the derived CLOB keys are in the API panel.
+**v0.18.0.** SMA/EMA 200/20 on a **closed** candle `S`, bet on **S+1**. Arrow sits on the entry candle. Auto prices the live Polymarket round and sends **CLOB V2** signed orders once the wallet, a signing key and the derived CLOB keys are in the API panel.
 
 **Payout is not ×2.** Polymarket pays $1 per winning share, so the multiple is `1 / price`. At an ask of 0.72 a $1 stake returns $1.39 while a loss still costs the full $1 — Paper books results on that same number. Crypto rounds also charge a taker fee of `0.07 × p × (1 − p)` per share (≈3.5% of the stake at 0.50), paid in USDC on top of the stake and lost on either outcome. Paper and live P&L both deduct it; Paper without a live quote assumes a price of 0.50. A flat ×2 martingale does **not** recover a loss at those odds; size the series accordingly.
 
@@ -44,6 +44,10 @@ Repo: private [`VadimChudin/vespera`](https://github.com/VadimChudin/vespera)
 4. Connect shows a checklist: reachability / region, key, wallet, wallet type, CLOB keys, current round and price, pUSD balance against the first bet and a full series, and the exchange allowance. Green means ready for live orders.
 
 Manual CLOB keys and the proxy are under **Advanced** in the same panel.
+
+## Funding the wallet
+
+Polymarket trades in **pUSD on Polygon**, but it accepts deposits from other networks through its bridge. Menu → **Deposit**: pick the coin and the network (for example **USDT · Tron**), send it to the address shown, and the bridge credits pUSD to your Polymarket wallet, usually within minutes. Each network has a minimum (about $2–4); send only the selected coin on the selected network. The address is tied to the wallet address in the API panel, so fill that in first.
 
 ## Blocked regions
 

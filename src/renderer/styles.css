@@ -1086,6 +1086,154 @@ body.mac .chrome {
   color: var(--warn);
 }
 
+/* coin / network marks inside the glass select */
+.v-face,
+.v-opt:has(.coin),
+.v-opt:has(.v-opt-note) {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.v-opt-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.v-opt-note {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+.coin {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: block;
+}
+.coin-letter {
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ink);
+  background: var(--fill-strong);
+}
+
+.dep-picks {
+  display: grid;
+  grid-template-columns: 1fr 1.3fr;
+  gap: 10px;
+}
+.dep-card {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid var(--hair);
+  border-radius: 18px;
+  background: var(--fill);
+}
+.dep-qr {
+  width: 132px;
+  height: 132px;
+  border-radius: 12px;
+  background: #fff;
+  flex-shrink: 0;
+}
+.dep-info {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.dep-info label {
+  color: var(--muted);
+  font-size: 12px;
+}
+.dep-addr {
+  font-size: 13px;
+  line-height: 1.35;
+  word-break: break-all;
+  user-select: all;
+}
+.mono {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+.ghost.dep-copy,
+.ghost.dep-fund {
+  align-self: flex-start;
+  padding: 7px 14px;
+  font-size: 13px;
+}
+.ghost.dep-fund {
+  margin-top: 10px;
+}
+.dep-kvs {
+  margin: 12px 0 4px;
+}
+.dep-kv {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 2px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--hair);
+}
+.dep-kv > span:first-child {
+  color: var(--muted);
+}
+.dep-history {
+  margin-top: 8px;
+}
+.dep-history[hidden] {
+  display: none;
+}
+.dep-history-h {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-weight: 600;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+.dep-link {
+  color: var(--apple);
+  font-size: 12px;
+  font-weight: 500;
+}
+.dep-tx {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--hair);
+  font-size: 13px;
+}
+.dep-tx .hint {
+  margin: 0;
+}
+.dep-pill {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: 99px;
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+}
+.dep-tx[data-state="done"] .dep-pill {
+  color: var(--pos);
+  background: color-mix(in srgb, var(--pos) 14%, transparent);
+}
+.dep-tx[data-state="failed"] .dep-pill {
+  color: var(--neg);
+  background: color-mix(in srgb, var(--neg) 14%, transparent);
+}
+
 .plan-box {
   margin: 4px 0 14px;
   padding: 10px 12px;

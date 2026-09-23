@@ -1,7 +1,7 @@
 {
   "name": "vespera",
   "productName": "Vespera",
-  "version": "0.17.0",
+  "version": "0.18.0",
   "description": "Vespera (VSP) — glass terminal for Polymarket MA200/MA20. Paper first.",
   "author": "VadimChudin",
   "license": "UNLICENSED",
@@ -9,7 +9,7 @@
   "main": "src/main/main.js",
   "scripts": {
     "start": "electron .",
-    "test": "node src/main/strategy.test.js && node src/main/engine.test.js && node src/main/brokers/polymarket.test.js && node src/main/persistence.test.js && node src/main/quotes.test.js && node src/main/risk.test.js && node src/main/safeguards.test.js && node src/main/connect.test.js && node src/main/export.test.js",
+    "test": "node src/main/strategy.test.js && node src/main/engine.test.js && node src/main/brokers/polymarket.test.js && node src/main/persistence.test.js && node src/main/quotes.test.js && node src/main/risk.test.js && node src/main/safeguards.test.js && node src/main/connect.test.js && node src/main/export.test.js && node src/main/brokers/bridge.test.js",
     "pack": "electron-builder --dir",
     "dist": "electron-builder --win --mac",
     "dist:win": "electron-builder --win nsis --publish never",
@@ -80,6 +80,7 @@
     "ethers": "^5.7.2",
     "https-proxy-agent": "^7.0.6",
     "lightweight-charts": "^4.2.3",
+    "qrcode": "^1.5.4",
     "ws": "^8.18.3"
   }
 }
