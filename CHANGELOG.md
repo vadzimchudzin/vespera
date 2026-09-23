@@ -2,6 +2,13 @@
 
 All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 
+## 0.16.0 — 2026-09-23
+
+- **CSV export.** Statistics → *Export trades to CSV* saves every settled bet still on disk, rotated journal files included (paper, dry run and real money, labelled per row): time, side, stake, entry price, shares, fee, strike, settle close, outcome, result, P&L, balance after, round and order id. UTF-8 with BOM so Excel opens it directly.
+- **Results by day** in Statistics: bets, win rate, fees and result for the last 14 days of the current book.
+- The journal shows results as `+$0.96` / `−$1.03` instead of `$-1.03`.
+- The test suite now also compiles every renderer script and checks that EN and RU have the same keys and that every `t("…")` used by the UI exists, so a broken panel fails `npm test` (and the release build) instead of shipping.
+
 ## 0.15.0 — 2026-09-23
 
 - **API panel: three fields and one button.** Wallet address, private key and wallet type, each with where to find it, then **Connect**. The CLOB key / secret / passphrase and the proxy moved under *Advanced*; the separate "Get API keys" and "OK" buttons are replaced by Connect.

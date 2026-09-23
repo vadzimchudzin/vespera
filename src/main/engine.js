@@ -7,7 +7,7 @@ const { INTERVAL_MS, SYMBOLS, TIMEFRAMES, HISTORY_BARS, clampRefreshMs, symbolLa
 const { createVenue } = require("./brokers");
 const { Journal } = require("./journal");
 const { SIZING_MODES, perDollar } = require("./risk");
-const { computeStats, todayPnl } = require("./stats");
+const { computeStats, todayPnl, dailyBreakdown } = require("./stats");
 const { Decimal } = require("./money");
 const { outcomeOf } = require("./paperBroker");
 const { SUPPORTED_TF, isSupportedSymbol, fitToPolymarket } = require("./brokers/polymarketMarkets");
@@ -1432,6 +1432,7 @@ class Engine {
       plan: this.risk.plan(this._planPrice(), this._planSchedule()),
       stats: computeStats(this.journal.entries, { book: this._book(), maxSteps: this.risk.maxSteps }),
       book: this._book(),
+      daily: dailyBreakdown(this.journal.entries, this._book(), 14),
       pauseReason: this.pauseReason,
       lastConnect: this.lastConnect || null,
       paper: this.paper.snapshot(),

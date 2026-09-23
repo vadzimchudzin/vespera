@@ -1128,3 +1128,32 @@ details.adv[open] > summary {
 .chk-skip {
   opacity: 0.55;
 }
+
+.day-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.day-table th {
+  text-align: right;
+  font-weight: 500;
+  color: var(--muted);
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--hair);
+}
+.day-table td {
+  text-align: right;
+  padding: 5px 6px;
+  border-bottom: 1px solid var(--hair);
+}
+.day-table th:first-child,
+.day-table td:first-child {
+  text-align: left;
+}
+.day-table td.pos {
+  color: #30d158;
+}
+.day-table td.neg {
+  color: #ff453a;
+}

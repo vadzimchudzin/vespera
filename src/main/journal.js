@@ -71,6 +71,34 @@ class Journal {
     }
   }
 
+  /**
+   * Every entry still on disk, oldest first: rotated files .N … .1, then the
+   * live file. Memory only keeps the newest entries; exports need all of them.
+   */
+  readAll() {
+    const files = [];
+    for (let i = this.maxFiles; i >= 1; i -= 1) files.push(`${this.filePath}.${i}`);
+    files.push(this.filePath);
+    const out = [];
+    for (const file of files) {
+      let raw;
+      try {
+        raw = fs.readFileSync(file, "utf8");
+      } catch {
+        continue;
+      }
+      for (const line of raw.split("\n")) {
+        if (!line) continue;
+        try {
+          out.push(JSON.parse(line));
+        } catch {
+          /* a torn last line after a crash */
+        }
+      }
+    }
+    return out;
+  }
+
   write(entry) {
     const row = { ts: new Date().toISOString(), ...entry };
     const line = `${JSON.stringify(row)}\n`;
