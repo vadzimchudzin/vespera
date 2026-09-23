@@ -198,9 +198,17 @@
     if (badge) {
       const auto = snap.mode === "auto";
       badge.hidden = !auto;
-      badge.dataset.book = snap.book || "";
-      badge.textContent = snap.book === "live" ? t("badgeLive") : t("badgeDry");
-      badge.title = snap.book === "live" ? t("badgeLiveHint") : t("badgeDryHint");
+      // only touch what changed, so the collapse animation is not restarted every tick
+      const book = snap.book === "live" ? "live" : "dry";
+      if (badge.dataset.book !== book) badge.dataset.book = book;
+      const text = book === "live" ? t("badgeLive") : t("badgeDry");
+      const label = badge.querySelector(".mb-text");
+      if (label && label.textContent !== text) label.textContent = text;
+      const hint = book === "live" ? t("badgeLiveHint") : t("badgeDryHint");
+      if (badge.title !== hint) {
+        badge.title = hint;
+        badge.setAttribute("aria-label", `${text}. ${hint}`);
+      }
     }
     paintChromePicks(snap);
     paintBalance(snap);

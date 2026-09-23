@@ -2,6 +2,10 @@
 
 All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 
+## 0.16.1 — 2026-09-23
+
+- **Mode indicator next to Paper/Auto.** Dry run stays a blue **DRY RUN** pill. Real money is now green and folds into a small pulsing green dot; hover it (or focus it with Tab) and it unfolds into **REAL MONEY** with the hint. The indicator sits outside the layout, so unfolding it never shifts the Paper/Auto switch. Motion is turned off when the system asks for reduced motion.
+
 ## 0.16.0 — 2026-09-23
 
 - **CSV export.** Statistics → *Export trades to CSV* saves every settled bet still on disk, rotated journal files included (paper, dry run and real money, labelled per row): time, side, stake, entry price, shares, fee, strike, settle close, outcome, result, P&L, balance after, round and order id. UTF-8 with BOM so Excel opens it directly.
