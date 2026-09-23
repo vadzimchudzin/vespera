@@ -43,6 +43,22 @@ function isSupportedTimeframe(timeframe) {
   return SUPPORTED_TF.includes(String(timeframe));
 }
 
+/** Assets with live crypto Up/Down rounds (checked against Gamma, 2026-09). */
+const SUPPORTED_ASSETS = ["BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "HYPE"];
+
+function isSupportedSymbol(symbol) {
+  const id = String(symbol || "").toUpperCase();
+  return SUPPORTED_ASSETS.some((a) => id === `${a}USDT`);
+}
+
+/** Nearest pair/timeframe Auto can actually trade. */
+function fitToPolymarket(symbol, timeframe) {
+  return {
+    symbol: isSupportedSymbol(symbol) ? String(symbol).toUpperCase() : "BTCUSDT",
+    timeframe: isSupportedTimeframe(timeframe) ? String(timeframe) : "15m",
+  };
+}
+
 function floorStartUnix(tsMs, timeframe) {
   const sec = intervalSec(timeframe);
   const unix = Math.floor(Number(tsMs) / 1000);
@@ -124,6 +140,15 @@ async function resolveUpDown(client, { symbol, timeframe, tsMs } = {}) {
       supported: SUPPORTED_TF.slice(),
     };
   }
+  if (!isSupportedSymbol(symbol)) {
+    return {
+      ok: false,
+      slug: null,
+      reason: "symbol_unsupported",
+      symbol: String(symbol || ""),
+      supported: SUPPORTED_ASSETS.slice(),
+    };
+  }
   const slug = updownSlug(symbol, timeframe, tsMs == null ? Date.now() : tsMs);
   const res = await client.eventBySlug(slug);
   if (!res.ok || !res.json) {
@@ -144,7 +169,10 @@ async function resolveUpDown(client, { symbol, timeframe, tsMs } = {}) {
 module.exports = {
   TF_SECONDS,
   SUPPORTED_TF,
+  SUPPORTED_ASSETS,
   isSupportedTimeframe,
+  isSupportedSymbol,
+  fitToPolymarket,
   assetFromSymbol,
   intervalSec,
   floorStartUnix,

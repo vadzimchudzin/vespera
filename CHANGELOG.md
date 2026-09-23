@@ -2,6 +2,20 @@
 
 All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 
+## 0.12.1 — 2026-09-23
+
+- **Auto lists only what Polymarket trades.** Up/Down rounds exist for BTC, ETH, SOL, XRP, DOGE, BNB and HYPE on 5m and 15m only (HYPE appears when Binance lists it). In Auto the pair and timeframe menus show just those; switching to Auto moves an unsupported pick to BTC 15m, and the engine refuses unsupported picks even if asked. Paper keeps the full Binance list, with Polymarket pairs first and marked **P**, the rest dimmed.
+- **Market BUY amounts were rejected by the CLOB.** Marketable buys need the USD amount to 2 decimals and shares to 4; 0.12.0 sent USD to 5 decimals (e.g. `9.9958`). The full stake is now sent in cents and shares are truncated to 4 decimals.
+- **Fees, checked end to end.**
+  - The taker fee `shares × rate × (p(1−p))^e` is read from the market (`/clob-markets` → `fd`), and markets without fee details are treated as fee-free.
+  - V2 charges it in USDC on top of the stake, so it is lost on a win and on a loss; live orders now check the wallet holds stake + fee before signing.
+  - Live results are booked on what actually filled (`makingAmount` / `takingAmount`), so price improvement is counted: win = shares − stake − fee, loss = −stake − fee.
+  - Paper without a live quote used a flat 0.5% fee against a ×2 payout; it now prices the round at 0.50 and charges the same taker fee (3.5% of the stake), never more optimistic than the venue. A `null` fee rate no longer turns into a zero fee.
+  - Paper warns (`paper_below_live_min`) when a lot is under Polymarket's 5-share minimum, i.e. would be refused live.
+- **Restart mid-round keeps the numbers.** The paper bet is restored with its shares, fee and the balance after the stake (a restart used to settle it at ×2 with no fee and a balance that never paid the stake). An unsettled live bet is restored too, so its result still reaches the series.
+- **Settings.** The SMA/EMA switch called a missing function and threw, so it only applied after **Save** and the period labels kept saying SMA. It now applies live. Units are pluralised (1 свеча / 3 свечи / 5 свечей, 1 тик / 22 тика).
+- **Chart axis follows the tick size.** Low-priced pairs like PEPE showed every price as `0.00`.
+
 ## 0.12.0 — 2026-09-23
 
 - **Orders are signed for CLOB V2.** Polymarket switched production to CLOB V2 on 2026-04-28 and rejects V1-signed orders, so every live order from earlier builds failed. The signer now uses the V2 exchange (`0xE111…996B`, EIP-712 version `"2"`), the new Order struct (`timestamp`, `metadata`, `builder` instead of `nonce`, `feeRateBps`, `taker`), the neg-risk exchange when the book says so, and the V2 wire body.

@@ -8,6 +8,7 @@ const { createVenue } = require("./brokers");
 const { Journal } = require("./journal");
 const { Decimal } = require("./money");
 const { outcomeOf } = require("./paperBroker");
+const { SUPPORTED_TF, isSupportedSymbol, fitToPolymarket } = require("./brokers/polymarketMarkets");
 const { fastPeriodOf, slowPeriodOf, confirmCountOf, fullBodyOnSOf, maTypeOf } = require("./strategy");
 
 const STATUSES = [
@@ -26,6 +27,10 @@ class Engine {
     this.running = false;
     this.status = "stopped";
     this.mode = this.settings.mode || "paper";
+    if (this.mode === "auto") {
+      // Auto only trades pairs/timeframes that have a Polymarket round.
+      Object.assign(this.settings, fitToPolymarket(this.settings.symbol || "BTCUSDT", this.settings.timeframe || "15m"));
+    }
     this.listeners = new Set();
     this.journal = new Journal(`${userDataDir}/journal.jsonl`);
     this.risk = new Risk({
@@ -63,7 +68,7 @@ class Engine {
     this.markers = [];
     this.lastEval = null;
     this.pingResult = null;
-    this.liveBet = null;
+    this.liveBet = this.liveBet || null;
     this.lastQuote = null;
     this.liveBalance = {
       ok: true,
@@ -172,23 +177,65 @@ class Engine {
     });
   }
 
+  /**
+   * Rebuild the paper balance / open bet and any unsettled live bet from the
+   * journal, so a restart mid-round settles with the same stake, shares and fee.
+   */
   _restorePaper() {
-    const lastSettled = [...this.journal.entries].reverse().find((e) => e.type === "settled");
-    if (lastSettled && lastSettled.balanceAfter) {
-      this.paper.balance = Decimal(lastSettled.balanceAfter);
+    const entries = this.journal.entries;
+    const isLive = (e) => e.mode === "auto";
+    for (let i = entries.length - 1; i >= 0; i -= 1) {
+      const e = entries[i];
+      if (e.type === "paper_reset") {
+        if (e.balance) this.paper.balance = Decimal(e.balance);
+        break;
+      }
+      if (e.type === "settled" && !isLive(e)) {
+        if (e.balanceAfter) this.paper.balance = Decimal(e.balanceAfter);
+        break;
+      }
+      if (e.type === "order_sent" && !isLive(e) && e.side && e.sizeUsd) {
+        if (e.balanceAfter) this.paper.balance = Decimal(e.balanceAfter);
+        this.paper.openBet = {
+          clientOrderId: e.clientOrderId,
+          side: e.side,
+          sizeUsd: e.sizeUsd,
+          feeUsd: e.feeUsd || "0",
+          payout: e.payout,
+          shares: e.shares,
+          entryPrice: e.entryPrice,
+          strike: e.strike,
+          roundOpenTs: e.roundOpenTs,
+          roundCloseTs: e.roundCloseTs,
+          placedAt: e.placedAt || Date.now(),
+          status: "open",
+        };
+        break;
+      }
     }
-    const open = this.journal.lastOpenBet();
-    if (open && open.side && open.sizeUsd) {
-      this.paper.openBet = {
-        clientOrderId: open.clientOrderId,
-        side: open.side,
-        sizeUsd: open.sizeUsd,
-        strike: open.strike,
-        roundOpenTs: open.roundOpenTs,
-        roundCloseTs: open.roundCloseTs,
-        placedAt: open.placedAt || Date.now(),
-        status: "open",
-      };
+    for (let i = entries.length - 1; i >= 0; i -= 1) {
+      const e = entries[i];
+      if (!isLive(e)) continue;
+      if (e.type === "settled") break;
+      if (e.type === "order_sent" && e.side && e.sizeUsd) {
+        this.liveBet = {
+          clientOrderId: e.clientOrderId,
+          side: e.side,
+          sizeUsd: e.sizeUsd,
+          payout: e.payout,
+          entryPrice: e.price,
+          shares: e.shares,
+          feeUsd: e.feeUsd,
+          orderId: e.orderId,
+          slug: e.slug,
+          strike: e.strike,
+          roundOpenTs: e.roundOpenTs,
+          roundCloseTs: e.roundCloseTs,
+          placedAt: e.placedAt || Date.now(),
+          status: "open",
+        };
+        break;
+      }
     }
   }
 
@@ -235,7 +282,18 @@ class Engine {
     }
   }
 
-  async applySettings(patch = {}) {
+  async applySettings(input = {}) {
+    const patch = { ...input };
+    if (this.mode === "auto") {
+      if (patch.symbol != null && !isSupportedSymbol(patch.symbol)) {
+        this.emit("log", { level: "warn", message: `market_unsupported_in_auto: ${patch.symbol}` });
+        delete patch.symbol;
+      }
+      if (patch.timeframe != null && !SUPPORTED_TF.includes(String(patch.timeframe))) {
+        this.emit("log", { level: "warn", message: `market_unsupported_in_auto: ${patch.timeframe}` });
+        delete patch.timeframe;
+      }
+    }
     const next = { ...this.settings, ...patch };
     if (patch.refreshMs != null) {
       next.refreshMs = clampRefreshMs(patch.refreshMs);
@@ -389,6 +447,14 @@ class Engine {
     this.risk.step = 1;
     this.risk.consecutiveLosses = 0;
     this.journal.write({ type: "mode", mode });
+    if (mode === "auto") {
+      const fit = fitToPolymarket(this.settings.symbol || "BTCUSDT", this.settings.timeframe || "15m");
+      if (fit.symbol !== this.settings.symbol || fit.timeframe !== this.settings.timeframe) {
+        this.journal.write({ type: "market_adjusted", from: `${this.settings.symbol} ${this.settings.timeframe}`, to: `${fit.symbol} ${fit.timeframe}` });
+        this.emit("log", { level: "warn", message: `market_adjusted: ${fit.symbol} ${fit.timeframe} (no Polymarket round for the previous pick)` });
+        await this.applySettings(fit);
+      }
+    }
     if (mode === "auto") {
       await this.refreshLiveBalance();
       await this._loadLiveMarkets();
@@ -606,11 +672,11 @@ class Engine {
     const close = Number(bar.close);
     const outcome = outcomeOf(close, strike);
     const won = bet.side === outcome;
-    const size = Decimal(bet.sizeUsd);
-    const mult = Number(bet.payout) > 1 ? Number(bet.payout) : 2;
-    // taker fee is charged at match time on either outcome
-    const fee = Decimal(Number(bet.feeUsd) > 0 ? Number(bet.feeUsd).toFixed(4) : "0");
-    const pnl = (won ? size.mul(mult).sub(size) : size.mul(-1)).sub(fee);
+    const size = Number(bet.sizeUsd);
+    const shares = Number(bet.shares) > 0 ? Number(bet.shares) : size * (Number(bet.payout) > 1 ? Number(bet.payout) : 2);
+    // taker fee is charged in USDC at match time, so it is lost on either outcome
+    const fee = Number(bet.feeUsd) > 0 ? Number(bet.feeUsd) : 0;
+    const pnl = Decimal((won ? shares - size : -size) - fee);
     const settled = {
       ...bet,
       mode: "auto",
@@ -876,11 +942,20 @@ class Engine {
         sizeUsd: size,
         clientOrderId,
         round,
-        payout: quote ? quote.payout : null,
         price: quote ? quote.price : null,
         feeRate: quote ? quote.feeRate : null,
-        quoteSource: quote ? "polymarket" : "fixed_2x",
+        feeExponent: quote ? quote.feeExponent : null,
+        quoteSource: quote ? "polymarket" : "assumed_0.50",
       });
+      if (quote && Number(quote.minOrderSize) > 0 && Number(order.shares) < Number(quote.minOrderSize)) {
+        // Paper still books it, but the same lot would be refused live.
+        const minUsd = (Number(quote.minOrderSize) * Number(order.entryPrice)).toFixed(2);
+        this.journal.write({ type: "paper_below_live_min", shares: order.shares, minOrderSize: quote.minOrderSize, minUsd });
+        this.emit("log", {
+          level: "warn",
+          message: `paper_below_live_min: ${order.shares} shares < ${quote.minOrderSize}; live needs at least $${minUsd}`,
+        });
+      }
       this.markers.push(marker);
       this.journal.write({ type: "order_sent", ...order });
       this.status = "waiting_settlement";
@@ -927,8 +1002,12 @@ class Engine {
       strategyId: this.strategyId,
       strategyName: this.strategy().name,
       strategies: listStrategies(),
-      symbols: this.symbols && this.symbols.length ? this.symbols : SYMBOLS,
+      symbols: (this.symbols && this.symbols.length ? this.symbols : SYMBOLS).map((s) => ({
+        ...s,
+        polymarket: isSupportedSymbol(s.id),
+      })),
       timeframes: TIMEFRAMES,
+      polymarketTimeframes: SUPPORTED_TF.slice(),
       settings: {
         symbol: this.settings.symbol || "BTCUSDT",
         timeframe: this.settings.timeframe || "15m",

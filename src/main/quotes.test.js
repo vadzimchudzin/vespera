@@ -129,9 +129,31 @@ async function payoutCase({ payout, side, settleClose, expectPnl, label }) {
       price: 0.5,
     });
     assert.strictEqual(placed.feeUsd, "0.35");
-    assert.strictEqual(placed.feeModel, "polymarket_taker");
+    assert.strictEqual(placed.quoteSource, "polymarket");
     const lost = feeBroker.settle({ close: 99, closeTs: 2 });
-    assert.strictEqual(lost.pnl, "-10.35");
+    assert.strictEqual(lost.pnl, "-10.35", "a loss costs stake + fee");
+    await feeBroker.marketBuy({
+      side: "UP",
+      sizeUsd: "10.00",
+      clientOrderId: "fee2",
+      round: { strike: 100, openTs: 3, closeTs: 4 },
+      price: 0.5,
+    });
+    const won = feeBroker.settle({ close: 101, closeTs: 4 });
+    assert.strictEqual(won.pnl, "9.65", "a win pays 20 shares − stake − fee");
+
+    // A null fee rate from a missing quote must not become a zero fee.
+    const nullRate = new PaperBroker({ startingBalance: "100.00" });
+    const offline = await nullRate.marketBuy({
+      side: "UP",
+      sizeUsd: "10.00",
+      clientOrderId: "n",
+      round: { strike: 1, openTs: 1, closeTs: 2 },
+      price: null,
+      feeRate: null,
+    });
+    assert.strictEqual(offline.feeUsd, "0.35", "offline paper charges the fee at even odds");
+    assert.strictEqual(offline.payout, 2);
   }
 
   // ── order sizing ───────────────────────────────────────────────────────────
@@ -160,6 +182,7 @@ async function payoutCase({ payout, side, settleClose, expectPnl, label }) {
   const sized = await adapter._sizeFromSignal({ side: "UP", sizeUsd: "10.00", round: { openTs: 1 } });
   assert.strictEqual(sized.makerAmount, "10000000", "USD is sent in 6-decimal micro units");
   assert.strictEqual(sized.takerAmount, "20000000", "shares = usd / price");
+  assert.strictEqual(sized.quote.feeUsd, "0.35000", "20 × 0.07 × 0.5 × 0.5");
   assert.strictEqual(sized.side, 0, "signal orders are BUY");
   assert.strictEqual(sized.quote.shares, 20);
 
@@ -184,9 +207,64 @@ async function payoutCase({ payout, side, settleClose, expectPnl, label }) {
   });
   const swept = await adapter._sizeFromSignal({ side: "UP", sizeUsd: "10.00", round: { openTs: 1 } });
   assert.strictEqual(swept.quote.price, 0.53, "limit covers the whole stake");
-  assert.strictEqual(swept.takerAmount, "18860000", "shares rounded down to 2 decimals");
-  assert.strictEqual(swept.makerAmount, "9995800", "USD = shares × price");
-  assert.ok(Number(swept.quote.feeUsd) > 0, "fee is estimated");
+  // Market BUY precision: USD ≤ 2 decimals, shares ≤ 4 decimals.
+  assert.strictEqual(swept.makerAmount, "10000000", "the whole stake, in cents");
+  assert.strictEqual(swept.takerAmount, "18867900", "10 / 0.53 truncated to 4 decimals");
+  assert.strictEqual(Number(swept.makerAmount) % 10_000, 0);
+  assert.strictEqual(Number(swept.takerAmount) % 100, 0);
+  assert.strictEqual(swept.quote.feeUsd, (18.8679 * 0.07 * 0.53 * 0.47).toFixed(5));
+
+  // Odd stake: $7.777 → $7.77 maker; fee schedule exponent is honoured.
+  adapter.getQuote = async () => ({ ...quote, price: 0.6, tickSize: 0.01, feeRate: 0.07, feeExponent: 2, asks: [] });
+  const odd = await adapter._sizeFromSignal({ side: "UP", sizeUsd: "7.777", round: { openTs: 1 } });
+  assert.strictEqual(odd.makerAmount, "7770000");
+  assert.strictEqual(odd.takerAmount, "12950000");
+  assert.strictEqual(odd.quote.feeUsd, (12.95 * 0.07 * Math.pow(0.6 * 0.4, 2)).toFixed(5));
+
+  // Live order: balance must cover stake + fee; the booked fill is what the CLOB reports.
+  {
+    const fills = [];
+    const venue = new PolymarketAdapter({
+      apiKey: "k",
+      apiSecret: Buffer.from("s").toString("base64"),
+      apiPassphrase: "p",
+      walletAddress: "0x1111111111111111111111111111111111111111",
+      privateKey: "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
+      client: {
+        configure() {},
+        async balanceAllowance() {
+          return { ok: true, status: 200, json: { balance: fills.balance } };
+        },
+        async postOrder(signed) {
+          fills.push(signed);
+          return { ok: true, status: 200, json: { success: true, status: "matched", orderID: "0xabc", makingAmount: "10", takingAmount: "20.408163" } };
+        },
+      },
+    });
+    venue.getQuote = async () => ({ ...quote, price: 0.5, tickSize: 0.01, feeRate: 0.07, asks: [] });
+    fills.balance = "10100000"; // $10.10 < $10 + $0.35
+    await assert.rejects(
+      () => venue.marketBuy({ side: "UP", sizeUsd: "10.00", round: { openTs: 1 } }),
+      (err) => err.code === "insufficient_balance",
+      "stake + fee must be covered before signing"
+    );
+    assert.strictEqual(fills.length, 0);
+    fills.balance = "50000000";
+    const filled = await venue.marketBuy({ side: "UP", sizeUsd: "10.00", round: { openTs: 1 } });
+    assert.strictEqual(filled.filled, true);
+    assert.strictEqual(filled.shares, 20.4082, "price improvement books the extra shares");
+    assert.strictEqual(filled.sizeUsd, "10.00");
+    assert.strictEqual(filled.limitPrice, 0.5);
+    assert.ok(filled.price < 0.5);
+  }
+
+  // No fee details on /clob-markets means a fee-free market.
+  {
+    const free = new PolymarketAdapter({ client: { clobMarketInfo: async () => ({ ok: true, json: { mts: 0.01 } }) } });
+    assert.deepStrictEqual(await free._feeSchedule("0x1"), { feeRate: 0, feeExponent: 1 });
+    const crypto = new PolymarketAdapter({ client: { clobMarketInfo: async () => ({ ok: true, json: { fd: { r: 0.07, e: 1, to: true } } }) } });
+    assert.deepStrictEqual(await crypto._feeSchedule("0x1"), { feeRate: 0.07, feeExponent: 1 });
+  }
 
   // A closed round must never be traded.
   adapter.getQuote = async () => ({ ...quote, acceptingOrders: false });
@@ -212,6 +290,11 @@ async function payoutCase({ payout, side, settleClose, expectPnl, label }) {
   );
   assert.strictEqual(unsupported.ok, false);
   assert.strictEqual(unsupported.reason, "timeframe_unsupported");
+  const noRound = await resolveUpDown(
+    { eventBySlug: async () => assert.fail("must not call the network for ADA") },
+    { symbol: "ADAUSDT", timeframe: "15m", tsMs: Date.now() }
+  );
+  assert.strictEqual(noRound.reason, "symbol_unsupported");
 
   // ── L1 auth, key derivation and proxy signing ──────────────────────────────
 

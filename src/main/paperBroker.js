@@ -1,17 +1,19 @@
 "use strict";
 
 const { Decimal } = require("./money");
-
-// Flat fallback when no live quote exists.
-const FEE_RATE = 0.005;
-// Polymarket crypto taker fee: shares × rate × p × (1 − p) = stake × rate × (1 − p).
-const TAKER_FEE_RATE = 0.07;
+const { CRYPTO_TAKER_RATE, ASSUMED_PRICE, num, validPrice, takerFeeOnStake } = require("./fees");
 
 /** Polymarket Up/Down rule: end >= start is UP. */
 function outcomeOf(close, strike) {
   return Number(close) >= Number(strike) ? "UP" : "DOWN";
 }
 
+/**
+ * Paper venue that books exactly what Polymarket would: entry at the ask,
+ * $1 per winning share, and the taker fee on top of the stake. Without a live
+ * quote it assumes even odds (0.50) and charges the fee at that price, so an
+ * offline run is never more optimistic than the venue.
+ */
 class PaperBroker {
   constructor(options = {}) {
     this.startingBalance = Decimal(options.startingBalance ?? "1000.00");
@@ -19,8 +21,7 @@ class PaperBroker {
     this.openBet = null;
     this.history = [];
     this.connected = true;
-    this.feeRate = Number(options.feeRate ?? FEE_RATE);
-    this.takerFeeRate = Number(options.takerFeeRate ?? TAKER_FEE_RATE);
+    this.takerFeeRate = Number(options.takerFeeRate ?? CRYPTO_TAKER_RATE);
   }
 
   async ping() {
@@ -36,14 +37,10 @@ class PaperBroker {
     return this.balance.toFixed(2);
   }
 
-  feeOn(sizeUsd, price, takerFeeRate) {
-    const size = Decimal(sizeUsd);
-    const p = Number(price);
-    if (Number.isFinite(p) && p > 0 && p < 1) {
-      const rate = Number.isFinite(Number(takerFeeRate)) ? Number(takerFeeRate) : this.takerFeeRate;
-      return Decimal(size.toNumber() * rate * (1 - p));
-    }
-    return Decimal(size.toNumber() * this.feeRate);
+  feeOn(sizeUsd, price, schedule = {}) {
+    const p = validPrice(price) ?? ASSUMED_PRICE;
+    const rate = num(schedule.rate) ?? this.takerFeeRate;
+    return takerFeeOnStake(Decimal(sizeUsd).toNumber(), p, { rate, exponent: schedule.exponent });
   }
 
   reset(startingBalance) {
@@ -54,12 +51,17 @@ class PaperBroker {
     return this.snapshot();
   }
 
-  async marketBuy({ side, sizeUsd, clientOrderId, round, payout, price, quoteSource, feeRate }) {
+  async marketBuy({ side, sizeUsd, clientOrderId, round, price, quoteSource, feeRate, feeExponent }) {
     if (this.openBet) {
       throw new Error("already_open");
     }
     const size = Decimal(sizeUsd);
-    const fee = this.feeOn(size, price, feeRate);
+    const live = validPrice(price);
+    const entry = live ?? ASSUMED_PRICE;
+    const rate = num(feeRate) ?? this.takerFeeRate;
+    const feeExact = this.feeOn(size, entry, { rate, exponent: feeExponent });
+    // the balance is kept in cents; charge the fee rounded up so paper never under-counts it
+    const fee = Decimal(Math.ceil(feeExact * 100 - 1e-9) / 100);
     const cost = size.add(fee);
     if (!this.balance.gte(cost)) {
       const err = new Error("insufficient_balance");
@@ -68,21 +70,17 @@ class PaperBroker {
     }
     this.balance = this.balance.sub(cost);
     const placedAt = Date.now();
-    // Polymarket pays $1 per winning share, so the multiple is 1/price.
-    // Falls back to the old flat x2 only when no live quote was available.
-    const mult = Number(payout);
     this.openBet = {
       clientOrderId,
       side,
-      payout: Number.isFinite(mult) && mult > 1 ? mult : 2,
-      entryPrice: Number.isFinite(Number(price)) ? Number(price) : null,
-      quoteSource: quoteSource || "fixed_2x",
+      // Polymarket pays $1 per winning share: shares = stake / price
+      payout: 1 / entry,
+      shares: Number((size.toNumber() / entry).toFixed(4)),
+      entryPrice: entry,
+      quoteSource: live != null ? quoteSource || "polymarket" : "assumed_0.50",
       sizeUsd: size.toFixed(2),
       feeUsd: fee.toFixed(2),
-      feeRate: Number.isFinite(Number(price)) && Number(price) > 0 && Number(price) < 1
-        ? (Number.isFinite(Number(feeRate)) ? Number(feeRate) : this.takerFeeRate)
-        : this.feeRate,
-      feeModel: Number.isFinite(Number(price)) && Number(price) > 0 && Number(price) < 1 ? "polymarket_taker" : "flat",
+      feeRate: rate,
       strike: round.strike,
       fillPrice: round.strike,
       roundOpenTs: round.openTs,
@@ -110,10 +108,12 @@ class PaperBroker {
     const won = this.openBet.side === outcome;
     const size = Decimal(this.openBet.sizeUsd);
     const fee = Decimal(this.openBet.feeUsd || "0");
-    const payoutMult = Number(this.openBet.payout) > 1 ? Number(this.openBet.payout) : 2;
+    const shares = Number(this.openBet.shares) > 0
+      ? Number(this.openBet.shares)
+      : size.toNumber() * (Number(this.openBet.payout) > 1 ? Number(this.openBet.payout) : 2);
     let pnl = size.add(fee).mul(-1);
     if (won) {
-      const gross = size.mul(payoutMult);
+      const gross = Decimal(shares);
       this.balance = this.balance.add(gross);
       pnl = gross.sub(size).sub(fee);
     }
@@ -140,9 +140,9 @@ class PaperBroker {
       startingBalance: this.startingBalance.toFixed(2),
       openBet: this.openBet,
       last: this.history[0] || null,
-      feeRate: this.feeRate,
+      feeRate: this.takerFeeRate,
     };
   }
 }
 
-module.exports = { PaperBroker, FEE_RATE, TAKER_FEE_RATE, outcomeOf };
+module.exports = { PaperBroker, outcomeOf };

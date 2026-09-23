@@ -2,9 +2,9 @@
 
 Glass desktop terminal for BTC 15m Polymarket Up/Down.
 
-**v0.12.0.** SMA/EMA 200/20 on a **closed** candle `S`, bet on **S+1**. Arrow sits on the entry candle. Auto prices the live Polymarket round and sends **CLOB V2** signed orders once the wallet, a signing key and the derived CLOB keys are in the API panel.
+**v0.12.1.** SMA/EMA 200/20 on a **closed** candle `S`, bet on **S+1**. Arrow sits on the entry candle. Auto prices the live Polymarket round and sends **CLOB V2** signed orders once the wallet, a signing key and the derived CLOB keys are in the API panel.
 
-**Payout is not ×2.** Polymarket pays $1 per winning share, so the multiple is `1 / price`. At an ask of 0.72 a $1 stake returns $1.39 while a loss still costs the full $1 — Paper books results on that same number. Crypto rounds also charge a taker fee of `0.07 × p × (1 − p)` per share (≈3.5% of the stake at 0.50), which Paper and live P&L both deduct. A flat ×2 martingale does **not** recover a loss at those odds; size the series accordingly.
+**Payout is not ×2.** Polymarket pays $1 per winning share, so the multiple is `1 / price`. At an ask of 0.72 a $1 stake returns $1.39 while a loss still costs the full $1 — Paper books results on that same number. Crypto rounds also charge a taker fee of `0.07 × p × (1 − p)` per share (≈3.5% of the stake at 0.50), paid in USDC on top of the stake and lost on either outcome. Paper and live P&L both deduct it; Paper without a live quote assumes a price of 0.50. A flat ×2 martingale does **not** recover a loss at those odds; size the series accordingly.
 
 **Resolution.** A round resolves **Up** when the Chainlink BTC/USD TWAP at the end is **greater than or equal to** the start. Vespera books the result on the Binance close so the series can continue immediately, then checks Polymarket's actual resolution and raises a `settle_mismatch` alert if the two disagree.
 
@@ -27,7 +27,7 @@ Repo: private [`VadimChudin/vespera`](https://github.com/VadimChudin/vespera)
 | Mode | Name in UI | Orders |
 |---|---|---|
 | Paper | Paper / Пейпер | Virtual Up/Down fills |
-| Auto | Auto / Авто | Prices the live round on `clob.polymarket.com`, signs CLOB V2 EIP-712 orders and posts them as FOK. Needs wallet, private key and the derived CLOB keys. Polymarket lists only **5m and 15m** Up/Down rounds; other timeframes report `timeframe_unsupported`. Minimum order is 5 shares. |
+| Auto | Auto / Авто | Prices the live round on `clob.polymarket.com`, signs CLOB V2 EIP-712 orders and posts them as FOK. Needs wallet, private key and the derived CLOB keys. Polymarket lists Up/Down rounds only for **BTC, ETH, SOL, XRP, DOGE, BNB, HYPE** on **5m and 15m**; Auto shows only those, Paper shows every pair and marks these with **P**. Minimum order is 5 shares; the wallet must hold stake + taker fee. |
 
 **OK** in the API panel pings the Polymarket CLOB and checks the pUSD balance. It does not place trades.
 
@@ -57,8 +57,8 @@ npm start
 Bump `version` in `package.json`, add a `CHANGELOG` line, tag:
 
 ```bash
-git tag v0.12.0
-git push origin v0.12.0
+git tag v0.12.1
+git push origin v0.12.1
 ```
 
 GitHub Actions builds:
