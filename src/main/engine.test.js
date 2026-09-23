@@ -638,6 +638,54 @@ async function run() {
     assert(again.liveBet && again.liveBet.side === "DOWN" && again.liveBet.shares === 9.8, "live bet restored");
   }
 
+  {
+    // Entry-price filter and price-aware recovery sizing on a real signal.
+    const mk = (settings, price) => {
+      const bars = makeTrendBars({ n: 222, close: 110, trend: 0.05 });
+      paintLong(bars, 219);
+      const live = {
+        ...stubLive(),
+        async getQuote() {
+          return { ok: true, side: "UP", price, payout: 1 / price, feeRate: 0.07, feeExponent: 1, minOrderSize: 5 };
+        },
+      };
+      const engine = new Engine({
+        userDataDir: tmpDir(),
+        settings: { mode: "paper", baseUsd: "1.00", maxSteps: 6, timeframe: "15m", ...settings },
+        live,
+        market: fakeMarket(bars.slice(0, 219)),
+      });
+      return { engine, bars };
+    };
+
+    let t = mk({ maxEntryPrice: 0.6 }, 0.72);
+    await t.engine.start();
+    t.engine.market.bars = t.bars.slice(0, 220);
+    await next(t.engine, t.bars, 219);
+    assert(!t.engine.paper.openBet, "ask 0.72 above the 0.60 limit is skipped");
+    assert(t.engine.journal.entries.some((e) => e.reason === "price_above_max"), "skip is journaled");
+    assert(t.engine.risk.step === 1, "a price skip does not touch the series");
+
+    t = mk({ maxEntryPrice: 0.8 }, 0.72);
+    await t.engine.start();
+    t.engine.market.bars = t.bars.slice(0, 220);
+    await next(t.engine, t.bars, 219);
+    assert(t.engine.paper.openBet, "ask under the limit trades");
+
+    t = mk({ sizingMode: "recover" }, 0.6);
+    t.engine.risk.onLoss(1.03); // one lost $1 bet at 0.50
+    await t.engine.start();
+    t.engine.market.bars = t.bars.slice(0, 220);
+    await next(t.engine, t.bars, 219);
+    const bet = t.engine.paper.openBet;
+    const expected = t.engine.risk.size(0.6, { rate: 0.07, exponent: 1 }).toFixed(2);
+    assert(bet && bet.sizeUsd === expected, `recover stake uses the live price, ${bet && bet.sizeUsd} vs ${expected}`);
+    assert(Number(bet.sizeUsd) > 2.5, "recovering at 0.60 needs more than ×2");
+    const snap = t.engine.snapshot();
+    assert(snap.plan && snap.plan.steps.length === 6, "plan is exposed");
+    assert(snap.stats && snap.stats.mode === "paper", "stats are exposed");
+  }
+
   console.log("paper engine tests ok");
 }
 

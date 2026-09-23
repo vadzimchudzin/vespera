@@ -6,6 +6,8 @@ const { MarketData } = require("./marketData");
 const { INTERVAL_MS, SYMBOLS, TIMEFRAMES, HISTORY_BARS, clampRefreshMs, symbolLabel, fallbackTick, fetchExchangeSymbols } = require("./markets");
 const { createVenue } = require("./brokers");
 const { Journal } = require("./journal");
+const { SIZING_MODES } = require("./risk");
+const { computeStats } = require("./stats");
 const { Decimal } = require("./money");
 const { outcomeOf } = require("./paperBroker");
 const { SUPPORTED_TF, isSupportedSymbol, fitToPolymarket } = require("./brokers/polymarketMarkets");
@@ -19,6 +21,13 @@ const STATUSES = [
   "waiting_settlement",
   "halt",
 ];
+
+/** Highest ask to enter at; 1 means no filter. */
+function maxEntryPriceOf(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0 || n >= 1) return 1;
+  return Math.max(0.05, Math.round(n * 100) / 100);
+}
 
 class Engine {
   constructor({ userDataDir, settings, market, live } = {}) {
@@ -36,10 +45,13 @@ class Engine {
     this.risk = new Risk({
       baseUsd: this.settings.baseUsd || "1.00",
       maxSteps: this.settings.maxSteps || 6,
+      sizingMode: this.settings.sizingMode,
+      maxStakeUsd: this.settings.maxStakeUsd,
     });
     const restored = this.journal.restoreRisk(this.risk.maxSteps);
     this.risk.step = restored.step;
     this.risk.consecutiveLosses = restored.consecutiveLosses;
+    this.risk.seriesLossUsd = restored.seriesLossUsd || 0;
     this.risk.halted = restored.halted;
     if (restored.halted) this.risk.lotConfirmed = false;
     this.paper = createVenue("paper", { startingBalance: this.settings.paperBalance || "1000.00" });
@@ -323,6 +335,17 @@ class Engine {
     if (patch.maxSteps != null) {
       this.risk.maxSteps = Math.max(1, Number(patch.maxSteps) || 1);
     }
+    if (patch.sizingMode != null) {
+      next.sizingMode = SIZING_MODES.includes(patch.sizingMode) ? patch.sizingMode : "double";
+      this.risk.configure({ sizingMode: next.sizingMode });
+    }
+    if (patch.maxStakeUsd != null) {
+      next.maxStakeUsd = Math.max(0, Number(patch.maxStakeUsd) || 0);
+      this.risk.configure({ maxStakeUsd: next.maxStakeUsd });
+    }
+    if (patch.maxEntryPrice != null) {
+      next.maxEntryPrice = maxEntryPriceOf(patch.maxEntryPrice);
+    }
     if (patch.notificationsEnabled != null) {
       next.notificationsEnabled = Boolean(patch.notificationsEnabled);
       this.notificationsEnabled = next.notificationsEnabled;
@@ -444,8 +467,7 @@ class Engine {
       return this.snapshot();
     }
     this.mode = mode;
-    this.risk.step = 1;
-    this.risk.consecutiveLosses = 0;
+    this.risk.reset();
     this.journal.write({ type: "mode", mode });
     if (mode === "auto") {
       const fit = fitToPolymarket(this.settings.symbol || "BTCUSDT", this.settings.timeframe || "15m");
@@ -489,9 +511,7 @@ class Engine {
     const start = startingBalance || this.settings.paperBalance || "1000.00";
     this.paper.reset(start);
     this.todayPnl = Decimal("0");
-    this.risk.step = 1;
-    this.risk.consecutiveLosses = 0;
-    this.risk.halted = false;
+    this.risk.reset();
     this.risk.lotConfirmed = true;
     this.journal.write({ type: "paper_reset", balance: this.paper.balance.toFixed(2) });
     this.emit("balance", { ok: true, value: this.paper.balance.toFixed(2), source: "paper" });
@@ -638,6 +658,17 @@ class Engine {
     return slowPeriodOf(this.settings);
   }
 
+  /** Price for previews: the last live quote when there is one, else even odds. */
+  _planPrice() {
+    const p = this.lastQuote && Number(this.lastQuote.price);
+    return p > 0 && p < 1 ? p : 0.5;
+  }
+
+  _planSchedule() {
+    if (!this.lastQuote) return undefined;
+    return { rate: this.lastQuote.feeRate, exponent: this.lastQuote.feeExponent };
+  }
+
   _evalOptions() {
     return {
       minOpeningAtr: this.settings.minOpeningAtr,
@@ -690,7 +721,7 @@ class Engine {
     this.liveBet = null;
     this.todayPnl = this.todayPnl.add(settled.pnl);
     if (won) this.risk.onWin();
-    else this.risk.onLoss();
+    else this.risk.onLoss(-Number(settled.pnl));
     this.journal.write({ type: "settled", ...settled });
     this._markResult(settled);
     this.status = this.risk.halted ? "halt" : this.running ? "watching" : "stopped";
@@ -768,7 +799,7 @@ class Engine {
     if (!settled) return null;
     this.todayPnl = this.todayPnl.add(settled.pnl);
     if (settled.status === "win") this.risk.onWin();
-    else this.risk.onLoss();
+    else this.risk.onLoss(-Number(settled.pnl));
     this.journal.write({ type: "settled", ...settled });
     this._markResult(settled);
     this.status = this.risk.halted ? "halt" : this.running ? "watching" : "stopped";
@@ -845,7 +876,6 @@ class Engine {
       this.emit("status", this.status);
       return null;
     }
-    const size = this.risk.size().toFixed(2);
     const interval = INTERVAL_MS[this.settings.timeframe || "15m"] || 900_000;
     const sClose = bar.closeTs || bar.openTs + interval - 1;
     const round = {
@@ -853,6 +883,25 @@ class Engine {
       openTs: sClose + 1,
       closeTs: sClose + interval,
     };
+    // The stake depends on the entry price (recovery sizing), so price first.
+    const quote = await this._quoteFor(ev.signal, round);
+    const schedule = quote ? { rate: quote.feeRate, exponent: quote.feeExponent } : undefined;
+    const maxPrice = maxEntryPriceOf(this.settings.maxEntryPrice);
+    if (quote && maxPrice < 1 && Number(quote.price) > maxPrice) {
+      this.risk.onSkip();
+      this.status = "watching";
+      this.journal.write({ type: "skip", reason: "price_above_max", price: quote.price, maxEntryPrice: maxPrice, signal: ev.signal, openTs: bar.openTs });
+      this.emit("log", { level: "info", message: `skip_price: ${ev.signal} ask ${quote.price} > ${maxPrice}` });
+      this.emit("skip", { ...ev, reason: "price_above_max", bar });
+      return null;
+    }
+    const entryPrice = quote ? quote.price : undefined;
+    const size = this.risk.size(entryPrice, schedule).toFixed(2);
+    if (this.risk.isCapped(entryPrice, schedule)) {
+      const needed = this.risk.rawSize(entryPrice, schedule).toFixed(2);
+      this.journal.write({ type: "stake_capped", needed, cap: this.risk.maxStakeUsd, step: this.risk.step });
+      this.emit("log", { level: "warn", message: `stake_capped: needed $${needed}, cap $${this.risk.maxStakeUsd} — a win will not recover the series` });
+    }
     const clientOrderId = `${new Date(bar.openTs).toISOString().slice(0, 10)}-${this.settings.timeframe || "15m"}-${bar.openTs}-${ev.signal}-${this.risk.step}`;
     const marker = {
       time: Math.floor(round.openTs / 1000),
@@ -873,8 +922,6 @@ class Engine {
       signal: ev.signal,
     });
     this.notify("setup", `${ev.signal} setup`, `${this.strategy().name} · $${size} · S+1`);
-
-    const quote = await this._quoteFor(ev.signal, round);
 
     if (this.mode === "auto") {
       // Live trading path — requires L2 + privateKey in the venue
@@ -1013,6 +1060,9 @@ class Engine {
         timeframe: this.settings.timeframe || "15m",
         baseUsd: this.risk.baseUsd.toFixed(2),
         maxSteps: this.risk.maxSteps,
+        sizingMode: this.risk.sizingMode,
+        maxStakeUsd: this.risk.maxStakeUsd,
+        maxEntryPrice: maxEntryPriceOf(this.settings.maxEntryPrice),
         theme: this.settings.theme || "glass-dark",
         locale: this.settings.locale || "en",
         strategyId: this.strategyId,
@@ -1042,7 +1092,9 @@ class Engine {
       },
       pairLabel: `${symbolLabel(this.settings.symbol || "BTCUSDT")} · ${this.settings.timeframe || "15m"}`,
       lastPrice: lastClose,
-      risk: this.risk.snapshot(),
+      risk: this.risk.snapshot(this._planPrice(), this._planSchedule()),
+      plan: this.risk.plan(this._planPrice(), this._planSchedule()),
+      stats: computeStats(this.journal.entries, { mode: this.mode, maxSteps: this.risk.maxSteps }),
       paper: this.paper.snapshot(),
       liveBalance: this.liveBalance,
       liveBet: this.liveBet,

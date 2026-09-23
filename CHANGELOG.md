@@ -2,6 +2,16 @@
 
 All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 
+## 0.13.0 — 2026-09-23
+
+- **Recovery sizing.** Settings → *Series sizing*: **×2** (unchanged default) or **Recover**. At Polymarket odds a ×2 martingale does not recover: payout is 1/price and the taker fee is lost on both outcomes, so at 0.50 a win on step 5 or 6 still ends the series at −$0.08 / −$1.20 on a $1 base. Recover sizes each stake from the live ask and fee schedule, `stake = base + seriesLoss / netWinPerDollar`, so any winning step pays back the whole series and nets the base profit. The series loss survives a restart.
+- **Max stake.** Optional cap per bet; when recovery needs more the bet is capped and `stake_capped` is journaled, since a win will no longer clear the series.
+- **Max entry price.** Skip a signal when the ask is above the limit (off by default). Higher prices pay less and need a higher win rate; a skip does not touch the series.
+- **Series plan in Settings.** The stakes of a full losing series at the current price, the total at risk and the break-even win rate, with steps where a win would still lose marked red. Updates as you change base, steps, mode, cap or price limit.
+- **Statistics panel.** Bets, win rate against the break-even win rate at the average entry price, result, fees paid, return on staked, max drawdown, longest losing streak, series lost to the step limit and bets per series step. Paper counts from the last reset; live is separate.
+- The quote is now fetched before the stake is sized, so the stake and the filter use the same price.
+- A paper reset or mode switch now also starts a new series after a restart (the journal restore ignored them).
+
 ## 0.12.2 — 2026-09-23
 
 - **Wallet type list matches the rest of the app.** The native drop-down opened as a white Windows list with unreadable items; it is now the same glass menu as the pair/timeframe pickers, in both themes.
