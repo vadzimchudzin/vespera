@@ -2,7 +2,7 @@
 
 Glass desktop terminal for BTC 15m Polymarket Up/Down.
 
-**v0.18.0.** SMA/EMA 200/20 on a **closed** candle `S`, bet on **S+1**. Arrow sits on the entry candle. Auto prices the live Polymarket round and sends **CLOB V2** signed orders once the wallet, a signing key and the derived CLOB keys are in the API panel.
+**v0.18.1.** SMA/EMA 200/20 on a **closed** candle `S`, bet on **S+1**. Arrow sits on the entry candle. Auto prices the live Polymarket round and sends **CLOB V2** signed orders once the wallet, a signing key and the derived CLOB keys are in the API panel.
 
 **Payout is not ×2.** Polymarket pays $1 per winning share, so the multiple is `1 / price`. At an ask of 0.72 a $1 stake returns $1.39 while a loss still costs the full $1 — Paper books results on that same number. Crypto rounds also charge a taker fee of `0.07 × p × (1 − p)` per share (≈3.5% of the stake at 0.50), paid in USDC on top of the stake and lost on either outcome. Paper and live P&L both deduct it; Paper without a live quote assumes a price of 0.50. A flat ×2 martingale does **not** recover a loss at those odds; size the series accordingly.
 
@@ -51,7 +51,7 @@ Polymarket trades in **pUSD on Polygon**, but it accepts deposits from other net
 
 ## Blocked regions
 
-Polymarket geoblocks a list of jurisdictions (Belarus among them) and refuses both the site and the API from those IPs. **Connect** reports `Polymarket blocks this region` with the detected country when that is the cause, rather than a generic unreachable. A proxy URL in the API panel routes every CLOB and Gamma call through an allowed jurisdiction. If the proxy cannot be used, calls fail with `proxy_unavailable` instead of silently going direct.
+Polymarket geoblocks a list of jurisdictions (Belarus among them) and refuses both the site and the API from those IPs. Prices, balances and key derivation still work from a blocked IP; only orders are refused (`403 Trading restricted in your region`). **Connect** therefore asks Polymarket's geoblock endpoint and shows a red *Trading region* row with the country, and real-money **Start** is refused while the region is blocked. A proxy URL in the API panel (`http://user:pass@host:port`, `socks5://host:port` or plain `host:port`) routes every CLOB, Gamma, bridge and geoblock call through an allowed jurisdiction. If the proxy cannot be used, calls fail with `proxy_unavailable` instead of silently going direct.
 
 ## Run from source
 

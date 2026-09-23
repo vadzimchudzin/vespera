@@ -86,6 +86,59 @@ const bar = (openTs) => ({ openTs, closeTs: openTs + 899_999, open: 100, high: 1
     assert.strictEqual((await flip.start()).reason, "live_confirm_required");
   }
 
+  // ── geoblocked region: live Start refused, dry run allowed, 403 pauses ────
+  {
+    let blocked = true;
+    const geoLive = () => stubLive({ async region() { return { ok: true, blocked, country: "BY" }; } });
+    const e = new Engine({ userDataDir: dir(), settings: { mode: "auto", dryRun: false }, live: geoLive(), market: fakeMarket() });
+    const refused = await e.start({ confirmLive: true });
+    assert.deepStrictEqual([refused.ok, refused.reason, refused.country], [false, "geoblocked", "BY"]);
+    assert.strictEqual(e.running, false);
+    blocked = false;
+    assert.strictEqual((await e.start({ confirmLive: true })).ok, true, "allowed region (or proxy) starts");
+    e.stop();
+
+    blocked = true;
+    const dry = new Engine({ userDataDir: dir(), settings: { mode: "auto" }, live: geoLive(), market: fakeMarket() });
+    assert.strictEqual((await dry.start()).ok, true, "dry run never posts, so it may run anywhere");
+    dry.stop();
+
+    const unknown = new Engine({
+      userDataDir: dir(),
+      settings: { mode: "auto", dryRun: false },
+      live: stubLive({ async region() { return { ok: false, reason: "timeout" }; } }),
+      market: fakeMarket(),
+    });
+    assert.strictEqual((await unknown.start({ confirmLive: true })).ok, true, "an unknown region does not block");
+    unknown._onOrderError({ code: "geoblocked" }, "geoblocked: Trading restricted in your region");
+    assert.strictEqual(unknown.status, "paused", "a region refusal pauses at once");
+    assert.ok(unknown.pauseReason.startsWith("geoblocked"));
+  }
+
+  // ── adapter: 403 region refusal becomes a geoblocked error ────────────────
+  {
+    const venue = new PolymarketAdapter({
+      privateKey: TEST_PK,
+      walletAddress: "0x1111111111111111111111111111111111111111",
+      apiKey: "k",
+      apiSecret: "cw==",
+      apiPassphrase: "p",
+      walletType: "EOA",
+      client: {
+        configure() {},
+        async balanceAllowance() { return { ok: true, json: { balance: "100000000" } }; },
+        async postOrder() {
+          return { ok: false, status: 403, json: { error: "Trading restricted in your region, please refer to available regions" } };
+        },
+      },
+    });
+    venue.getQuote = async () => ({ ok: true, side: "UP", tokenId: "7", slug: "s", price: 0.5, payout: 2, minOrderSize: 5, tickSize: 0.01, feeRate: 0.07, acceptingOrders: true, asks: [] });
+    await assert.rejects(
+      () => venue.marketBuy({ side: "UP", sizeUsd: "5.00", round: { openTs: 1 } }),
+      (err) => err.code === "geoblocked" && /restricted in your region/.test(err.message)
+    );
+  }
+
   // ── watchdog: three failed health checks pause Auto ─────────────────────────
   {
     let healthy = false;

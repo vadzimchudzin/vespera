@@ -458,6 +458,25 @@ class PolymarketAdapter {
     }
   }
 
+  /**
+   * Whether Polymarket accepts orders from the current IP (or the proxy's).
+   * A blocked region still answers /time, quotes, balances and key derivation;
+   * only POST /order is refused with 403, so reachability alone proves nothing.
+   */
+  async region({ maxAgeMs = 60_000 } = {}) {
+    if (typeof this.client.geoblock !== "function") return { ok: false, reason: "unsupported" };
+    const key = this.proxyUrl || "";
+    if (this._region && this._region.key === key && Date.now() - this._region.at < maxAgeMs) return this._region.value;
+    let value;
+    try {
+      value = await this.client.geoblock();
+    } catch (err) {
+      value = { ok: false, reason: String((err && err.message) || err) };
+    }
+    if (value && value.ok) this._region = { key, at: Date.now(), value };
+    return value || { ok: false, reason: "no_response" };
+  }
+
   async marketBuy(params = {}) {
     // Dry run signs with the real key and checks the real balance, but never posts.
     const dryRun = Boolean(params.dryRun);
@@ -537,6 +556,13 @@ class PolymarketAdapter {
     const res = await this.client.postOrder(signed);
     if (!res.ok) {
       const detail = (res.json && res.json.errorMsg) || (res.json && res.json.error) || res.raw || "";
+      if (res.status === 403 && /restricted in your region|geoblock/i.test(String(detail))) {
+        this._region = null;
+        const err = new Error(`geoblocked: ${detail}`);
+        err.code = "geoblocked";
+        err.response = res;
+        throw err;
+      }
       const err = new Error(`clob_order_rejected: ${res.status}${detail ? ` ${detail}` : ""}`);
       err.code = "clob_order_rejected";
       err.response = res;
