@@ -347,6 +347,9 @@ async function payoutCase({ payout, side, settleClose, expectPnl, label }) {
   assert.strictEqual(signatureTypeFor("DEPOSIT_WALLET"), 3);
   const forced = new PolymarketAdapter({ privateKey: TEST_PK, walletAddress: depositAddr, walletType: "POLY_PROXY", client: {} });
   assert.strictEqual(forced.resolvedWalletType(), "POLY_PROXY", "an explicit type wins over detection");
+  assert.strictEqual(forced.detectedWalletType(), "DEPOSIT_WALLET", "detection is reported even when overridden");
+  const keyless = new PolymarketAdapter({ walletAddress: depositAddr, client: {} });
+  assert.strictEqual(keyless.detectedWalletType(), null, "no key: nothing detected, not a fake EOA");
 
   const proxyOrder = buildOrder({
     tokenId: "1",

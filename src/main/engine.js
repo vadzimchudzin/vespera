@@ -1031,10 +1031,8 @@ class Engine {
         walletAddress: this.settings.walletAddress || "",
         hasPrivKey: Boolean(this.settings.privateKey),
         walletType: this.settings.walletType || "AUTO",
-        resolvedWalletType:
-          typeof this.live.resolvedWalletType === "function" && this.settings.walletAddress
-            ? this.live.resolvedWalletType()
-            : null,
+        detectedWalletType:
+          typeof this.live.detectedWalletType === "function" ? this.live.detectedWalletType() : null,
         proxyUrl: this.settings.proxyUrl || "",
         signerAddress: typeof this.live.signerAddress === "function" ? this.live.signerAddress() : null,
         refreshMs: clampRefreshMs(this.settings.refreshMs || 100),

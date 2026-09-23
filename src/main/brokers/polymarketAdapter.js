@@ -140,6 +140,13 @@ class PolymarketAdapter {
     return detectWalletType(this.signerAddress(), this.walletAddress);
   }
 
+  /** What the addresses imply, or null until both the key and the wallet are known. */
+  detectedWalletType() {
+    const signer = this.signerAddress();
+    if (!signer || !this.walletAddress) return null;
+    return detectWalletType(signer, this.walletAddress);
+  }
+
   /** Push the signer identity into the client so L2 headers carry the key's address. */
   _syncClientIdentity() {
     if (typeof this.client.configure !== "function") return;

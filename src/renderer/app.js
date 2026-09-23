@@ -429,13 +429,7 @@
         </div>
         <div class="field">
           <label>${t("walletType")}</label>
-          <select id="walletType">
-            <option value="AUTO">${t("walletTypeAuto")}</option>
-            <option value="DEPOSIT_WALLET">${t("walletTypeDeposit")}</option>
-            <option value="POLY_PROXY">${t("walletTypeProxy")}</option>
-            <option value="POLY_GNOSIS_SAFE">${t("walletTypeSafe")}</option>
-            <option value="EOA">EOA</option>
-          </select>
+          <div id="walletTypeHost"></div>
           <p class="hint" id="walletTypeHint"></p>
         </div>
         <div class="field">
@@ -462,14 +456,57 @@
       if (sApi.hasApiPassphrase) $("apiPassphrase").placeholder = storedHint;
       if (sApi.hasPrivKey) $("privateKey").placeholder = storedHint;
       if (sApi.proxyUrl) $("proxyUrl").value = sApi.proxyUrl;
-      $("walletType").value = sApi.walletType || "AUTO";
-      const paintWalletType = (resolved) => {
-        const r = resolved || sApi.resolvedWalletType;
-        $("walletTypeHint").textContent =
-          $("walletType").value === "AUTO" && r ? `${t("walletTypeDetected")}: ${r}` : "";
+      // Custom list: the native <select> popup ignores the dark theme on Windows.
+      const walletTypeLabel = {
+        AUTO: t("walletTypeAuto"),
+        DEPOSIT_WALLET: t("walletTypeDeposit"),
+        POLY_PROXY: t("walletTypeProxy"),
+        POLY_GNOSIS_SAFE: t("walletTypeSafe"),
+        EOA: t("walletTypeEoa"),
       };
+      let walletType = sApi.walletType || "AUTO";
+      let detected = sApi.detectedWalletType || null;
+      const paintWalletType = () => {
+        const hint = $("walletTypeHint");
+        if (!hint) return;
+        hint.classList.remove("warn");
+        if (!detected) {
+          hint.textContent = walletType === "AUTO" ? t("walletTypeNeedKey") : "";
+        } else if (walletType === "AUTO") {
+          hint.textContent = `${t("walletTypeDetected")}: ${walletTypeLabel[detected] || detected}`;
+        } else if (walletType !== detected) {
+          hint.textContent = `${t("walletTypeMismatch")}: ${walletTypeLabel[detected] || detected}`;
+          hint.classList.add("warn");
+        } else {
+          hint.textContent = "";
+        }
+      };
+      const refreshDetected = async () => {
+        const snap = await window.vespera.snapshot();
+        if (!snap) return;
+        state.snapshot = snap;
+        detected = (snap.settings && snap.settings.detectedWalletType) || null;
+        paintWalletType();
+      };
+      $("walletTypeHost").appendChild(
+        buildSelect(
+          "wallet-type",
+          Object.keys(walletTypeLabel).map((value) => ({ value, label: walletTypeLabel[value] })),
+          walletType,
+          async (value) => {
+            walletType = value;
+            paintWalletType();
+            // saved right away, not only on Derive / OK
+            await window.vespera.saveSettings({ walletType: value });
+            await refreshDetected();
+          }
+        )
+      );
       paintWalletType();
-      $("walletType").onchange = () => paintWalletType();
+      $("walletAddress").onchange = async () => {
+        await window.vespera.saveSettings({ walletAddress: $("walletAddress").value.trim() });
+        await refreshDetected();
+      };
       $("btnDerive").onclick = async () => {
         const out = $("deriveOut");
         out.textContent = t("deriveWorking");
@@ -478,7 +515,7 @@
           res = await window.vespera.deriveKeys({
             privateKey: $("privateKey").value.trim(),
             walletAddress: $("walletAddress").value.trim(),
-            walletType: $("walletType").value,
+            walletType,
             proxyUrl: $("proxyUrl").value.trim(),
           });
         } catch (err) {
@@ -488,11 +525,9 @@
           out.innerHTML = `<span class="ping-dot ok"></span>${t("deriveOk")} \u00b7 ${esc(res.walletType)} \u00b7 ${esc(
             String(res.signerAddress || "").slice(0, 10)
           )}\u2026`;
-          paintWalletType(res.walletType);
           $("privateKey").placeholder = t("secretStored");
           $("privateKey").value = "";
-          const snap = await window.vespera.snapshot();
-          if (snap) state.snapshot = snap;
+          await refreshDetected();
         } else {
           out.innerHTML = `<span class="ping-dot bad"></span>${t("deriveFail")}: ${esc(
             (res && res.reason) || "error"
@@ -506,7 +541,7 @@
           apiPassphrase: $("apiPassphrase").value.trim(),
           walletAddress: $("walletAddress").value.trim(),
           privateKey: $("privateKey").value.trim(),
-          walletType: $("walletType").value,
+          walletType,
           proxyUrl: $("proxyUrl").value.trim(),
         };
         $("pingOut").textContent = t("pinging");
@@ -540,12 +575,13 @@
                   ? t("missingKey")
                   : `${t("unreachable")}${live.message ? " \u00b7 " + esc(live.message) : ""}`
         }${live.latencyMs ? " · " + live.latencyMs + "ms" : ""}${extra}${l2}${quoteLine}`;
-        if (res && res.live) {
-          const snap = await window.vespera.snapshot();
-          if (snap) state.snapshot = snap;
-        }
+        if (res && res.live) await refreshDetected();
       };
-      if (ping?.live) $("pingOut").textContent = ping.live.message || ping.live.slug || "";
+      if (ping?.live) {
+        const m = ping.live.message;
+        const known = { reachable: "reachable", l2_failed: "l2Rejected", missing_key: "missingKey" };
+        $("pingOut").textContent = known[m] ? t(known[m]) : m || ping.live.slug || "";
+      }
     }
 
     if (kind === "theme") {
