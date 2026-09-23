@@ -45,16 +45,27 @@
     return sum / period;
   }
 
+  /** Chart colours come from the active theme's CSS tokens. */
   function themeColors() {
-    const light = document.documentElement.getAttribute("data-theme") === "glass-light";
+    const css = getComputedStyle(document.documentElement);
+    const v = (name, fallback) => css.getPropertyValue(name).trim() || fallback;
     return {
-      text: light ? "rgba(60,60,67,0.72)" : "rgba(255,255,255,0.62)",
-      grid: light ? "rgba(60,60,67,0.08)" : "rgba(255,255,255,0.06)",
-      up: "#26a69a",
-      down: "#ef5350",
-      ma20: "#ff5a6a",
-      ma200: "#5aa7ff",
+      text: v("--chart-text", "rgba(255,255,255,0.62)"),
+      grid: v("--chart-grid", "rgba(255,255,255,0.06)"),
+      up: v("--candle-up", "#26a69a"),
+      down: v("--candle-down", "#ef5350"),
+      ma20: v("--ma-fast", "#ff5a6a"),
+      ma200: v("--ma-slow", "#5aa7ff"),
+      markUp: v("--mark-up", "#7cff9a"),
+      markDown: v("--mark-down", "#ff8b8b"),
+      markWin: v("--mark-win", "#7cff9a"),
+      markLoss: v("--mark-loss", "#ff5a6a"),
+      labelBg: v("--select-bg", "#1c1c1e"),
     };
+  }
+
+  function markerColor(kind, c) {
+    return { win: c.markWin, loss: c.markLoss, up: c.markUp, down: c.markDown }[kind] || c.markUp;
   }
 
   function liveBtn() {
@@ -217,14 +228,17 @@
 
   function applyTheme() {
     if (!chart) return;
-    const light = document.documentElement.getAttribute("data-theme") === "glass-light";
-    const theme = light ? "light" : "dark";
-    const c = themeColors();
+    const theme = document.documentElement.getAttribute("data-theme") || "glass-dark";
     if (theme === lastTheme) return;
     lastTheme = theme;
+    const c = themeColors();
     chart.applyOptions({
       layout: { textColor: c.text },
       grid: { vertLines: { color: c.grid }, horzLines: { color: c.grid } },
+      crosshair: {
+        vertLine: { labelBackgroundColor: c.ma200 },
+        horzLine: { labelBackgroundColor: c.ma200 },
+      },
     });
     candleSeries.applyOptions({
       upColor: c.up,
@@ -232,7 +246,12 @@
       wickUpColor: c.up,
       wickDownColor: c.down,
     });
-    if (pendingMarkers.length) candleSeries.setMarkers(pendingMarkers);
+    if (ma20Series) ma20Series.applyOptions({ color: c.ma20 });
+    if (ma200Series) ma200Series.applyOptions({ color: c.ma200 });
+    // markers carry theme colours too: recolour the ones already on the chart
+    if (pendingMarkers.length) {
+      applyMarkers(pendingMarkers.map((m) => ({ ...m, color: markerColor(m._kind, c) })));
+    }
   }
 
   function toCandle(b) {
@@ -396,13 +415,13 @@
       if (!raf) raf = requestAnimationFrame(paintPending);
     }
 
+    const mc = themeColors();
     const markers = (snap.markers || []).map((m) => {
       const win = m.result === "win";
       const loss = m.result === "loss";
       const up = m.side === "UP";
-      let color = up ? "#7cff9a" : "#ff8b8b";
-      if (win) color = "#7cff9a";
-      if (loss) color = "#ff5a6a";
+      const kind = win ? "win" : loss ? "loss" : up ? "up" : "down";
+      const color = markerColor(kind, mc);
       const sizeLabel = m.size ? ` $${m.size}` : "";
       const res = win ? " ✓" : loss ? " ✕" : "";
       return {
@@ -410,6 +429,7 @@
         position: up ? "belowBar" : "aboveBar",
         color,
         shape: up ? "arrowUp" : "arrowDown",
+        _kind: kind,
         text: `${m.side}${sizeLabel}${res}`,
       };
     });

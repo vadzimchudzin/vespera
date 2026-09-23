@@ -1399,7 +1399,7 @@ class Engine {
         maxEntryPrice: maxEntryPriceOf(this.settings.maxEntryPrice),
         dryRun: this.isDryRun(),
         dailyLossLimitUsd: this.dailyLossLimit(),
-        theme: this.settings.theme || "glass-dark",
+        theme: ["glass-dark", "glass-light", "glass-blue"].includes(this.settings.theme) ? this.settings.theme : "glass-dark",
         locale: this.settings.locale || "en",
         strategyId: this.strategyId,
         minOpeningAtr: Number(this.settings.minOpeningAtr || 0),
