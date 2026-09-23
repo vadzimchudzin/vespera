@@ -110,6 +110,7 @@ ipcMain.handle("engine:ping", (_e, creds) => {
   }
   if (patch.walletAddress != null) save.walletAddress = patch.walletAddress;
   if (patch.proxyUrl != null) save.proxyUrl = patch.proxyUrl;
+  if (patch.walletType != null) save.walletType = patch.walletType;
   store.save(save);
   return engine.pingApi(patch);
 });
@@ -148,7 +149,17 @@ ipcMain.handle("engine:resetPaper", (_e, startingBalance) => {
   store.save({ paperBalance: engine.paper.startingBalance.toFixed(2) });
   return snap;
 });
-ipcMain.handle("settings:get", () => store.value);
+// Secrets stay in the main process; the window only learns whether they exist.
+ipcMain.handle("settings:get", () => {
+  const { apiKey, apiSecret, apiPassphrase, privateKey, ...safe } = store.value;
+  return {
+    ...safe,
+    hasApiKey: Boolean(apiKey),
+    hasApiSecret: Boolean(apiSecret),
+    hasApiPassphrase: Boolean(apiPassphrase),
+    hasPrivKey: Boolean(privateKey),
+  };
+});
 ipcMain.handle("settings:save", async (_e, patch) => {
   store.save(patch);
   await engine.applySettings(patch);

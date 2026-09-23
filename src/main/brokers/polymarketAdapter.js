@@ -1,17 +1,45 @@
 "use strict";
 
 const { ClobClient } = require("./clobClient");
-const { resolveUpDown } = require("./polymarketMarkets");
+const { resolveUpDown, parseList } = require("./polymarketMarkets");
 const {
   buildOrder,
   signOrder,
   signClobAuth,
   addressFromPrivateKey,
   signatureTypeFor,
+  normalizeWalletType,
+  detectWalletType,
 } = require("./orderSigner");
 
 const DEFAULT_MIN_SHARES = 5;
 const DEFAULT_TICK = 0.01;
+// Crypto Up/Down taker fee: shares × rate × p × (1 − p), see docs.polymarket.com/trading/fees
+const DEFAULT_FEE_RATE = 0.07;
+
+function decimalsOf(tick) {
+  const s = String(tick);
+  const i = s.indexOf(".");
+  return i < 0 ? 0 : s.length - i - 1;
+}
+
+/**
+ * Worst price needed to buy `usd` worth from the asks, so a FOK order fills
+ * across levels instead of dying on a thin best ask.
+ */
+function sweepPrice(asks, usd) {
+  if (!Array.isArray(asks)) return null;
+  const levels = asks
+    .map((l) => ({ price: toPrice(l && l.price), size: Number(l && l.size) }))
+    .filter((l) => l.price != null && Number.isFinite(l.size) && l.size > 0)
+    .sort((a, b) => a.price - b.price);
+  let spent = 0;
+  for (const l of levels) {
+    spent += l.price * l.size;
+    if (spent >= usd) return l.price;
+  }
+  return null;
+}
 
 function toPrice(value) {
   const n = Number(value);
@@ -30,7 +58,7 @@ function bestAsk(asks) {
 }
 
 /**
- * Polymarket CLOB venue — v0.9.0
+ * Polymarket CLOB V2 venue
  *
  * Supports:
  *  - Public ping + Gamma Up/Down resolve
@@ -51,6 +79,7 @@ class PolymarketAdapter {
     this.timeframe = options.timeframe || "15m";
     this.client = options.client || new ClobClient(options);
     this._markets = [];
+    this._syncClientIdentity();
   }
 
   configure(patch = {}) {
@@ -64,6 +93,7 @@ class PolymarketAdapter {
     if (patch.symbol != null) this.symbol = patch.symbol;
     if (patch.timeframe != null) this.timeframe = patch.timeframe;
     if (typeof this.client.configure === "function") this.client.configure(patch);
+    this._syncClientIdentity();
     return this;
   }
 
@@ -86,16 +116,23 @@ class PolymarketAdapter {
   }
 
   /**
-   * How this account must sign. Email / Google accounts keep funds in a proxy
-   * wallet, so the wallet address differs from the signing key's address and
-   * the order has to be POLY_PROXY, not EOA.
+   * How this account must sign. The exported key signs, but funds may sit in
+   * a Deposit Wallet (default since May 2026), a legacy proxy or a Safe.
    */
   resolvedWalletType() {
-    const explicit = String(this.walletType || "AUTO").toUpperCase();
-    if (explicit !== "AUTO") return explicit;
+    const explicit = normalizeWalletType(this.walletType);
+    if (explicit) return explicit;
+    return detectWalletType(this.signerAddress(), this.walletAddress);
+  }
+
+  /** Push the signer identity into the client so L2 headers carry the key's address. */
+  _syncClientIdentity() {
+    if (typeof this.client.configure !== "function") return;
     const signer = this.signerAddress();
-    if (!signer || !this.walletAddress) return "EOA";
-    return signer.toLowerCase() === String(this.walletAddress).toLowerCase() ? "EOA" : "POLY_PROXY";
+    this.client.configure({
+      signerAddress: signer || "",
+      signatureType: signer ? signatureTypeFor(this.resolvedWalletType()) : null,
+    });
   }
 
   /**
@@ -236,7 +273,8 @@ class PolymarketAdapter {
       if (raw == null || raw === "") return null;
       const n = Number(raw);
       if (!Number.isFinite(n)) return String(raw);
-      return n > 1e4 ? (n / 1e6).toFixed(2) : n.toFixed(2);
+      // always 6-decimal micro units; a small balance used to be shown unscaled
+      return (n / 1e6).toFixed(2);
     } catch {
       return null;
     }
@@ -272,6 +310,8 @@ class PolymarketAdapter {
     let mid = null;
     let minOrderSize = DEFAULT_MIN_SHARES;
     let tickSize = DEFAULT_TICK;
+    let negRisk = false;
+    let asks = [];
     try {
       const [priceRes, midRes, bookRes] = await Promise.all([
         this.client.price(tokenId, "buy"),
@@ -283,6 +323,8 @@ class PolymarketAdapter {
       const book = (bookRes && bookRes.json) || {};
       if (Number(book.min_order_size) > 0) minOrderSize = Number(book.min_order_size);
       if (Number(book.tick_size) > 0) tickSize = Number(book.tick_size);
+      negRisk = Boolean(book.neg_risk);
+      asks = Array.isArray(book.asks) ? book.asks : [];
       if (ask == null) ask = bestAsk(book.asks);
     } catch (err) {
       return { ok: false, reason: String(err.message || err), slug: resolved.slug, side: wanted };
@@ -301,9 +343,25 @@ class PolymarketAdapter {
       payout: 1 / price,
       minOrderSize,
       tickSize,
+      negRisk,
+      asks,
+      feeRate: await this._feeRate(resolved.round.conditionId),
       acceptingOrders: resolved.round.acceptingOrders,
       endDate: resolved.round.endDate,
     };
+  }
+
+  async _feeRate(conditionId) {
+    if (!conditionId || typeof this.client.clobMarketInfo !== "function") return DEFAULT_FEE_RATE;
+    try {
+      const res = await this.client.clobMarketInfo(conditionId);
+      const fd = res && res.ok && res.json && res.json.fd;
+      if (!fd) return DEFAULT_FEE_RATE;
+      const r = Number(fd.r);
+      return Number.isFinite(r) && r >= 0 ? r : DEFAULT_FEE_RATE;
+    } catch {
+      return DEFAULT_FEE_RATE;
+    }
   }
 
   /**
@@ -334,20 +392,22 @@ class PolymarketAdapter {
     }
     const signerAddress = this.signerAddress();
     const walletType = this.resolvedWalletType();
+    this._syncClientIdentity();
     const order = buildOrder({
       tokenId,
       makerAmount: String(makerAmount),
       takerAmount: String(takerAmount || "0"),
-      // funds live on the wallet address, the exported key only signs
+      // funds live on the wallet address; a Deposit Wallet is also the order signer
       maker: this.walletAddress,
-      signer: signerAddress || this.walletAddress,
+      signer: walletType === "DEPOSIT_WALLET" ? this.walletAddress : signerAddress || this.walletAddress,
       side,
       signatureType: signatureTypeFor(walletType),
     });
-    const signed = await signOrder(order, this.privateKey);
-    const res = await this.client.postOrder(signed, this.walletAddress);
+    const signed = await signOrder(order, this.privateKey, { negRisk: Boolean(quote && quote.negRisk) });
+    const res = await this.client.postOrder(signed);
     if (!res.ok) {
-      const err = new Error(`clob_order_rejected: ${res.status}`);
+      const detail = (res.json && res.json.errorMsg) || (res.json && res.json.error) || res.raw || "";
+      const err = new Error(`clob_order_rejected: ${res.status}${detail ? ` ${detail}` : ""}`);
       err.code = "clob_order_rejected";
       err.response = res;
       throw err;
@@ -357,6 +417,8 @@ class PolymarketAdapter {
       accepted: true,
       venue: "polymarket",
       orderId: (res.json && (res.json.orderID || res.json.orderId)) || null,
+      orderStatus: (res.json && res.json.status) || null,
+      walletType,
       tokenId,
       clientOrderId: params.clientOrderId || null,
       side: quote ? quote.side : side === 1 ? "DOWN" : "UP",
@@ -364,6 +426,7 @@ class PolymarketAdapter {
       price: quote ? quote.price : null,
       shares: quote ? quote.shares : null,
       payout: quote ? quote.payout : null,
+      feeUsd: quote ? quote.feeUsd : null,
       slug: quote ? quote.slug : null,
       strike: params.round ? params.round.strike : null,
       roundOpenTs: params.round ? params.round.openTs : null,
@@ -399,24 +462,61 @@ class PolymarketAdapter {
       err.code = "bad_size";
       throw err;
     }
-    const makerMicro = Math.round(usd * 1e6);
-    const takerMicro = Math.floor(makerMicro / quote.price);
-    const shares = takerMicro / 1e6;
+    // Price on the tick, shares down to 2 decimals, USD from the two — the
+    // precision rules the CLOB enforces (docs.polymarket.com/trading/place-orders).
+    const tick = Number(quote.tickSize) > 0 ? Number(quote.tickSize) : DEFAULT_TICK;
+    const priceDp = decimalsOf(tick);
+    const swept = sweepPrice(quote.asks, usd);
+    const limit = Math.min(1 - tick, Math.max(quote.price, swept || 0));
+    const price = Number((Math.ceil(limit / tick - 1e-9) * tick).toFixed(priceDp));
+    const shares = Math.floor((usd / price) * 100 + 1e-9) / 100;
     if (shares < quote.minOrderSize) {
+      const minUsd = Math.ceil(quote.minOrderSize * price * 100) / 100;
       const err = new Error(
-        `below_min_size: ${shares.toFixed(2)} shares < ${quote.minOrderSize} (raise the lot to at least $${(quote.minOrderSize * quote.price).toFixed(2)})`
+        `below_min_size: ${shares.toFixed(2)} shares < ${quote.minOrderSize} (raise the lot to at least $${minUsd.toFixed(2)})`
       );
       err.code = "below_min_size";
-      err.minSizeUsd = Number((quote.minOrderSize * quote.price).toFixed(2));
+      err.minSizeUsd = minUsd;
       throw err;
     }
+    const makerMicro = Math.round(shares * price * 1e6);
+    const takerMicro = Math.round(shares * 1e6);
+    const feeRate = Number.isFinite(Number(quote.feeRate)) ? Number(quote.feeRate) : DEFAULT_FEE_RATE;
+    const feeUsd = shares * feeRate * price * (1 - price);
     return {
       tokenId: quote.tokenId,
       makerAmount: String(makerMicro),
       takerAmount: String(takerMicro),
       side: 0, // BUY
-      quote: { ...quote, sizeUsd: usd.toFixed(2), shares: Number(shares.toFixed(4)) },
+      quote: {
+        ...quote,
+        asks: undefined,
+        price,
+        payout: 1 / price,
+        sizeUsd: (makerMicro / 1e6).toFixed(2),
+        shares,
+        feeUsd: feeUsd.toFixed(4),
+      },
     };
+  }
+
+  /**
+   * Final result of a round as Polymarket resolved it (Chainlink TWAP),
+   * read from Gamma's outcomePrices once the market is closed.
+   */
+  async resolvedOutcome(slug) {
+    if (!slug || typeof this.client.eventBySlug !== "function") return { resolved: false };
+    const res = await this.client.eventBySlug(slug);
+    if (!res || !res.ok || !res.json) return { resolved: false };
+    const market = Array.isArray(res.json.markets) && res.json.markets[0] ? res.json.markets[0] : res.json;
+    if (!market.closed) return { resolved: false };
+    const outcomes = parseList(market.outcomes).map((o) => String(o).toLowerCase());
+    const prices = parseList(market.outcomePrices).map(Number);
+    const winner = prices.findIndex((p) => p >= 0.99);
+    if (winner < 0 || !outcomes[winner]) return { resolved: false };
+    const name = outcomes[winner];
+    const outcome = name === "up" || name === "yes" ? "UP" : name === "down" || name === "no" ? "DOWN" : null;
+    return outcome ? { resolved: true, outcome } : { resolved: false };
   }
 
   async resolveRound(tsMs) {

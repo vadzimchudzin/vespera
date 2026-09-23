@@ -540,6 +540,40 @@ async function run() {
     assert(notes.length === 1, "notify toggle on");
   }
 
+  {
+    // Live result is booked on the bar, then checked against Polymarket's resolution.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vsp-reconcile-"));
+    const bars = makeTrendBars({ n: 220, close: 110, trend: 0.05 });
+    const live = { ...stubLive(), async resolvedOutcome() { return { resolved: true, outcome: "DOWN" }; } };
+    const engine = new Engine({
+      userDataDir: dir,
+      settings: { mode: "auto", baseUsd: "1.00", maxSteps: 6, timeframe: "15m" },
+      live,
+      market: fakeMarket(bars.slice(0, 219)),
+    });
+    engine.mode = "auto";
+    engine.liveBet = {
+      side: "UP",
+      sizeUsd: "10.00",
+      payout: 2,
+      feeUsd: "0.35",
+      strike: 100,
+      slug: "btc-updown-15m-1",
+      roundCloseTs: 2,
+      placedAt: Date.now(),
+    };
+    const settled = engine._settleLive({ close: 100, closeTs: 2 });
+    assert(settled.outcome === "UP" && settled.status === "win", "flat close books UP");
+    assert(settled.pnl === "9.65", `live pnl nets the taker fee, got ${settled.pnl}`);
+    const logs = [];
+    engine.on((evt) => {
+      if (evt.type === "log") logs.push(evt.payload.message);
+    });
+    engine._reconcileLive(settled, { attempts: 1, delayMs: 1 });
+    await new Promise((r) => setTimeout(r, 30));
+    assert(logs.some((m) => m.startsWith("settle_mismatch")), "a venue disagreement is reported");
+  }
+
   console.log("paper engine tests ok");
 }
 

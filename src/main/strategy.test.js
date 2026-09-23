@@ -321,6 +321,7 @@ function paintLongTicks(bars, i, nTicks, tickSize) {
 }
 
 async function paperCases() {
+  // no quote → flat 0.5% fallback fee
   const p = new PaperBroker({ startingBalance: "100" });
   await p.marketBuy({
     side: "UP",
@@ -340,7 +341,7 @@ async function paperCases() {
     round: { strike: 100, openTs: 2, closeTs: 3 },
   });
   const loss = p.settle({ close: 100 });
-  assert(loss.status === "loss", "flat is a loss");
+  assert(loss.status === "loss" && loss.outcome === "UP", "flat resolves UP, so DOWN loses");
 }
 
 paperCases().then(() => {

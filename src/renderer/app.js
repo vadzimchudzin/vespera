@@ -1,6 +1,9 @@
 (() => {
   const $ = (id) => document.getElementById(id);
   const t = (key) => (window.VSP_I18N[state.locale] || window.VSP_I18N.en)[key] || key;
+  // Venue responses end up in innerHTML; never let them inject markup.
+  const esc = (value) =>
+    String(value == null ? "" : value).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
   const state = {
     locale: "en",
@@ -390,6 +393,17 @@
           <input id="walletAddress" type="text" placeholder="${t("walletPlaceholder")}" autocomplete="off" />
         </div>
         <div class="field">
+          <label>${t("walletType")}</label>
+          <select id="walletType">
+            <option value="AUTO">${t("walletTypeAuto")}</option>
+            <option value="DEPOSIT_WALLET">${t("walletTypeDeposit")}</option>
+            <option value="POLY_PROXY">${t("walletTypeProxy")}</option>
+            <option value="POLY_GNOSIS_SAFE">${t("walletTypeSafe")}</option>
+            <option value="EOA">EOA</option>
+          </select>
+          <p class="hint" id="walletTypeHint"></p>
+        </div>
+        <div class="field">
           <label>${t("privateKey")}</label>
           <input id="privateKey" type="password" placeholder="${t("privateKeyPlaceholder")}" autocomplete="off" />
         </div>
@@ -413,6 +427,14 @@
       if (sApi.hasApiPassphrase) $("apiPassphrase").placeholder = storedHint;
       if (sApi.hasPrivKey) $("privateKey").placeholder = storedHint;
       if (sApi.proxyUrl) $("proxyUrl").value = sApi.proxyUrl;
+      $("walletType").value = sApi.walletType || "AUTO";
+      const paintWalletType = (resolved) => {
+        const r = resolved || sApi.resolvedWalletType;
+        $("walletTypeHint").textContent =
+          $("walletType").value === "AUTO" && r ? `${t("walletTypeDetected")}: ${r}` : "";
+      };
+      paintWalletType();
+      $("walletType").onchange = () => paintWalletType();
       $("btnDerive").onclick = async () => {
         const out = $("deriveOut");
         out.textContent = t("deriveWorking");
@@ -421,23 +443,25 @@
           res = await window.vespera.deriveKeys({
             privateKey: $("privateKey").value.trim(),
             walletAddress: $("walletAddress").value.trim(),
+            walletType: $("walletType").value,
             proxyUrl: $("proxyUrl").value.trim(),
           });
         } catch (err) {
           res = { ok: false, reason: String((err && err.message) || err) };
         }
         if (res && res.ok) {
-          out.innerHTML = `<span class="ping-dot ok"></span>${t("deriveOk")} \u00b7 ${res.walletType} \u00b7 ${String(
-            res.signerAddress || ""
-          ).slice(0, 10)}\u2026`;
+          out.innerHTML = `<span class="ping-dot ok"></span>${t("deriveOk")} \u00b7 ${esc(res.walletType)} \u00b7 ${esc(
+            String(res.signerAddress || "").slice(0, 10)
+          )}\u2026`;
+          paintWalletType(res.walletType);
           $("privateKey").placeholder = t("secretStored");
           $("privateKey").value = "";
           const snap = await window.vespera.snapshot();
           if (snap) state.snapshot = snap;
         } else {
-          out.innerHTML = `<span class="ping-dot bad"></span>${t("deriveFail")}: ${
+          out.innerHTML = `<span class="ping-dot bad"></span>${t("deriveFail")}: ${esc(
             (res && res.reason) || "error"
-          }`;
+          )}`;
         }
       };
       $("btnPing").onclick = async () => {
@@ -447,13 +471,20 @@
           apiPassphrase: $("apiPassphrase").value.trim(),
           walletAddress: $("walletAddress").value.trim(),
           privateKey: $("privateKey").value.trim(),
+          walletType: $("walletType").value,
           proxyUrl: $("proxyUrl").value.trim(),
         };
-        const res = await window.vespera.ping(creds);
+        $("pingOut").textContent = t("pinging");
+        let res;
+        try {
+          res = await window.vespera.ping(creds);
+        } catch (err) {
+          res = { live: { ok: false, message: String((err && err.message) || err) } };
+        }
         const live = res.live || {};
         const l2Failed = live.l2Ok === false;
         const ok = Boolean(live.ok) && !l2Failed;
-        const extra = live.slug ? ` · ${live.slug}` : "";
+        const extra = live.slug ? ` · ${esc(live.slug)}` : "";
         const q = live.quotes || {};
         const fmt = (side) =>
           q[side] ? `${side} ${q[side].price.toFixed(2)} → ×${q[side].payout.toFixed(2)}` : "";
@@ -469,10 +500,10 @@
             : live.ok
               ? t("reachable")
               : live.blocked
-                ? `${t("geoBlocked")}${live.geo && live.geo.country ? " \u00b7 " + live.geo.country : ""}`
+                ? `${t("geoBlocked")}${live.geo && live.geo.country ? " \u00b7 " + esc(live.geo.country) : ""}`
                 : live.message === "missing_key"
                   ? t("missingKey")
-                  : `${t("unreachable")}${live.message ? " \u00b7 " + live.message : ""}`
+                  : `${t("unreachable")}${live.message ? " \u00b7 " + esc(live.message) : ""}`
         }${live.latencyMs ? " · " + live.latencyMs + "ms" : ""}${extra}${l2}${quoteLine}`;
         if (res && res.live) {
           const snap = await window.vespera.snapshot();

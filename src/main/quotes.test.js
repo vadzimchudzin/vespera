@@ -56,7 +56,7 @@ assert.ok(Number.isFinite(withEma.ma20) && Number.isFinite(withEma.ma200), "EMA 
 // ── real payout instead of a flat x2 ─────────────────────────────────────────
 
 async function payoutCase({ payout, side, settleClose, expectPnl, label }) {
-  const broker = new PaperBroker({ startingBalance: "100.00", feeRate: 0 });
+  const broker = new PaperBroker({ startingBalance: "100.00", feeRate: 0, takerFeeRate: 0 });
   await broker.marketBuy({
     side,
     sizeUsd: "10.00",
@@ -100,15 +100,39 @@ async function payoutCase({ payout, side, settleClose, expectPnl, label }) {
     label: "fallback x2",
   });
 
-  // Flat close is still a loss.
+  // Polymarket resolves "Up" when the end price is >= the start price.
   const flat = await payoutCase({
     payout: 1 / 0.7,
     side: "UP",
     settleClose: 100,
-    expectPnl: "-10.00",
-    label: "flat",
+    expectPnl: "4.29",
+    label: "flat is UP",
   });
-  assert.strictEqual(flat.outcome, "FLAT");
+  assert.strictEqual(flat.outcome, "UP");
+  await payoutCase({
+    payout: 1 / 0.7,
+    side: "DOWN",
+    settleClose: 100,
+    expectPnl: "-10.00",
+    label: "flat loses DOWN",
+  });
+
+  // Paper charges the crypto taker fee: stake × 0.07 × (1 − p). $10 at 0.50 → $0.35.
+  {
+    const feeBroker = new PaperBroker({ startingBalance: "100.00" });
+    const placed = await feeBroker.marketBuy({
+      side: "UP",
+      sizeUsd: "10.00",
+      clientOrderId: "fee",
+      round: { strike: 100, openTs: 1, closeTs: 2 },
+      payout: 2,
+      price: 0.5,
+    });
+    assert.strictEqual(placed.feeUsd, "0.35");
+    assert.strictEqual(placed.feeModel, "polymarket_taker");
+    const lost = feeBroker.settle({ close: 99, closeTs: 2 });
+    assert.strictEqual(lost.pnl, "-10.35");
+  }
 
   // ── order sizing ───────────────────────────────────────────────────────────
 
@@ -145,6 +169,24 @@ async function payoutCase({ payout, side, settleClose, expectPnl, label }) {
     (err) => err.code === "below_min_size" && err.minSizeUsd === 2.5,
     "a lot under the venue minimum must be refused before signing"
   );
+
+  // Thin best ask: the FOK limit sweeps up to the level that covers the stake,
+  // and amounts respect the 0.001 tick precision.
+  adapter.getQuote = async () => ({
+    ...quote,
+    price: 0.512,
+    tickSize: 0.001,
+    feeRate: 0.07,
+    asks: [
+      { price: "0.530", size: "100" },
+      { price: "0.512", size: "5" },
+    ],
+  });
+  const swept = await adapter._sizeFromSignal({ side: "UP", sizeUsd: "10.00", round: { openTs: 1 } });
+  assert.strictEqual(swept.quote.price, 0.53, "limit covers the whole stake");
+  assert.strictEqual(swept.takerAmount, "18860000", "shares rounded down to 2 decimals");
+  assert.strictEqual(swept.makerAmount, "9995800", "USD = shares × price");
+  assert.ok(Number(swept.quote.feeUsd) > 0, "fee is estimated");
 
   // A closed round must never be traded.
   adapter.getQuote = async () => ({ ...quote, acceptingOrders: false });
@@ -208,11 +250,20 @@ async function payoutCase({ payout, side, settleClose, expectPnl, label }) {
   const eoa = new PolymarketAdapter({ privateKey: TEST_PK, walletAddress: signerAddr, client: {} });
   assert.strictEqual(eoa.resolvedWalletType(), "EOA");
 
-  // An email account funds from a proxy, so the addresses differ and the
-  // order must be signed as POLY_PROXY or the CLOB rejects it.
-  const proxyAddr = "0x1111111111111111111111111111111111111111";
+  // A legacy email account funds from its CREATE2 proxy, so the order must be
+  // POLY_PROXY; a Safe is POLY_GNOSIS_SAFE; any other address is a Deposit Wallet.
+  const { proxyWalletAddress, safeWalletAddress } = require("./brokers/orderSigner");
+  const proxyAddr = proxyWalletAddress(signerAddr);
   const proxy = new PolymarketAdapter({ privateKey: TEST_PK, walletAddress: proxyAddr, client: {} });
   assert.strictEqual(proxy.resolvedWalletType(), "POLY_PROXY");
+  const safe = new PolymarketAdapter({ privateKey: TEST_PK, walletAddress: safeWalletAddress(signerAddr), client: {} });
+  assert.strictEqual(safe.resolvedWalletType(), "POLY_GNOSIS_SAFE");
+  const depositAddr = "0x1111111111111111111111111111111111111111";
+  const deposit = new PolymarketAdapter({ privateKey: TEST_PK, walletAddress: depositAddr, client: {} });
+  assert.strictEqual(deposit.resolvedWalletType(), "DEPOSIT_WALLET");
+  assert.strictEqual(signatureTypeFor("DEPOSIT_WALLET"), 3);
+  const forced = new PolymarketAdapter({ privateKey: TEST_PK, walletAddress: depositAddr, walletType: "POLY_PROXY", client: {} });
+  assert.strictEqual(forced.resolvedWalletType(), "POLY_PROXY", "an explicit type wins over detection");
 
   const proxyOrder = buildOrder({
     tokenId: "1",
@@ -225,6 +276,122 @@ async function payoutCase({ payout, side, settleClose, expectPnl, label }) {
   assert.strictEqual(proxyOrder.maker, proxyAddr, "funds come from the proxy wallet");
   assert.strictEqual(proxyOrder.signer, signerAddr, "the exported key signs");
   assert.strictEqual(proxyOrder.signatureType, 1);
+
+  // ── CLOB V2 order signing ───────────────────────────────────────────────────
+  {
+    const {
+      signOrder,
+      exchangeDomain,
+      ORDER_TYPES,
+      TYPED_DATA_SIGN_TYPES,
+      ORDER_TYPE_STRING,
+      ZERO_BYTES32,
+    } = require("./brokers/orderSigner");
+    const order = buildOrder({
+      tokenId: "123",
+      makerAmount: "5200000",
+      takerAmount: "10000000",
+      maker: proxyAddr,
+      signer: signerAddr,
+      signatureType: 1,
+      timestamp: 1790110800000,
+    });
+    for (const gone of ["nonce", "feeRateBps", "taker", "expiration"]) {
+      assert.ok(!(gone in order), `V2 order has no ${gone}`);
+    }
+    assert.strictEqual(order.timestamp, "1790110800000");
+    assert.strictEqual(order.metadata, ZERO_BYTES32);
+    assert.ok(Number(order.salt) <= Number.MAX_SAFE_INTEGER);
+
+    const signed = await signOrder(order, TEST_PK);
+    const domain = exchangeDomain(false);
+    assert.strictEqual(domain.version, "2");
+    assert.strictEqual(domain.verifyingContract, "0xE111180000d2663C0091e4f400237545B87B996B");
+    const { salt, maker, signer, tokenId, makerAmount, takerAmount, side, signatureType, timestamp, metadata, builder } = order;
+    const msg = { salt, maker, signer, tokenId, makerAmount, takerAmount, side, signatureType, timestamp, metadata, builder };
+    assert.strictEqual(ethers.utils.verifyTypedData(domain, ORDER_TYPES, msg, signed.signature), signerAddr);
+    assert.strictEqual(
+      ethers.utils._TypedDataEncoder.from(ORDER_TYPES).encodeType("Order"),
+      ORDER_TYPE_STRING,
+      "EIP-712 type string matches the V2 Order struct"
+    );
+    const negRisk = await signOrder(order, TEST_PK, { negRisk: true });
+    assert.notStrictEqual(negRisk.signature, signed.signature, "neg-risk markets sign against their own exchange");
+
+    // Deposit Wallet: ERC-7739 wrapped signature.
+    const dwOrder = { ...order, maker: depositAddr, signer: depositAddr, signatureType: 3 };
+    const dw = await signOrder(dwOrder, TEST_PK);
+    const bytes = ethers.utils.arrayify(dw.signature);
+    const typeLen = ORDER_TYPE_STRING.length;
+    assert.strictEqual(bytes.length, 65 + 32 + 32 + typeLen + 2, "inner sig + separator + hash + type + length");
+    assert.strictEqual((bytes[bytes.length - 2] << 8) | bytes[bytes.length - 1], typeLen);
+    const inner = ethers.utils.hexlify(bytes.slice(0, 65));
+    const dwMsg = { ...msg, maker: depositAddr, signer: depositAddr, signatureType: 3 };
+    const recovered = ethers.utils.verifyTypedData(domain, TYPED_DATA_SIGN_TYPES, {
+      contents: dwMsg,
+      name: "DepositWallet",
+      version: "1",
+      chainId: 137,
+      verifyingContract: depositAddr,
+      salt: ZERO_BYTES32,
+    }, inner);
+    assert.strictEqual(recovered, signerAddr, "inner TypedDataSign is signed by the account key");
+    assert.strictEqual(
+      ethers.utils.hexlify(bytes.slice(65, 97)),
+      ethers.utils._TypedDataEncoder.hashDomain(domain)
+    );
+    assert.strictEqual(
+      ethers.utils.hexlify(bytes.slice(97, 129)),
+      ethers.utils._TypedDataEncoder.hashStruct("Order", ORDER_TYPES, dwMsg)
+    );
+
+    // Wire body + auth headers.
+    const { ClobClient: Clob } = require("./brokers/clobClient");
+    let sent = null;
+    const wire = new Clob({
+      apiKey: "key",
+      apiSecret: Buffer.from("secret").toString("base64"),
+      apiPassphrase: "pass",
+      walletAddress: proxyAddr,
+      signerAddress: signerAddr,
+      signatureType: 1,
+      request: async (url, opts) => {
+        sent = { url, ...opts };
+        return { ok: true, status: 200, json: { success: false, errorMsg: "not enough balance / allowance" } };
+      },
+    });
+    const posted = await wire.postOrder(signed);
+    assert.strictEqual(posted.ok, false, "success:false is a rejection even on HTTP 200");
+    assert.strictEqual(posted.raw, "not enough balance / allowance");
+    assert.strictEqual(sent.headers.POLY_ADDRESS, signerAddr, "L2 auth identifies the signer, not the funder");
+    assert.strictEqual(sent.body.owner, "key");
+    assert.strictEqual(sent.body.order.side, "BUY");
+    assert.strictEqual(typeof sent.body.order.salt, "number");
+    assert.strictEqual(sent.body.order.signature, signed.signature);
+    assert.strictEqual(sent.body.order.timestamp, "1790110800000");
+    assert.ok(!("feeRateBps" in sent.body.order) && !("nonce" in sent.body.order));
+
+    await wire.balanceAllowance();
+    assert.ok(sent.url.endsWith("/balance-allowance?asset_type=COLLATERAL&signature_type=1"), sent.url);
+  }
+
+  // Resolution is read from Gamma once the market closes.
+  {
+    const resolver = new PolymarketAdapter({
+      client: {
+        eventBySlug: async () => ({
+          ok: true,
+          status: 200,
+          json: { markets: [{ closed: true, outcomes: '["Up","Down"]', outcomePrices: '["0","1"]' }] },
+        }),
+      },
+    });
+    assert.deepStrictEqual(await resolver.resolvedOutcome("btc-updown-15m-1"), { resolved: true, outcome: "DOWN" });
+    const open = new PolymarketAdapter({
+      client: { eventBySlug: async () => ({ ok: true, status: 200, json: { markets: [{ closed: false }] } }) },
+    });
+    assert.deepStrictEqual(await open.resolvedOutcome("x"), { resolved: false });
+  }
 
   // Derivation stores the credentials on the adapter.
   let asked = null;
@@ -293,6 +460,11 @@ async function payoutCase({ payout, side, settleClose, expectPnl, label }) {
   assert.strictEqual(currentProxy().url, "http://127.0.0.1:9");
   setProxy("");
   assert.strictEqual(currentProxy().active, false, "clearing the proxy restores direct calls");
+
+  // The agent ships as a runtime dependency, so a proxy URL actually routes.
+  setProxy("http://127.0.0.1:9");
+  assert.strictEqual(currentProxy().active, true, "https-proxy-agent must load");
+  setProxy("");
 
   console.log("quote + payout tests ok");
 })().catch((err) => {
