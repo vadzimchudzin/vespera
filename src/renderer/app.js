@@ -629,6 +629,22 @@
       body.innerHTML = `
         <div class="field"><span class="field-label">${t("base")}</span><input id="base" value="${s.baseUsd || "1.00"}" /></div>
         <div class="field"><span class="field-label">${t("maxSteps")}</span><input id="steps" value="${s.maxSteps || 6}" /></div>
+        <div class="field toggle-row">
+          <span class="field-label">${t("sizing")}${helpBtn("sizingHint")}</span>
+          <div class="seg seg-sm" id="sizingSeg">
+            <button type="button" data-sizing="double" class="${(s.sizingMode || "double") === "double" ? "on" : ""}">\u00d72</button>
+            <button type="button" data-sizing="recover" class="${s.sizingMode === "recover" ? "on" : ""}">${t("sizingRecover")}</button>
+          </div>
+        </div>
+        <div class="field"><span class="field-label">${t("maxStake")}${helpBtn("maxStakeHint")}</span><input id="maxStake" inputmode="decimal" value="${Number(s.maxStakeUsd) > 0 ? s.maxStakeUsd : ""}" placeholder="${t("maxStakeOff")}" /></div>
+        <div class="field">
+          <span class="field-label">${t("maxEntryPrice")}${helpBtn("maxEntryPriceHint")}</span>
+          <div class="range-row">
+            <input id="maxEntry" type="range" min="50" max="100" step="1" />
+            <span class="range-val" id="maxEntryVal"></span>
+          </div>
+        </div>
+        <div class="plan-box" id="planBox"></div>
         <div class="field">
           <span class="field-label">${t("minOpening")}${helpBtn("minOpeningHint")}</span>
           <div class="range-row">
@@ -698,6 +714,65 @@
           <button type="button" class="ghost" id="resetPaper">${t("resetPaper")}</button>
         `;
       }
+      const paintPlan = (snap) => {
+        const box = $("planBox");
+        const plan = snap && snap.plan;
+        if (!box || !plan) return;
+        const stakes = plan.steps
+          .map((x) => `<span class="plan-step${x.winNet < 0 ? " neg" : ""}${x.capped ? " capped" : ""}" title="${esc(
+            `${t("planWinNet")}: $${x.winNet.toFixed(2)}`
+          )}">$${x.stake.toFixed(2)}</span>`)
+          .join("");
+        const worst = plan.steps.reduce((m, x) => Math.min(m, x.winNet), Infinity);
+        box.innerHTML = `
+          <div class="plan-head">${t("planTitle")} ${plan.price.toFixed(2)}</div>
+          <div class="plan-steps">${stakes}</div>
+          <div class="hint">${t("planAtRisk")}: <b>$${plan.totalAtRisk.toFixed(2)}</b> \u00b7 ${t("planBreakEven")}: <b>${(
+            plan.breakEvenWinRate * 100
+          ).toFixed(1)}%</b></div>
+          ${worst < 0 ? `<div class="hint warn">${t("planNegative")}</div>` : ""}`;
+      };
+      paintPlan(state.snapshot);
+      const planSave = (patch, ms) => {
+        clearTimeout(state.planTimer);
+        state.planTimer = setTimeout(async () => {
+          if (!window.vespera) return;
+          const snap = await window.vespera.saveSettings(patch);
+          if (snap) {
+            state.snapshot = snap;
+            paintPlan(snap);
+          }
+        }, ms);
+      };
+      $("sizingSeg").onclick = (e) => {
+        const btn = e.target.closest("button[data-sizing]");
+        if (!btn) return;
+        for (const b of $("sizingSeg").querySelectorAll("button")) b.classList.toggle("on", b === btn);
+        planSave({ sizingMode: btn.dataset.sizing }, 0);
+      };
+      const moneyOr = (el, fallback) => {
+        const n = Number(String(el.value).replace(",", "."));
+        return Number.isFinite(n) && n >= 0 ? n : fallback;
+      };
+      $("maxStake").oninput = () => planSave({ maxStakeUsd: moneyOr($("maxStake"), 0) }, 400);
+      $("base").oninput = () => {
+        const n = moneyOr($("base"), 0);
+        if (n > 0) planSave({ baseUsd: n.toFixed(2) }, 400);
+      };
+      $("steps").oninput = () => {
+        const n = Math.round(moneyOr($("steps"), 0));
+        if (n >= 1 && n <= 20) planSave({ maxSteps: n }, 400);
+      };
+      $("maxEntry").value = String(Math.round((Number(s.maxEntryPrice) > 0 && Number(s.maxEntryPrice) < 1 ? Number(s.maxEntryPrice) : 1) * 100));
+      const paintMaxEntry = () => {
+        const v = Number($("maxEntry").value);
+        $("maxEntryVal").textContent = v >= 100 ? t("off") : `\u2264 ${(v / 100).toFixed(2)}`;
+      };
+      paintMaxEntry();
+      $("maxEntry").oninput = () => {
+        paintMaxEntry();
+        planSave({ maxEntryPrice: Number($("maxEntry").value) / 100 }, 150);
+      };
       const opening = Math.round(Number(s.minOpeningAtr || 0) * 20);
       $("opening").value = String(opening);
       const paintOpening = () => {
@@ -816,6 +891,9 @@
         const patch = {
           maxSteps: Number(stepsEl && stepsEl.value) || 6,
           baseUsd: baseEl ? baseEl.value : s.baseUsd || "1.00",
+          sizingMode: (document.querySelector("#sizingSeg button.on") || {}).dataset?.sizing || s.sizingMode || "double",
+          maxStakeUsd: $("maxStake") ? moneyOr($("maxStake"), 0) : Number(s.maxStakeUsd) || 0,
+          maxEntryPrice: $("maxEntry") ? Number($("maxEntry").value) / 100 : Number(s.maxEntryPrice) || 1,
           minOpeningAtr: openingEl ? Number(openingEl.value) / 20 : 0,
           minCrossTicks: crossEl ? Number(crossEl.value) : 0,
           confirmCount: confirmsEl ? Number(confirmsEl.value) : 0,
@@ -873,12 +951,34 @@
 
     if (kind === "stats") {
       title.textContent = t("stats");
-      const r = state.snapshot?.risk || {};
+      const snap = state.snapshot || {};
+      const r = snap.risk || {};
+      const st = snap.stats || {};
+      const pct = (x) => (x == null ? "\u2014" : `${(x * 100).toFixed(1)}%`);
+      const usd = (x) => (x == null ? "\u2014" : `${x < 0 ? "\u2212" : ""}$${Math.abs(x).toFixed(2)}`);
+      const edge = st.winRate != null && st.count >= 1 ? st.winRate - st.breakEvenWinRate : null;
+      const row = (k, v, cls = "") => `<div class="stat-row"><span>${k}</span><b class="${cls}">${v}</b></div>`;
+      const steps = (st.stepHits || [])
+        .map((n, i) => `<span class="plan-step${i + 1 === r.maxSteps && n ? " neg" : ""}">${i + 1}: ${n}</span>`)
+        .join("");
       body.innerHTML = `
-        <p class="hint">${t("statsHint")}</p>
-        <p>${t("series")}: ${r.step}/${r.maxSteps}</p>
-        <p>${t("today")}: $${state.snapshot?.todayPnl}</p>
-        <p>${t("balance")}: $${state.snapshot?.paper?.balance}</p>
+        <p class="hint">${t(snap.mode === "auto" ? "statsHintLive" : "statsHintPaper")}</p>
+        ${row(t("series"), `${r.step}/${r.maxSteps} \u00b7 $${r.size}${Number(r.seriesLossUsd) > 0 ? ` \u00b7 ${t("statsSeriesLoss")} $${r.seriesLossUsd}` : ""}`)}
+        ${row(t("today"), usd(Number(snap.todayPnl)), Number(snap.todayPnl) < 0 ? "neg" : Number(snap.todayPnl) > 0 ? "pos" : "")}
+        ${snap.mode === "auto" ? "" : row(t("balance"), `$${snap.paper?.balance}`)}
+        <div class="stat-sep"></div>
+        ${row(t("statsBets"), `${st.count || 0} (${st.wins || 0} / ${st.losses || 0})`)}
+        ${row(t("statsWinRate"), pct(st.winRate), edge == null ? "" : edge >= 0 ? "pos" : "neg")}
+        ${row(t("statsBreakEven"), `${pct(st.breakEvenWinRate)}${st.avgPrice ? ` @ ${st.avgPrice.toFixed(2)}` : ""}`)}
+        ${row(t("statsPnl"), usd(st.pnl), st.pnl < 0 ? "neg" : st.pnl > 0 ? "pos" : "")}
+        ${row(t("statsFees"), usd(st.fees))}
+        ${row(t("statsRoi"), pct(st.roi), st.roi < 0 ? "neg" : "")}
+        ${row(t("statsDrawdown"), usd(st.maxDrawdown))}
+        ${row(t("statsLossStreak"), String(st.maxLossStreak || 0))}
+        ${row(t("statsHalted"), String(st.seriesHalted || 0), st.seriesHalted ? "neg" : "")}
+        <div class="field-label" style="margin-top:12px">${t("statsSteps")}</div>
+        <div class="plan-steps">${steps}</div>
+        ${st.count && st.count < 50 ? `<p class="hint">${t("statsFew")}</p>` : ""}
       `;
     }
 

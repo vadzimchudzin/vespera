@@ -966,3 +966,60 @@ html[data-theme="glass-light"] .ghost {
 .hint.warn {
   color: #ff9f0a;
 }
+
+.plan-box {
+  margin: 4px 0 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--hair);
+  border-radius: 14px;
+  background: rgba(118, 118, 128, 0.08);
+}
+.plan-head {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.plan-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.plan-step {
+  padding: 2px 8px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  background: rgba(118, 118, 128, 0.16);
+  color: var(--ink);
+}
+.plan-step.neg {
+  background: rgba(255, 69, 58, 0.18);
+  color: #ff453a;
+}
+.plan-step.capped {
+  outline: 1px dashed #ff9f0a;
+}
+.stat-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  font-size: 13px;
+  border-bottom: 1px solid var(--hair);
+}
+.stat-row span {
+  color: var(--muted);
+}
+.stat-row b {
+  font-variant-numeric: tabular-nums;
+}
+.stat-row b.pos {
+  color: #30d158;
+}
+.stat-row b.neg {
+  color: #ff453a;
+}
+.stat-sep {
+  height: 10px;
+}

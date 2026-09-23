@@ -98,15 +98,25 @@ class Journal {
     const limit = Math.max(1, Number(maxSteps) || 6);
     let step = 1;
     let losses = 0;
+    let seriesLoss = 0;
     let halted = false;
     for (const e of this.entries) {
+      // the engine starts a fresh series on these; a restart must too
+      if (e.type === "paper_reset" || e.type === "mode") {
+        step = 1;
+        losses = 0;
+        seriesLoss = 0;
+        halted = false;
+      }
       if (e.type === "settled") {
         if (e.status === "win") {
           step = 1;
           losses = 0;
+          seriesLoss = 0;
           halted = false;
         } else if (e.status === "loss") {
           losses += 1;
+          seriesLoss += Math.abs(Number(e.pnl) || 0);
           if (losses >= limit) {
             halted = true;
           } else {
@@ -118,9 +128,10 @@ class Journal {
         halted = false;
         step = 1;
         losses = 0;
+        seriesLoss = 0;
       }
     }
-    return { step, consecutiveLosses: losses, halted };
+    return { step, consecutiveLosses: losses, seriesLossUsd: seriesLoss, halted };
   }
 
   tail(n = 80) {
