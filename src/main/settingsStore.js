@@ -28,6 +28,9 @@ const DEFAULTS = {
   sizingMode: "double",
   maxStakeUsd: 0,
   maxEntryPrice: 1,
+  // Auto signs and checks the balance but does not post orders until turned off.
+  dryRun: true,
+  dailyLossLimitUsd: 0,
   paperBalance: "1000.00",
   mode: "paper",
   theme: "glass-dark",

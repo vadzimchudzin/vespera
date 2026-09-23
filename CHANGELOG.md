@@ -2,6 +2,17 @@
 
 All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 
+## 0.14.0 — 2026-09-23
+
+- **Dry run for Auto, on by default.** Auto does everything except post the order: live Polymarket price, stake sizing, taker fee, the stake + fee balance check (when CLOB keys are set) and a real EIP-712 signature with your key. Dry-run bets settle and feed the series like live ones, but are booked separately from real money in the journal, *Today* and Statistics. A header badge shows **DRY RUN** or **REAL MONEY** whenever Auto is selected.
+- **Real money needs a confirmation on every Start.** The dialog shows the wallet, wallet type, balance, market, sizing mode, stakes per step, total at risk, max stake and daily limit. Turning dry run off while Auto is running stops it, so going live always passes through this dialog. Switching Paper/Auto also stops a running engine for the same reason.
+- **Daily loss limit.** Optional; once today's realised loss reaches it, the engine stops and refuses to start until local midnight. Counted per book (paper, dry run, real money). *Today* now shows the real day's result per book instead of a session counter that never reset.
+- **Auto pauses instead of failing silently.**
+  - A watchdog checks the CLOB every minute while Auto runs; three failures in a row (unreachable, geoblocked, proxy down) pause Auto with the reason.
+  - A signal without a Polymarket quote is no longer skipped quietly: it is journaled, notified and counted toward the watchdog.
+  - Order errors that will repeat on the next signal (insufficient balance, lot below the 5-share minimum, missing key) pause Auto at once; two CLOB rejections in a row pause it; a closed round does not.
+  - Paused status is shown by the lamp with the reason; Start resumes. An open bet still settles while paused.
+
 ## 0.13.0 — 2026-09-23
 
 - **Recovery sizing.** Settings → *Series sizing*: **×2** (unchanged default) or **Recover**. At Polymarket odds a ×2 martingale does not recover: payout is 1/price and the taker fee is lost on both outcomes, so at 0.50 a win on step 5 or 6 still ends the series at −$0.08 / −$1.20 on a $1 base. Recover sizes each stake from the live ask and fee schedule, `stake = base + seriesLoss / netWinPerDollar`, so any winning step pays back the whole series and nets the base profit. The series loss survives a restart.

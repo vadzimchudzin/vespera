@@ -5,7 +5,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("vespera", {
   snapshot: () => ipcRenderer.invoke("engine:snapshot"),
   warmChart: () => ipcRenderer.invoke("engine:warmChart"),
-  start: () => ipcRenderer.invoke("engine:start"),
+  start: (opts) => ipcRenderer.invoke("engine:start", opts),
   stop: () => ipcRenderer.invoke("engine:stop"),
   setMode: (mode) => ipcRenderer.invoke("engine:setMode", mode),
   confirmLot: (baseUsd) => ipcRenderer.invoke("engine:confirmLot", baseUsd),

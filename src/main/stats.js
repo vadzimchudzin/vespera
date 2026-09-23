@@ -2,18 +2,42 @@
 
 const { breakEvenWinRate } = require("./risk");
 
+/** Which book a journal entry belongs to: paper, Auto dry run, or real money. */
+function bookOf(entry) {
+  if (!entry || entry.mode !== "auto") return "paper";
+  return entry.dryRun ? "dry" : "live";
+}
+
+/** Local calendar day, so the daily limit resets at the user's midnight. */
+function localDay(ts) {
+  const d = ts ? new Date(ts) : new Date();
+  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+}
+
+/** Realised P&L of one book today. */
+function todayPnl(entries, book, now = Date.now()) {
+  const day = localDay(now);
+  let sum = 0;
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    const e = entries[i];
+    if (e.ts && localDay(e.ts) !== day) break;
+    if (book === "paper" && e.type === "paper_reset") break;
+    if (e.type === "settled" && bookOf(e) === book) sum += Number(e.pnl) || 0;
+  }
+  return Number(sum.toFixed(2));
+}
+
 /**
- * Performance of settled bets from the journal. Paper counts from the last
- * paper reset; live ("auto") bets are kept apart.
+ * Performance of settled bets of one book. Paper counts from the last paper
+ * reset; dry-run and live bets are kept apart from it and from each other.
  */
-function computeStats(entries, { mode = "paper", maxSteps = 6 } = {}) {
-  const isLive = mode === "auto";
+function computeStats(entries, { book = "paper", maxSteps = 6 } = {}) {
   const rows = [];
   for (let i = entries.length - 1; i >= 0; i -= 1) {
     const e = entries[i];
-    if (!isLive && e.type === "paper_reset") break;
+    if (book === "paper" && e.type === "paper_reset") break;
     if (e.type !== "settled") continue;
-    if ((e.mode === "auto") !== isLive) continue;
+    if (bookOf(e) !== book) continue;
     rows.push(e);
   }
   rows.reverse();
@@ -65,7 +89,7 @@ function computeStats(entries, { mode = "paper", maxSteps = 6 } = {}) {
   const count = rows.length;
   const avgPrice = priced ? priceSum / priced : null;
   return {
-    mode,
+    book,
     count,
     wins,
     losses: count - wins,
@@ -84,4 +108,4 @@ function computeStats(entries, { mode = "paper", maxSteps = 6 } = {}) {
   };
 }
 
-module.exports = { computeStats };
+module.exports = { computeStats, todayPnl, bookOf, localDay };

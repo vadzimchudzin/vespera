@@ -402,8 +402,32 @@ class PolymarketAdapter {
    *  - engine: { side: "UP"|"DOWN", sizeUsd, clientOrderId, round }
    * The engine shape resolves the round, prices the book and sizes the order.
    */
+  /** Cheap reachability check for the Auto watchdog: CLOB /time, plus geoblock on failure. */
+  async health() {
+    try {
+      const res = await this.client.time();
+      if (res && res.ok) return { ok: true, latencyMs: res.latencyMs };
+      let geo = null;
+      if (typeof this.client.geoblock === "function") geo = await this.client.geoblock();
+      const blocked = Boolean(geo && geo.ok && geo.blocked);
+      return {
+        ok: false,
+        reason: blocked ? `geoblocked${geo.country ? ` ${geo.country}` : ""}` : (res && (res.networkError || `http_${res.status}`)) || "unreachable",
+      };
+    } catch (err) {
+      return { ok: false, reason: String((err && err.message) || err) };
+    }
+  }
+
   async marketBuy(params = {}) {
-    if (!this.hasL2() || !this.hasPrivateKey()) {
+    // Dry run signs with the real key and checks the real balance, but never posts.
+    const dryRun = Boolean(params.dryRun);
+    if (dryRun && !this.hasPrivateKey()) {
+      const err = new Error("auto_not_wired: dry run needs the private key");
+      err.code = "auto_not_wired";
+      throw err;
+    }
+    if (!dryRun && (!this.hasL2() || !this.hasPrivateKey())) {
       // Keep error code as auto_not_wired for backward compat with tests
       const err = new Error("auto_not_wired");
       err.code = "auto_not_wired";
@@ -419,7 +443,7 @@ class PolymarketAdapter {
       err.code = "missing_tokenId";
       throw err;
     }
-    if (quote) {
+    if (quote && this.hasL2()) {
       // V2 charges the taker fee in USDC on top of the stake: the wallet must hold both.
       const balance = await this.getBalance();
       const need = Number(quote.sizeUsd) + Number(quote.feeUsd || 0);
@@ -443,6 +467,34 @@ class PolymarketAdapter {
       signatureType: signatureTypeFor(walletType),
     });
     const signed = await signOrder(order, this.privateKey, { negRisk: Boolean(quote && quote.negRisk) });
+    if (dryRun) {
+      return {
+        ok: true,
+        accepted: true,
+        dryRun: true,
+        venue: "polymarket",
+        orderId: null,
+        orderStatus: "dry_run",
+        walletType,
+        tokenId,
+        clientOrderId: params.clientOrderId || null,
+        side: quote ? quote.side : side === 1 ? "DOWN" : "UP",
+        sizeUsd: quote ? quote.sizeUsd : null,
+        price: quote ? quote.price : null,
+        limitPrice: quote ? quote.price : null,
+        shares: quote ? quote.shares : null,
+        payout: quote ? quote.payout : null,
+        feeUsd: quote ? quote.feeUsd : null,
+        filled: false,
+        slug: quote ? quote.slug : null,
+        strike: params.round ? params.round.strike : null,
+        roundOpenTs: params.round ? params.round.openTs : null,
+        roundCloseTs: params.round ? params.round.closeTs : null,
+        order: signed.order,
+        signature: signed.signature,
+        balanceChecked: this.hasL2(),
+      };
+    }
     const res = await this.client.postOrder(signed);
     if (!res.ok) {
       const detail = (res.json && res.json.errorMsg) || (res.json && res.json.error) || res.raw || "";

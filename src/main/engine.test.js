@@ -683,7 +683,7 @@ async function run() {
     assert(Number(bet.sizeUsd) > 2.5, "recovering at 0.60 needs more than ×2");
     const snap = t.engine.snapshot();
     assert(snap.plan && snap.plan.steps.length === 6, "plan is exposed");
-    assert(snap.stats && snap.stats.mode === "paper", "stats are exposed");
+    assert(snap.stats && snap.stats.book === "paper", "stats are exposed");
   }
 
   console.log("paper engine tests ok");

@@ -104,7 +104,7 @@ const { Journal } = require("./journal");
     { type: "settled", status: "win", pnl: "3.86", sizeUsd: "4", feeUsd: "0.14", entryPrice: 0.5 },
     { type: "settled", status: "win", mode: "auto", pnl: "9", sizeUsd: "9", feeUsd: "0.3" },
   ];
-  const s = computeStats(entries, { mode: "paper", maxSteps: 6 });
+  const s = computeStats(entries, { book: "paper", maxSteps: 6 });
   assert.strictEqual(s.count, 4, "only paper bets since the last reset");
   assert.strictEqual(s.wins, 2);
   assert.strictEqual(s.winRate, 0.5);
@@ -114,11 +114,11 @@ const { Journal } = require("./journal");
   assert.strictEqual(s.maxLossStreak, 2);
   assert.deepStrictEqual(s.stepHits.slice(0, 3), [2, 1, 1]);
   assert.strictEqual(Number(s.breakEvenWinRate.toFixed(4)), 0.5175);
-  const live = computeStats(entries, { mode: "auto", maxSteps: 6 });
+  const live = computeStats(entries, { book: "live", maxSteps: 6 });
   assert.strictEqual(live.count, 1, "live stats are separate");
   const halted = computeStats(
     Array.from({ length: 3 }, () => ({ type: "settled", status: "loss", pnl: "-1", sizeUsd: "1" })),
-    { mode: "paper", maxSteps: 3 }
+    { book: "paper", maxSteps: 3 }
   );
   assert.strictEqual(halted.seriesHalted, 1);
 }
