@@ -55,6 +55,8 @@
         order_sent: t("orderSent"),
         waiting_settlement: t("waiting"),
         halt: t("halt"),
+        paused: t("paused"),
+        daily_limit: t("dailyLimitHit"),
       }[status] || status
     );
   }
@@ -107,8 +109,32 @@
     } else if (type === "paper_reset") {
       title = t("logReset");
       detail = row.balance ? `$${row.balance}` : "";
+    } else if (type === "auto_paused") {
+      title = t("logPaused");
+      detail = row.reason || "";
+    } else if (type === "daily_limit") {
+      title = t("dailyLimitHit");
+      detail = `$${row.pnl} / $${row.limit}`;
+    } else if (type === "venue_failure") {
+      title = t("logVenueFailure");
+      detail = `${row.count} \u00b7 ${row.reason || ""}`;
+    } else if (type === "dry_run") {
+      title = row.on ? t("logDryOn") : t("logDryOff");
+    } else if (type === "stake_capped") {
+      title = t("logCapped");
+      detail = `$${row.needed} \u2192 $${row.cap}`;
     }
+    if (type === "order_sent" && row.dryRun) title = t("logDryOrder");
     return { when, title, detail, kind: type };
+  }
+
+  function logNote(text) {
+    const log = $("log");
+    if (!log) return;
+    const div = document.createElement("div");
+    div.className = "log-row log-halt";
+    div.textContent = text;
+    log.prepend(div);
   }
 
   function renderLog(snap) {
@@ -163,7 +189,15 @@
     if (lamp) {
       lamp.dataset.status = snap.status;
       lamp.dataset.on = snap.running ? "1" : "0";
-      lamp.title = statusLabel(snap.status);
+      lamp.title = statusLabel(snap.status) + (snap.pauseReason ? ` \u2014 ${snap.pauseReason}` : "");
+    }
+    const badge = $("moneyBadge");
+    if (badge) {
+      const auto = snap.mode === "auto";
+      badge.hidden = !auto;
+      badge.dataset.book = snap.book || "";
+      badge.textContent = snap.book === "live" ? t("badgeLive") : t("badgeDry");
+      badge.title = snap.book === "live" ? t("badgeLiveHint") : t("badgeDryHint");
     }
     paintChromePicks(snap);
     paintBalance(snap);
@@ -645,6 +679,13 @@
           </div>
         </div>
         <div class="plan-box" id="planBox"></div>
+        <div class="field"><span class="field-label">${t("dailyLimit")}${helpBtn("dailyLimitHint")}</span><input id="dailyLimit" inputmode="decimal" value="${Number(s.dailyLossLimitUsd) > 0 ? s.dailyLossLimitUsd : ""}" placeholder="${t("maxStakeOff")}" /></div>
+        <div class="field toggle-row">
+          <span class="field-label">${t("dryRun")}${helpBtn("dryRunHint")}</span>
+          <button type="button" class="toggle ${s.dryRun !== false ? "on" : ""}" id="dryRunToggle" aria-pressed="${s.dryRun !== false}">
+            <span class="knob"></span>
+          </button>
+        </div>
         <div class="field">
           <span class="field-label">${t("minOpening")}${helpBtn("minOpeningHint")}</span>
           <div class="range-row">
@@ -755,6 +796,17 @@
         return Number.isFinite(n) && n >= 0 ? n : fallback;
       };
       $("maxStake").oninput = () => planSave({ maxStakeUsd: moneyOr($("maxStake"), 0) }, 400);
+      $("dailyLimit").oninput = () => planSave({ dailyLossLimitUsd: moneyOr($("dailyLimit"), 0) }, 400);
+      $("dryRunToggle").onclick = async () => {
+        const btn = $("dryRunToggle");
+        const on = !btn.classList.contains("on");
+        const snap = await window.vespera.saveSettings({ dryRun: on });
+        // the engine refuses while a live bet is open; show what it kept
+        const kept = snap && snap.settings ? snap.settings.dryRun !== false : on;
+        btn.classList.toggle("on", kept);
+        btn.setAttribute("aria-pressed", String(kept));
+        if (snap) renderSnap(snap);
+      };
       $("base").oninput = () => {
         const n = moneyOr($("base"), 0);
         if (n > 0) planSave({ baseUsd: n.toFixed(2) }, 400);
@@ -894,6 +946,7 @@
           sizingMode: (document.querySelector("#sizingSeg button.on") || {}).dataset?.sizing || s.sizingMode || "double",
           maxStakeUsd: $("maxStake") ? moneyOr($("maxStake"), 0) : Number(s.maxStakeUsd) || 0,
           maxEntryPrice: $("maxEntry") ? Number($("maxEntry").value) / 100 : Number(s.maxEntryPrice) || 1,
+          dailyLossLimitUsd: $("dailyLimit") ? moneyOr($("dailyLimit"), 0) : Number(s.dailyLossLimitUsd) || 0,
           minOpeningAtr: openingEl ? Number(openingEl.value) / 20 : 0,
           minCrossTicks: crossEl ? Number(crossEl.value) : 0,
           confirmCount: confirmsEl ? Number(confirmsEl.value) : 0,
@@ -949,6 +1002,45 @@
       };
     }
 
+    if (kind === "liveConfirm") {
+      title.textContent = t("liveConfirmTitle");
+      const snap = state.snapshot || {};
+      const s = snap.settings || {};
+      const plan = snap.plan || { steps: [], totalAtRisk: 0, price: 0.5 };
+      const bal = snap.liveBalance && snap.liveBalance.source === "live" && snap.liveBalance.ok ? `$${snap.liveBalance.value}` : "\u2014";
+      const wallet = s.walletAddress ? `${s.walletAddress.slice(0, 6)}\u2026${s.walletAddress.slice(-4)}` : "\u2014";
+      const row = (k, v) => `<div class="stat-row"><span>${k}</span><b>${v}</b></div>`;
+      body.innerHTML = `
+        <p class="hint warn">${t("liveConfirmLead")}</p>
+        ${row(t("walletAddress"), esc(wallet))}
+        ${row(t("walletType"), esc(({ DEPOSIT_WALLET: t("walletTypeDeposit"), POLY_PROXY: t("walletTypeProxy"), POLY_GNOSIS_SAFE: t("walletTypeSafe"), EOA: t("walletTypeEoa") })[
+          (!s.walletType || s.walletType === "AUTO" ? s.detectedWalletType : s.walletType) || ""
+        ] || t("walletTypeAuto")))}
+        ${row(t("balance"), bal)}
+        ${row(t("liveConfirmMarket"), esc(snap.pairLabel || ""))}
+        ${row(t("sizing"), s.sizingMode === "recover" ? t("sizingRecover") : "\u00d72")}
+        ${row(t("liveConfirmStakes"), plan.steps.map((x) => `$${x.stake.toFixed(2)}`).join(" \u00b7 "))}
+        ${row(t("planAtRisk"), `$${plan.totalAtRisk.toFixed(2)} @ ${plan.price.toFixed(2)}`)}
+        ${row(t("maxStake"), Number(s.maxStakeUsd) > 0 ? `$${s.maxStakeUsd}` : t("maxStakeOff"))}
+        ${row(t("dailyLimit"), Number(s.dailyLossLimitUsd) > 0 ? `$${s.dailyLossLimitUsd}` : t("maxStakeOff"))}
+        ${Number(s.dailyLossLimitUsd) > 0 ? "" : `<p class="hint warn">${t("liveConfirmNoLimit")}</p>`}
+      `;
+      if (foot) {
+        foot.hidden = false;
+        foot.innerHTML = `
+          <button type="button" class="ok danger" id="liveGo">${t("liveConfirmGo")}</button>
+          <button type="button" class="ghost" id="liveCancel">${t("cancel")}</button>
+        `;
+        $("liveCancel").onclick = () => closePanel();
+        $("liveGo").onclick = async () => {
+          closePanel();
+          const res = await window.vespera.start({ confirmLive: true });
+          if (res && res.ok === false) logNote(reasonText(res.reason));
+          renderSnap(await window.vespera.snapshot());
+        };
+      }
+    }
+
     if (kind === "stats") {
       title.textContent = t("stats");
       const snap = state.snapshot || {};
@@ -962,7 +1054,7 @@
         .map((n, i) => `<span class="plan-step${i + 1 === r.maxSteps && n ? " neg" : ""}">${i + 1}: ${n}</span>`)
         .join("");
       body.innerHTML = `
-        <p class="hint">${t(snap.mode === "auto" ? "statsHintLive" : "statsHintPaper")}</p>
+        <p class="hint">${t(snap.book === "live" ? "statsHintLive" : snap.book === "dry" ? "statsHintDry" : "statsHintPaper")}</p>
         ${row(t("series"), `${r.step}/${r.maxSteps} \u00b7 $${r.size}${Number(r.seriesLossUsd) > 0 ? ` \u00b7 ${t("statsSeriesLoss")} $${r.seriesLossUsd}` : ""}`)}
         ${row(t("today"), usd(Number(snap.todayPnl)), Number(snap.todayPnl) < 0 ? "neg" : Number(snap.todayPnl) > 0 ? "pos" : "")}
         ${snap.mode === "auto" ? "" : row(t("balance"), `$${snap.paper?.balance}`)}
@@ -1082,8 +1174,17 @@
     });
     $("btnRun").onclick = async () => {
       if (!window.vespera) return;
-      if (state.running) await window.vespera.stop();
-      else await window.vespera.start();
+      if (state.running) {
+        await window.vespera.stop();
+      } else {
+        const res = await window.vespera.start();
+        if (res && res.reason === "live_confirm_required") {
+          renderSnap(await window.vespera.snapshot());
+          openPanel("liveConfirm");
+          return;
+        }
+        if (res && res.reason === "daily_limit") logNote(t("dailyLimitHit"));
+      }
       renderSnap(await window.vespera.snapshot());
     };
     $("btnMin").onclick = () => window.vespera?.minimize();

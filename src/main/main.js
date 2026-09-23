@@ -89,7 +89,7 @@ app.on("window-all-closed", () => {
 
 ipcMain.handle("engine:snapshot", () => engine.snapshot());
 ipcMain.handle("engine:warmChart", () => engine.warmChart());
-ipcMain.handle("engine:start", () => engine.start());
+ipcMain.handle("engine:start", (_e, opts) => engine.start(opts || {}));
 ipcMain.handle("engine:stop", () => engine.stop());
 ipcMain.handle("engine:setMode", async (_e, mode) => {
   await engine.setMode(mode);

@@ -1023,3 +1023,30 @@ html[data-theme="glass-light"] .ghost {
 .stat-sep {
   height: 10px;
 }
+
+.lamp[data-status="paused"],
+.lamp[data-status="daily_limit"] {
+  background: #ff9f0a;
+  box-shadow: 0 0 0 3px rgba(255, 159, 10, 0.3);
+}
+.money-badge {
+  margin-left: 8px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #0a84ff;
+  background: rgba(10, 132, 255, 0.16);
+}
+.money-badge[data-book="live"] {
+  color: #fff;
+  background: #ff453a;
+}
+.chrome-center {
+  display: flex;
+  align-items: center;
+}
+button.ok.danger {
+  background: #ff453a;
+}

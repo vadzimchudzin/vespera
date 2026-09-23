@@ -102,7 +102,7 @@ class Journal {
     let halted = false;
     for (const e of this.entries) {
       // the engine starts a fresh series on these; a restart must too
-      if (e.type === "paper_reset" || e.type === "mode") {
+      if (e.type === "paper_reset" || e.type === "mode" || e.type === "dry_run") {
         step = 1;
         losses = 0;
         seriesLoss = 0;

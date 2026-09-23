@@ -7,7 +7,7 @@ const { INTERVAL_MS, SYMBOLS, TIMEFRAMES, HISTORY_BARS, clampRefreshMs, symbolLa
 const { createVenue } = require("./brokers");
 const { Journal } = require("./journal");
 const { SIZING_MODES } = require("./risk");
-const { computeStats } = require("./stats");
+const { computeStats, todayPnl } = require("./stats");
 const { Decimal } = require("./money");
 const { outcomeOf } = require("./paperBroker");
 const { SUPPORTED_TF, isSupportedSymbol, fitToPolymarket } = require("./brokers/polymarketMarkets");
@@ -20,7 +20,15 @@ const STATUSES = [
   "order_sent",
   "waiting_settlement",
   "halt",
+  "paused",
+  "daily_limit",
 ];
+
+// Auto watchdog: CLOB /time every minute; this many failures in a row pause Auto.
+const HEALTH_INTERVAL_MS = 60_000;
+const VENUE_FAILURE_LIMIT = 3;
+// Consecutive order rejections from the CLOB before Auto pauses.
+const REJECT_LIMIT = 2;
 
 /** Highest ask to enter at; 1 means no filter. */
 function maxEntryPriceOf(value) {
@@ -88,8 +96,11 @@ class Engine {
       source: "paper",
       pulsing: false,
     };
-    this.todayPnl = Decimal("0");
     this.lastHandledOpenTs = null;
+    this.pauseReason = null;
+    this.venueFailures = 0;
+    this.orderRejects = 0;
+    this._healthTimer = null;
     this.notificationsEnabled = this.settings.notificationsEnabled !== false;
     this.strategyId = this.settings.strategyId || DEFAULT_STRATEGY_ID;
     this.symbols = SYMBOLS.map((s) => ({ ...s, tickSize: fallbackTick(s.id) }));
@@ -231,6 +242,7 @@ class Engine {
       if (e.type === "settled") break;
       if (e.type === "order_sent" && e.side && e.sizeUsd) {
         this.liveBet = {
+          dryRun: Boolean(e.dryRun),
           clientOrderId: e.clientOrderId,
           side: e.side,
           sizeUsd: e.sizeUsd,
@@ -346,6 +358,31 @@ class Engine {
     if (patch.maxEntryPrice != null) {
       next.maxEntryPrice = maxEntryPriceOf(patch.maxEntryPrice);
     }
+    if (patch.dailyLossLimitUsd != null) {
+      next.dailyLossLimitUsd = Math.max(0, Number(patch.dailyLossLimitUsd) || 0);
+    }
+    if (patch.dryRun != null) {
+      const on = patch.dryRun !== false;
+      if (on !== this.isDryRun()) {
+        if (this.liveBet) {
+          this.emit("log", { level: "warn", message: "dry_run_blocked_open_bet" });
+          next.dryRun = this.isDryRun();
+        } else {
+          next.dryRun = on;
+          if (this.running && this.mode === "auto") {
+            // going live needs the start confirmation
+            this.running = false;
+            this._stopHealth();
+            this.status = "stopped";
+          }
+          // dry and live keep separate series
+          this.risk.reset();
+          this.journal.write({ type: "dry_run", on });
+        }
+      } else {
+        next.dryRun = on;
+      }
+    }
     if (patch.notificationsEnabled != null) {
       next.notificationsEnabled = Boolean(patch.notificationsEnabled);
       this.notificationsEnabled = next.notificationsEnabled;
@@ -421,14 +458,56 @@ class Engine {
     return this.snapshot();
   }
 
-  async start() {
+  /** Auto without dry run spends real money. */
+  isLiveMoney() {
+    return this.mode === "auto" && !this.isDryRun();
+  }
+
+  isDryRun() {
+    return this.settings.dryRun !== false;
+  }
+
+  _book() {
+    if (this.mode !== "auto") return "paper";
+    return this.isDryRun() ? "dry" : "live";
+  }
+
+  dailyLossLimit() {
+    return Math.max(0, Number(this.settings.dailyLossLimitUsd) || 0);
+  }
+
+  todayPnl() {
+    return todayPnl(this.journal.entries, this._book());
+  }
+
+  _dailyLimitHit() {
+    const limit = this.dailyLossLimit();
+    return limit > 0 && -this.todayPnl() >= limit - 1e-9;
+  }
+
+  /**
+   * @param {{ confirmLive?: boolean }} opts real-money Auto must be confirmed
+   *   explicitly on every start; the UI shows what is at stake first.
+   */
+  async start(opts = {}) {
     if (this.risk.halted || !this.risk.lotConfirmed) {
       this.running = false;
       this.status = "halt";
       this.emit("status", this.status);
-      return;
+      return { ok: false, reason: "halted" };
     }
-    if (this.running) return;
+    if (this.running) return { ok: true };
+    if (this._dailyLimitHit()) {
+      this.status = "daily_limit";
+      this.emit("status", this.status);
+      return { ok: false, reason: "daily_limit" };
+    }
+    if (this.isLiveMoney() && !opts.confirmLive) {
+      return { ok: false, reason: "live_confirm_required" };
+    }
+    this.pauseReason = null;
+    this.venueFailures = 0;
+    this.orderRejects = 0;
     this.running = true;
     this.status = "warming_up";
     this.emit("status", this.status);
@@ -443,11 +522,70 @@ class Engine {
     } else {
       this.status = this.openBet() ? "waiting_settlement" : "watching";
     }
-    this.journal.write({ type: "start", mode: this.mode });
+    this.journal.write({ type: "start", mode: this.mode, dryRun: this.mode === "auto" ? this.isDryRun() : undefined });
+    this.emit("status", this.status);
+    this._startHealth();
+    return { ok: true };
+  }
+
+  _startHealth() {
+    this._stopHealth();
+    if (this.mode !== "auto" || typeof this.live.health !== "function") return;
+    this._healthTimer = setInterval(() => {
+      this._healthTick().catch(() => {});
+    }, HEALTH_INTERVAL_MS);
+    if (typeof this._healthTimer.unref === "function") this._healthTimer.unref();
+  }
+
+  _stopHealth() {
+    if (this._healthTimer) clearInterval(this._healthTimer);
+    this._healthTimer = null;
+  }
+
+  async _healthTick() {
+    if (!this.running || this.mode !== "auto" || typeof this.live.health !== "function") return;
+    const res = await this.live.health();
+    if (res && res.ok) this._venueOk();
+    else this._venueFailed(`health: ${(res && res.reason) || "unreachable"}`);
+  }
+
+  _venueOk() {
+    this.venueFailures = 0;
+  }
+
+  _venueFailed(reason) {
+    this.venueFailures += 1;
+    this.journal.write({ type: "venue_failure", reason, count: this.venueFailures });
+    this.emit("log", { level: "warn", message: `venue_failure ${this.venueFailures}/${VENUE_FAILURE_LIMIT}: ${reason}` });
+    if (this.venueFailures >= VENUE_FAILURE_LIMIT) this.pause(`venue_down: ${reason}`);
+  }
+
+  /** Stop Auto and say why. Settlement of an open bet continues; Start resumes. */
+  pause(reason) {
+    if (!this.running) return;
+    this.running = false;
+    this._stopHealth();
+    this.pauseReason = reason;
+    this.status = "paused";
+    this.journal.write({ type: "auto_paused", reason });
+    this.emit("log", { level: "error", message: `auto_paused: ${reason}` });
+    this.notify("halt", "Auto paused", reason);
+    this.emit("status", this.status);
+  }
+
+  _hitDailyLimit() {
+    this.running = false;
+    this._stopHealth();
+    this.status = "daily_limit";
+    const pnl = this.todayPnl().toFixed(2);
+    this.journal.write({ type: "daily_limit", pnl, limit: this.dailyLossLimit() });
+    this.notify("halt", "Daily loss limit", `Today $${pnl}, limit $${this.dailyLossLimit()} \u2014 stopped until tomorrow`);
     this.emit("status", this.status);
   }
 
   stop() {
+    this._stopHealth();
+    this.pauseReason = null;
     this.running = false;
     this.status = this.openBet() ? "waiting_settlement" : "stopped";
     this.journal.write({ type: "stop" });
@@ -468,6 +606,12 @@ class Engine {
     }
     this.mode = mode;
     this.risk.reset();
+    if (this.running) {
+      // Switching books mid-run would start Auto without its confirmation.
+      this.running = false;
+      this._stopHealth();
+      this.status = "stopped";
+    }
     this.journal.write({ type: "mode", mode });
     if (mode === "auto") {
       const fit = fitToPolymarket(this.settings.symbol || "BTCUSDT", this.settings.timeframe || "15m");
@@ -510,7 +654,6 @@ class Engine {
     }
     const start = startingBalance || this.settings.paperBalance || "1000.00";
     this.paper.reset(start);
-    this.todayPnl = Decimal("0");
     this.risk.reset();
     this.risk.lotConfirmed = true;
     this.journal.write({ type: "paper_reset", balance: this.paper.balance.toFixed(2) });
@@ -719,7 +862,6 @@ class Engine {
       pnl: pnl.toFixed(2),
     };
     this.liveBet = null;
-    this.todayPnl = this.todayPnl.add(settled.pnl);
     if (won) this.risk.onWin();
     else this.risk.onLoss(-Number(settled.pnl));
     this.journal.write({ type: "settled", ...settled });
@@ -797,7 +939,6 @@ class Engine {
     if (!this.paper.openBet) return null;
     const settled = this.paper.settle(bar);
     if (!settled) return null;
-    this.todayPnl = this.todayPnl.add(settled.pnl);
     if (settled.status === "win") this.risk.onWin();
     else this.risk.onLoss(-Number(settled.pnl));
     this.journal.write({ type: "settled", ...settled });
@@ -834,6 +975,10 @@ class Engine {
     this._settleIfOpen(bar);
 
     if (!this.running) return;
+    if (this._dailyLimitHit()) {
+      this._hitDailyLimit();
+      return;
+    }
     if (this.risk.halted) {
       this.status = "halt";
       this.emit("status", this.status);
@@ -885,6 +1030,15 @@ class Engine {
     };
     // The stake depends on the entry price (recovery sizing), so price first.
     const quote = await this._quoteFor(ev.signal, round);
+    if (this.mode === "auto" && !quote) {
+      // No price means no order: say so and count it, never skip rounds silently.
+      this.journal.write({ type: "skip", reason: "venue_unavailable", signal: ev.signal, openTs: bar.openTs });
+      this.notify("halt", "Round skipped", `${ev.signal}: Polymarket quote unavailable`);
+      this.status = "watching";
+      this._venueFailed("no quote at signal");
+      return null;
+    }
+    if (this.mode === "auto") this._venueOk();
     const schedule = quote ? { rate: quote.feeRate, exponent: quote.feeExponent } : undefined;
     const maxPrice = maxEntryPriceOf(this.settings.maxEntryPrice);
     if (quote && maxPrice < 1 && Number(quote.price) > maxPrice) {
@@ -941,13 +1095,17 @@ class Engine {
       try {
         this.status = "order_sent";
         this.emit("status", this.status);
+        const dryRun = this.isDryRun();
         const order = await this.live.marketBuy({
           side: ev.signal,
           sizeUsd: size,
           clientOrderId,
           round,
+          dryRun,
         });
+        this.orderRejects = 0;
         this.liveBet = {
+          dryRun,
           clientOrderId,
           side: ev.signal,
           sizeUsd: order.sizeUsd || size,
@@ -964,19 +1122,21 @@ class Engine {
           status: "open",
         };
         this.markers.push(marker);
-        this.journal.write({ type: "order_sent", mode: "auto", ...order });
+        this.journal.write({ type: "order_sent", mode: "auto", dryRun, ...order });
         this.status = "waiting_settlement";
-        this.emit("order", { ...order, live: true });
+        this.emit("order", { ...order, live: !dryRun });
         this.notify(
           "order",
-          `Live ${ev.signal}`,
-          `$${size} · strike ${Number(bar.close).toFixed(2)}`
+          `${dryRun ? "Dry run" : "Live"} ${ev.signal}`,
+          `$${order.sizeUsd || size} @ ${order.price || "?"} · strike ${Number(bar.close).toFixed(2)}`
         );
         return order;
       } catch (err) {
-        this.journal.write({ type: "order_error", mode: "auto", message: String(err.message || err) });
+        const message = String(err.message || err);
+        this.journal.write({ type: "order_error", mode: "auto", code: err.code || null, message });
         this.status = "watching";
-        this.emit("log", { level: "error", message: `live_order_error: ${String(err.message || err)}` });
+        this.emit("log", { level: "error", message: `live_order_error: ${message}` });
+        this._onOrderError(err, message);
         return null;
       }
     }
@@ -1021,6 +1181,26 @@ class Engine {
     }
   }
 
+  /**
+   * Decide whether a failed live order should stop Auto. Anything that will
+   * fail the same way on the next signal pauses; transient issues are counted.
+   */
+  _onOrderError(err, message) {
+    const code = err && err.code;
+    const status = err && err.response ? Number(err.response.status) : null;
+    if (code === "insufficient_balance" || code === "below_min_size" || code === "auto_not_wired") {
+      this.pause(`${code}: ${message}`);
+      return;
+    }
+    if (code === "round_closed") return;
+    if (code === "clob_order_rejected" && status !== 0 && !(status >= 500)) {
+      this.orderRejects += 1;
+      if (this.orderRejects >= REJECT_LIMIT) this.pause(`orders_rejected: ${message}`);
+      return;
+    }
+    this._venueFailed(`order: ${message}`);
+  }
+
   _markResult(settled) {
     const marker = [...this.markers].reverse().find((m) => m.side === settled.side && !m.result);
     if (marker) marker.result = settled.status;
@@ -1063,6 +1243,8 @@ class Engine {
         sizingMode: this.risk.sizingMode,
         maxStakeUsd: this.risk.maxStakeUsd,
         maxEntryPrice: maxEntryPriceOf(this.settings.maxEntryPrice),
+        dryRun: this.isDryRun(),
+        dailyLossLimitUsd: this.dailyLossLimit(),
         theme: this.settings.theme || "glass-dark",
         locale: this.settings.locale || "en",
         strategyId: this.strategyId,
@@ -1094,7 +1276,9 @@ class Engine {
       lastPrice: lastClose,
       risk: this.risk.snapshot(this._planPrice(), this._planSchedule()),
       plan: this.risk.plan(this._planPrice(), this._planSchedule()),
-      stats: computeStats(this.journal.entries, { mode: this.mode, maxSteps: this.risk.maxSteps }),
+      stats: computeStats(this.journal.entries, { book: this._book(), maxSteps: this.risk.maxSteps }),
+      book: this._book(),
+      pauseReason: this.pauseReason,
       paper: this.paper.snapshot(),
       liveBalance: this.liveBalance,
       liveBet: this.liveBet,
@@ -1102,7 +1286,7 @@ class Engine {
       ping: this.pingResult,
       lastEval: this.lastEval,
       markers: this.markers.slice(-200),
-      todayPnl: this.todayPnl.toFixed(2),
+      todayPnl: this.todayPnl().toFixed(2),
       barsReady: this.market.bars.length,
       bars: this.market.bars.map((b) => ({
         time: Math.floor(b.openTs / 1000),
