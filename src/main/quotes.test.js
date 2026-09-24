@@ -339,9 +339,10 @@ async function payoutCase({ payout, side, settleClose, expectPnl, label }) {
     assert.strictEqual(top.quote.limitPrice, 0.99, "never above 1 − tick");
   }
 
-  // ── a killed FOK is placed once more on a fresh book, never twice ─────────
+  // ── FAK, and a zero-fill kill is placed once more on a fresh book ─────────
   {
     const posted = [];
+    const types = [];
     let replies = [];
     const venue = new PolymarketAdapter({
       apiKey: "k",
@@ -354,6 +355,7 @@ async function payoutCase({ payout, side, settleClose, expectPnl, label }) {
         async balanceAllowance() { return { ok: true, status: 200, json: { balance: "50000000" } }; },
         async postOrder(signed) {
           posted.push(signed.order);
+          types.push(signed.orderType);
           return replies.shift();
         },
       },
@@ -371,6 +373,8 @@ async function payoutCase({ payout, side, settleClose, expectPnl, label }) {
     assert.strictEqual(ok.fokRetried, true);
     assert.strictEqual(ok.limitPrice, 0.57, "retry gets double room: 0.53 + 0.04");
     assert.strictEqual(ok.filled, true);
+    assert.deepStrictEqual(types, ["FAK", "FAK"], "fill-and-kill: no FOK dust kills");
+    assert.strictEqual(ok.partial, false);
 
     posted.length = 0;
     quotes = 0;
@@ -380,6 +384,18 @@ async function payoutCase({ payout, side, settleClose, expectPnl, label }) {
       (err) => err.code === "clob_order_rejected" && /fully filled/.test(err.message)
     );
     assert.strictEqual(posted.length, 2, "one retry only");
+
+    // FAK's own zero-fill message is retried the same way
+    posted.length = 0;
+    quotes = 0;
+    replies = [
+      { ok: false, status: 400, json: { error: "no orders found to match with FAK order. FAK orders are partially filled or killed if no match is found." }, raw: "" },
+      { ok: true, status: 200, json: { success: true, status: "matched", orderID: "0x2", makingAmount: "6", takingAmount: "11.3207" } },
+    ];
+    const part = await venue.marketBuy({ side: "UP", sizeUsd: "10.00", round: { openTs: 1 } });
+    assert.strictEqual(posted.length, 2);
+    assert.strictEqual(part.partial, true, "a partial FAK fill is flagged");
+    assert.strictEqual(part.sizeUsd, "6.00", "and booked as filled");
 
     posted.length = 0;
     replies = [{ ok: false, status: 400, json: { error: "not enough balance / allowance" }, raw: "" }];

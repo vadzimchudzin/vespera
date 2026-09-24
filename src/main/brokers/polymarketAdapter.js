@@ -18,11 +18,16 @@ const { CRYPTO_TAKER_RATE, DEFAULT_EXPONENT, takerFee } = require("../fees");
 
 const DEFAULT_MIN_SHARES = 5;
 const DEFAULT_TICK = 0.01;
-// Worst price a FOK buy may pay above the book at quote time. The 15m books
-// move several cents a second at the open, so an exact limit gets killed.
-// Fills still happen at the resting asks; this only widens the ceiling.
+// Worst price a buy may pay above the book at quote time; fills still happen
+// at the resting asks, this only widens the ceiling.
 const DEFAULT_SLIPPAGE = 0.02;
-const FOK_KILLED = /couldn't be fully filled|fully filled or killed|no match|not enough liquidity/i;
+// Fill-and-kill, as Polymarket's own client defaults to. A FOK must spend the
+// USD amount to the micro-cent, which fails whenever the fill price does not
+// divide the stake evenly ($5 / 0.54 = 9.259259… shares) and the CLOB kills
+// the whole order. FAK fills what matches and drops the dust.
+const ORDER_TYPE = "FAK";
+// Zero-fill outcomes: nothing matched, so a retry cannot double the position.
+const NOTHING_FILLED = /couldn't be fully filled|fully filled or killed|no orders found to match|no match|not enough liquidity/i;
 
 function decimalsOf(tick) {
   const s = String(tick);
@@ -561,7 +566,7 @@ class PolymarketAdapter {
         balanceChecked: this.hasL2(),
       };
     }
-    const res = await this.client.postOrder(signed);
+    const res = await this.client.postOrder({ ...signed, orderType: ORDER_TYPE });
     if (!res.ok) {
       const detail = (res.json && res.json.errorMsg) || (res.json && res.json.error) || res.raw || "";
       if (res.status === 403 && /restricted in your region|geoblock/i.test(String(detail))) {
@@ -571,8 +576,7 @@ class PolymarketAdapter {
         err.response = res;
         throw err;
       }
-      // A killed FOK filled nothing, so one retry on a fresh book cannot double the position.
-      if (FOK_KILLED.test(String(detail)) && quote && !params.fokRetried) {
+      if (NOTHING_FILLED.test(String(detail)) && quote && !params.fokRetried) {
         return this.marketBuy({ ...params, fokRetried: true, slippage: 2 * this.slippage });
       }
       const err = new Error(`clob_order_rejected: ${res.status}${detail ? ` ${detail}` : ""}`);
@@ -596,6 +600,7 @@ class PolymarketAdapter {
       };
     }
     const booked = fill || quote;
+    const partial = Boolean(fill && quote && spent < Number(quote.sizeUsd) * 0.95);
     return {
       ok: true,
       accepted: true,
@@ -614,6 +619,8 @@ class PolymarketAdapter {
       feeUsd: booked ? booked.feeUsd : null,
       filled: Boolean(fill),
       fokRetried: Boolean(params.fokRetried),
+      partial,
+      orderType: ORDER_TYPE,
       slug: quote ? quote.slug : null,
       strike: params.round ? params.round.strike : null,
       roundOpenTs: params.round ? params.round.openTs : null,

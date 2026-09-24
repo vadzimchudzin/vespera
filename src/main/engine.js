@@ -1302,7 +1302,11 @@ class Engine {
           maxPrice,
         });
         this.orderRejects = 0;
-        if (order.fokRetried) this.emit("log", { level: "warn", message: "fok_retried: first order was not filled, placed again on a fresh book" });
+        if (order.fokRetried) this.emit("log", { level: "warn", message: "order_retried: first order was not filled, placed again on a fresh book" });
+        if (order.partial) {
+          this.journal.write({ type: "partial_fill", requested: size, filled: order.sizeUsd, shares: order.shares });
+          this.emit("log", { level: "warn", message: `partial_fill: $${order.sizeUsd} of $${size} filled, booked as filled` });
+        }
         this.liveBet = {
           dryRun,
           clientOrderId,

@@ -2,6 +2,11 @@
 
 All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 
+## 0.18.4 — 2026-09-24
+
+- **Orders are sent as FAK (fill-and-kill) instead of FOK.** A FOK buy has to spend the stake down to the last micro-cent. Whenever the fill price does not divide the stake evenly ($5 / 0.54 = 9.259259… shares), a sliver was left over and the CLOB killed the whole order with `couldn't be fully filled`, even with plenty of liquidity in the book. Polymarket's own client now defaults market orders to FAK. FAK fills what matches and drops the dust; the bet is booked at what actually filled.
+- A FAK that matches nothing is retried once on a fresh book, like a killed FOK before. A fill under 95% of the stake is written to the journal as `partial_fill` and shown in the log.
+
 ## 0.18.3 — 2026-09-24
 
 - **Live orders fill instead of `400 order couldn't be fully filled. FOK orders are fully filled or killed`.**

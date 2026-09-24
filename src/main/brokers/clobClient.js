@@ -419,7 +419,7 @@ class ClobClient {
         signature: signedOrder.signature,
       },
       owner: this.apiKey,
-      orderType: signedOrder.orderType || "FOK",
+      orderType: signedOrder.orderType || "FAK",
       deferExec: false,
     };
     const path = "/order";
