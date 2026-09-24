@@ -18,6 +18,11 @@ const { CRYPTO_TAKER_RATE, DEFAULT_EXPONENT, takerFee } = require("../fees");
 
 const DEFAULT_MIN_SHARES = 5;
 const DEFAULT_TICK = 0.01;
+// Worst price a FOK buy may pay above the book at quote time. The 15m books
+// move several cents a second at the open, so an exact limit gets killed.
+// Fills still happen at the resting asks; this only widens the ceiling.
+const DEFAULT_SLIPPAGE = 0.02;
+const FOK_KILLED = /couldn't be fully filled|fully filled or killed|no match|not enough liquidity/i;
 
 function decimalsOf(tick) {
   const s = String(tick);
@@ -94,6 +99,7 @@ class PolymarketAdapter {
     this.proxyUrl = options.proxyUrl || "";
     this.symbol = options.symbol || "BTCUSDT";
     this.timeframe = options.timeframe || "15m";
+    this.slippage = Number.isFinite(Number(options.slippage)) ? Number(options.slippage) : DEFAULT_SLIPPAGE;
     this.client = options.client || new ClobClient(options);
     this._markets = [];
     this._syncClientIdentity();
@@ -109,6 +115,7 @@ class PolymarketAdapter {
     if (patch.proxyUrl != null) this.proxyUrl = patch.proxyUrl;
     if (patch.symbol != null) this.symbol = patch.symbol;
     if (patch.timeframe != null) this.timeframe = patch.timeframe;
+    if (patch.slippage != null && Number.isFinite(Number(patch.slippage))) this.slippage = Number(patch.slippage);
     if (typeof this.client.configure === "function") this.client.configure(patch);
     this._syncClientIdentity();
     return this;
@@ -338,18 +345,18 @@ class PolymarketAdapter {
     let asks = [];
     try {
       const [priceRes, midRes, bookRes] = await Promise.all([
-        this.client.price(tokenId, "buy"),
+        this.client.price(tokenId, "sell"), // "sell" = best ask, see ClobClient.price
         this.client.midpoint(tokenId),
         this.client.getOrderBook(tokenId),
       ]);
-      ask = toPrice(priceRes && priceRes.json && priceRes.json.price);
       mid = toPrice(midRes && midRes.json && midRes.json.mid);
       const book = (bookRes && bookRes.json) || {};
       if (Number(book.min_order_size) > 0) minOrderSize = Number(book.min_order_size);
       if (Number(book.tick_size) > 0) tickSize = Number(book.tick_size);
       negRisk = Boolean(book.neg_risk);
       asks = Array.isArray(book.asks) ? book.asks : [];
-      if (ask == null) ask = bestAsk(book.asks);
+      ask = bestAsk(book.asks);
+      if (ask == null) ask = toPrice(priceRes && priceRes.json && priceRes.json.price);
     } catch (err) {
       return { ok: false, reason: String(err.message || err), slug: resolved.slug, side: wanted };
     }
@@ -540,7 +547,7 @@ class PolymarketAdapter {
         side: quote ? quote.side : side === 1 ? "DOWN" : "UP",
         sizeUsd: quote ? quote.sizeUsd : null,
         price: quote ? quote.price : null,
-        limitPrice: quote ? quote.price : null,
+        limitPrice: quote ? quote.limitPrice : null,
         shares: quote ? quote.shares : null,
         payout: quote ? quote.payout : null,
         feeUsd: quote ? quote.feeUsd : null,
@@ -563,6 +570,10 @@ class PolymarketAdapter {
         err.code = "geoblocked";
         err.response = res;
         throw err;
+      }
+      // A killed FOK filled nothing, so one retry on a fresh book cannot double the position.
+      if (FOK_KILLED.test(String(detail)) && quote && !params.fokRetried) {
+        return this.marketBuy({ ...params, fokRetried: true, slippage: 2 * this.slippage });
       }
       const err = new Error(`clob_order_rejected: ${res.status}${detail ? ` ${detail}` : ""}`);
       err.code = "clob_order_rejected";
@@ -597,11 +608,12 @@ class PolymarketAdapter {
       side: quote ? quote.side : side === 1 ? "DOWN" : "UP",
       sizeUsd: booked ? booked.sizeUsd : null,
       price: booked ? booked.price : null,
-      limitPrice: quote ? quote.price : null,
+      limitPrice: quote ? quote.limitPrice : null,
       shares: booked ? booked.shares : null,
       payout: booked ? booked.payout : null,
       feeUsd: booked ? booked.feeUsd : null,
       filled: Boolean(fill),
+      fokRetried: Boolean(params.fokRetried),
       slug: quote ? quote.slug : null,
       strike: params.round ? params.round.strike : null,
       roundOpenTs: params.round ? params.round.openTs : null,
@@ -616,7 +628,7 @@ class PolymarketAdapter {
    * Turn an engine signal into a priced, size-checked CLOB order.
    * Amounts are USDC micro-units (6 decimals).
    */
-  async _sizeFromSignal({ side = "UP", sizeUsd, round } = {}) {
+  async _sizeFromSignal({ side = "UP", sizeUsd, round, slippage, maxPrice } = {}) {
     const quote = await this.getQuote({
       side,
       tsMs: round && round.openTs ? round.openTs : Date.now(),
@@ -642,7 +654,11 @@ class PolymarketAdapter {
     const tick = Number(quote.tickSize) > 0 ? Number(quote.tickSize) : DEFAULT_TICK;
     const priceDp = decimalsOf(tick);
     const swept = sweepPrice(quote.asks, usd);
-    const limit = Math.min(1 - tick, Math.max(quote.price, swept || 0));
+    const slip = Number.isFinite(Number(slippage)) ? Number(slippage) : this.slippage;
+    // the user's max entry price caps the slippage too
+    const ceiling = Math.min(1 - tick, Number(maxPrice) > 0 && Number(maxPrice) < 1 ? Number(maxPrice) : 1);
+    const expected = Math.max(quote.price, swept || 0);
+    const limit = Math.min(ceiling, expected + Math.max(0, slip));
     const price = Number((Math.ceil(limit / tick - 1e-9) * tick).toFixed(priceDp));
     const makerMicro = Math.floor(usd * 100 + 1e-9) * 10_000;
     const takerMicro = Math.floor(makerMicro / price / 100 + 1e-9) * 100;
@@ -656,8 +672,12 @@ class PolymarketAdapter {
       err.minSizeUsd = minUsd;
       throw err;
     }
+    // Sign at the ceiling, book at the expected fill: the CLOB fills at the resting asks.
+    const fillPrice = Number(Math.min(price, expected).toFixed(priceDp));
+    const usdOut = makerMicro / 1e6;
+    const expectedShares = Number((usdOut / fillPrice).toFixed(4));
     const schedule = { rate: quote.feeRate, exponent: quote.feeExponent };
-    const feeUsd = takerFee(shares, price, schedule);
+    const feeUsd = takerFee(expectedShares, fillPrice, schedule);
     return {
       tokenId: quote.tokenId,
       makerAmount: String(makerMicro),
@@ -666,10 +686,12 @@ class PolymarketAdapter {
       quote: {
         ...quote,
         asks: undefined,
-        price,
-        payout: shares / (makerMicro / 1e6),
-        sizeUsd: (makerMicro / 1e6).toFixed(2),
-        shares,
+        price: fillPrice,
+        limitPrice: price,
+        minShares: shares,
+        payout: expectedShares / usdOut,
+        sizeUsd: usdOut.toFixed(2),
+        shares: expectedShares,
         feeUsd: feeUsd.toFixed(5),
       },
     };

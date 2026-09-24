@@ -360,8 +360,9 @@ class ClobClient {
   }
 
   /**
-   * Best executable price for one side of the book.
-   * side="buy" returns what a taker pays to buy the token.
+   * Best price on one side of the book. Polymarket names the side of the
+   * resting orders: side="buy" is the best bid, side="sell" the best ask,
+   * i.e. what a taker pays to buy.
    */
   async price(tokenId, side = "buy") {
     const s = side === "sell" ? "sell" : "buy";

@@ -1299,8 +1299,10 @@ class Engine {
           clientOrderId,
           round,
           dryRun,
+          maxPrice,
         });
         this.orderRejects = 0;
+        if (order.fokRetried) this.emit("log", { level: "warn", message: "fok_retried: first order was not filled, placed again on a fresh book" });
         this.liveBet = {
           dryRun,
           clientOrderId,

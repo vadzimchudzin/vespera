@@ -2,6 +2,14 @@
 
 All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 
+## 0.18.3 — 2026-09-24
+
+- **Live orders fill instead of `400 order couldn't be fully filled. FOK orders are fully filled or killed`.**
+  - **The entry price was the bid.** Polymarket's `/price?side=buy` returns the best *bid*, one tick under what a buyer pays. Quotes now take the best ask from the order book (`/price?side=sell` as a fallback). Sizing, the max entry price filter and Paper use the real ask.
+  - **The limit had no room.** The order was signed at exactly the quoted price, and the 15m books move several cents a second at the open, so by the time it arrived the price was gone. The limit is now 2 cents above the book (never above your *Max entry price* or 0.99). The order still fills at the resting asks, so this costs nothing when the book holds still.
+  - **One retry.** If a FOK is still killed, Vespera re-reads the book and places it once more with 4 cents of room. A killed FOK fills nothing, so this can't double a position. Other rejections are not retried.
+- Dry run and the journal book the expected fill price, not the ceiling the order is signed at.
+
 ## 0.18.2 — 2026-09-24
 
 - **SOCKS proxies no longer fail with `Socks5 proxy rejected connection - ConnectionRefused`.** With `socks5://` the address was resolved on the PC and the proxy got a bare IP. Polymarket sits behind Cloudflare, which also publishes IPv6 addresses; when the PC picked IPv6 (or a local resolver returned a wrong address), a proxy without IPv6 refused every call. Vespera now hands the proxy the host name (`socks5://` works as `socks5h://`, `socks4://` as `socks4a://`), and if the proxy refuses that, retries once over local IPv4 and remembers whichever route works. The retry happens during the SOCKS handshake, before any request bytes leave, so an order can never be sent twice.

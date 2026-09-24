@@ -175,6 +175,7 @@ async function payoutCase({ payout, side, settleClose, expectPnl, label }) {
     apiPassphrase: "p",
     walletAddress: "0xabc",
     privateKey: "0x01",
+    slippage: 0, // exact-limit precision checks; slippage has its own cases below
     client: {},
   });
   adapter.getQuote = async () => quote;
@@ -230,6 +231,7 @@ async function payoutCase({ payout, side, settleClose, expectPnl, label }) {
       apiPassphrase: "p",
       walletAddress: "0x1111111111111111111111111111111111111111",
       privateKey: "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
+      slippage: 0,
       client: {
         configure() {},
         async balanceAllowance() {
@@ -295,6 +297,95 @@ async function payoutCase({ payout, side, settleClose, expectPnl, label }) {
     { symbol: "ADAUSDT", timeframe: "15m", tsMs: Date.now() }
   );
   assert.strictEqual(noRound.reason, "symbol_unsupported");
+
+  // ── entry price is the ask, not the bid ────────────────────────────────────
+  // Polymarket's /price names the resting side: side=buy is the best bid.
+  {
+    const sides = [];
+    const venue = new PolymarketAdapter({
+      client: {
+        configure() {},
+        async price(_t, side) {
+          sides.push(side);
+          return { ok: true, json: { price: side === "sell" ? "0.80" : "0.79" } };
+        },
+        async midpoint() { return { ok: true, json: { mid: "0.795" } }; },
+        async getOrderBook() {
+          return { ok: true, json: { asks: [{ price: "0.82", size: "50" }, { price: "0.80", size: "100" }], bids: [{ price: "0.79", size: "100" }], tick_size: "0.01", min_order_size: "5" } };
+        },
+        async clobMarketInfo() { return { ok: true, json: { fd: { r: 0.07, e: 1 } } }; },
+      },
+    });
+    venue.resolveRound = async () => ({ ok: true, slug: "s", round: { tokens: { UP: "1", DOWN: "2" }, conditionId: "0x1", acceptingOrders: true } });
+    const q = await venue.getQuote({ side: "UP" });
+    assert.deepStrictEqual(sides, ["sell"], "asks for the ask side");
+    assert.strictEqual(q.price, 0.8, "best ask from the book, not the 0.79 bid");
+  }
+
+  // ── FOK slippage: sign above the book, book at the expected fill ───────────
+  {
+    const venue = new PolymarketAdapter({ client: {} });
+    venue.getQuote = async () => ({ ...quote, price: 0.5, tickSize: 0.01, feeRate: 0.07, asks: [] });
+    const s = await venue._sizeFromSignal({ side: "UP", sizeUsd: "10.00", round: { openTs: 1 } });
+    assert.strictEqual(s.quote.limitPrice, 0.52, "default 2 cents of room");
+    assert.strictEqual(s.takerAmount, "19230700", "minimum shares at the ceiling");
+    assert.strictEqual(s.quote.price, 0.5, "booked at the ask it will fill at");
+    assert.strictEqual(s.quote.shares, 20);
+    assert.strictEqual(s.quote.feeUsd, "0.35000");
+    const capped = await venue._sizeFromSignal({ side: "UP", sizeUsd: "10.00", round: { openTs: 1 }, maxPrice: 0.51 });
+    assert.strictEqual(capped.quote.limitPrice, 0.51, "max entry price caps the slippage");
+    venue.getQuote = async () => ({ ...quote, price: 0.98, tickSize: 0.01, feeRate: 0.07, asks: [] });
+    const top = await venue._sizeFromSignal({ side: "UP", sizeUsd: "10.00", round: { openTs: 1 } });
+    assert.strictEqual(top.quote.limitPrice, 0.99, "never above 1 − tick");
+  }
+
+  // ── a killed FOK is placed once more on a fresh book, never twice ─────────
+  {
+    const posted = [];
+    let replies = [];
+    const venue = new PolymarketAdapter({
+      apiKey: "k",
+      apiSecret: Buffer.from("s").toString("base64"),
+      apiPassphrase: "p",
+      walletAddress: "0x1111111111111111111111111111111111111111",
+      privateKey: "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
+      client: {
+        configure() {},
+        async balanceAllowance() { return { ok: true, status: 200, json: { balance: "50000000" } }; },
+        async postOrder(signed) {
+          posted.push(signed.order);
+          return replies.shift();
+        },
+      },
+    });
+    let quotes = 0;
+    venue.getQuote = async () => {
+      quotes += 1;
+      return { ...quote, price: quotes === 1 ? 0.5 : 0.53, tickSize: 0.01, feeRate: 0.07, asks: [] };
+    };
+    const killed = { ok: false, status: 400, json: { error: "order couldn't be fully filled. FOK orders are fully filled or killed." }, raw: "" };
+    replies = [killed, { ok: true, status: 200, json: { success: true, status: "matched", orderID: "0x1", makingAmount: "10", takingAmount: "18.867924" } }];
+    const ok = await venue.marketBuy({ side: "UP", sizeUsd: "10.00", round: { openTs: 1 } });
+    assert.strictEqual(posted.length, 2);
+    assert.strictEqual(quotes, 2, "the retry re-reads the book");
+    assert.strictEqual(ok.fokRetried, true);
+    assert.strictEqual(ok.limitPrice, 0.57, "retry gets double room: 0.53 + 0.04");
+    assert.strictEqual(ok.filled, true);
+
+    posted.length = 0;
+    quotes = 0;
+    replies = [killed, killed];
+    await assert.rejects(
+      () => venue.marketBuy({ side: "UP", sizeUsd: "10.00", round: { openTs: 1 } }),
+      (err) => err.code === "clob_order_rejected" && /fully filled/.test(err.message)
+    );
+    assert.strictEqual(posted.length, 2, "one retry only");
+
+    posted.length = 0;
+    replies = [{ ok: false, status: 400, json: { error: "not enough balance / allowance" }, raw: "" }];
+    await assert.rejects(() => venue.marketBuy({ side: "UP", sizeUsd: "10.00", round: { openTs: 1 } }));
+    assert.strictEqual(posted.length, 1, "other rejections are not retried");
+  }
 
   // ── L1 auth, key derivation and proxy signing ──────────────────────────────
 
