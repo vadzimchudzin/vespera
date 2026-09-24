@@ -515,6 +515,14 @@ class Engine {
       return { ok: false, reason: "daily_limit" };
     }
     if (this.isLiveMoney() && typeof this.live.region === "function") {
+      // a broken proxy fails every order the same way; refuse instead of failing on the first signal
+      if (typeof this.live.health === "function") {
+        const h = await this.live.health();
+        if (h && !h.ok && /^proxy_/.test(String(h.code || ""))) {
+          this.journal.write({ type: "start_refused", reason: h.code, detail: h.reason || null });
+          return { ok: false, reason: h.code, detail: h.reason || null };
+        }
+      }
       // an unknown answer does not block: the order error still pauses Auto
       const geo = await this.live.region();
       if (geo && geo.ok && geo.blocked) {
@@ -729,7 +737,7 @@ class Engine {
     const netOk = add(
       health.ok
         ? { id: "network", status: "ok", latencyMs: health.latencyMs }
-        : { id: "network", status: "fail", reason: health.reason, blocked: /^geoblocked/.test(String(health.reason)) }
+        : { id: "network", status: "fail", reason: health.reason, code: health.code || null, blocked: /^geoblocked/.test(String(health.reason)) }
     );
 
     // 1b. region: reads work from a blocked IP, only orders are refused, so ask explicitly
@@ -1379,6 +1387,11 @@ class Engine {
     const status = err && err.response ? Number(err.response.status) : null;
     if (code === "insufficient_balance" || code === "below_min_size" || code === "auto_not_wired" || code === "geoblocked") {
       this.pause(`${code}: ${message}`);
+      return;
+    }
+    // wrong proxy address, login or scheme: the next order fails identically
+    if (err && /^proxy_(auth|invalid|host)$/.test(String(err.networkCode || ""))) {
+      this.pause(`${err.networkCode}: ${message}`);
       return;
     }
     if (code === "round_closed") return;

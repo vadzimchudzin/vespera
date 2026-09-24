@@ -2,6 +2,14 @@
 
 All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 
+## 0.18.2 — 2026-09-24
+
+- **SOCKS proxies no longer fail with `Socks5 proxy rejected connection - ConnectionRefused`.** With `socks5://` the address was resolved on the PC and the proxy got a bare IP. Polymarket sits behind Cloudflare, which also publishes IPv6 addresses; when the PC picked IPv6 (or a local resolver returned a wrong address), a proxy without IPv6 refused every call. Vespera now hands the proxy the host name (`socks5://` works as `socks5h://`, `socks4://` as `socks4a://`), and if the proxy refuses that, retries once over local IPv4 and remembers whichever route works. The retry happens during the SOCKS handshake, before any request bytes leave, so an order can never be sent twice.
+- **Connect names the proxy fault** instead of showing a raw socket error: wrong login, nothing listening at the address, proxy timeout, wrong scheme, or a proxy that works but cannot reach Polymarket (tried both routes).
+- **Real-money Start is refused while the proxy is broken**, with the reason in the log. A wrong proxy login during Auto pauses at once instead of burning three signals.
+- CLOB request signatures use Polymarket's clock (from `/time`) so a PC clock that drifts does not get orders refused.
+- A dropped read (`ECONNRESET`, `socket hang up`) is retried once; order posts are never retried after the connection opens.
+
 ## 0.18.1 — 2026-09-23
 
 - **Connect now checks whether Polymarket accepts orders from your region.** From a blocked country (Belarus, US, …) the CLOB still answers the time, prices, balances and key derivation, so every check was green, yet every order came back `403 Trading restricted in your region`. Connect has a new *Trading region* row that asks Polymarket's geoblock endpoint (through the proxy when one is set) and is red when orders would be refused.

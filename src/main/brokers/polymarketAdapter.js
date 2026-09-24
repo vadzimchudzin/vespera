@@ -451,6 +451,7 @@ class PolymarketAdapter {
       const blocked = Boolean(geo && geo.ok && geo.blocked);
       return {
         ok: false,
+        code: blocked ? "geoblocked" : (res && res.errorCode) || null,
         reason: blocked ? `geoblocked${geo.country ? ` ${geo.country}` : ""}` : (res && (res.networkError || `http_${res.status}`)) || "unreachable",
       };
     } catch (err) {
@@ -565,6 +566,7 @@ class PolymarketAdapter {
       }
       const err = new Error(`clob_order_rejected: ${res.status}${detail ? ` ${detail}` : ""}`);
       err.code = "clob_order_rejected";
+      err.networkCode = res.errorCode || null;
       err.response = res;
       throw err;
     }

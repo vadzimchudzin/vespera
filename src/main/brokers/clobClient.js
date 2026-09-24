@@ -1,6 +1,7 @@
 "use strict";
 
 const https = require("https");
+const dns = require("dns");
 const crypto = require("crypto");
 const { URL } = require("url");
 
@@ -8,8 +9,18 @@ const { URL } = require("url");
  * Optional outbound proxy. Polymarket geoblocks a list of jurisdictions
  * (Belarus among them) and answers from a blocked IP with a Cloudflare
  * rejection, so the app can route its calls through a proxy instead.
+ *
+ * SOCKS goes out over two routes. The primary one hands the proxy the host
+ * name (socks5h / socks4a), so the proxy resolves it. Resolving locally, as
+ * plain socks5:// does, can hand the proxy an IPv6 address it cannot reach
+ * (Polymarket sits behind Cloudflare, which publishes AAAA records) or an
+ * address poisoned by a local resolver; the proxy then answers
+ * "ConnectionRefused" / "HostUnreachable". The fallback route resolves
+ * locally but IPv4 only, for proxies that refuse host names.
  */
 let proxyAgent = null;
+let proxyFallback = null;
+let proxyRoute = "remote";
 let proxyUrl = "";
 let proxyError = null;
 
@@ -23,11 +34,17 @@ function normalizeProxyUrl(raw) {
   return /^[a-z][a-z0-9+.-]*:\/\//i.test(s) ? s : `http://${s}`;
 }
 
+function withScheme(url, scheme) {
+  return url.replace(/^[a-z][a-z0-9+.-]*:/i, `${scheme}:`);
+}
+
 function setProxy(url) {
   const next = normalizeProxyUrl(url);
   if (next === proxyUrl) return proxyAgent;
   proxyUrl = next;
   proxyAgent = null;
+  proxyFallback = null;
+  proxyRoute = "remote";
   proxyError = null;
   if (!next) return null;
   try {
@@ -35,7 +52,9 @@ function setProxy(url) {
     if (/^socks(4a?|5h?)?$/.test(scheme)) {
       // eslint-disable-next-line global-require
       const { SocksProxyAgent } = require("socks-proxy-agent");
-      proxyAgent = new SocksProxyAgent(next);
+      const v4 = scheme.startsWith("socks4");
+      proxyAgent = new SocksProxyAgent(withScheme(next, v4 ? "socks4a" : "socks5h"));
+      proxyFallback = new SocksProxyAgent(withScheme(next, v4 ? "socks4" : "socks5"));
     } else if (scheme === "http" || scheme === "https") {
       // eslint-disable-next-line global-require
       const { HttpsProxyAgent } = require("https-proxy-agent");
@@ -45,13 +64,48 @@ function setProxy(url) {
     }
   } catch (err) {
     proxyAgent = null;
+    proxyFallback = null;
     proxyError = String((err && err.message) || err);
   }
   return proxyAgent;
 }
 
 function currentProxy() {
-  return { url: proxyUrl.replace(/\/\/[^@/]*@/, "//***@"), active: Boolean(proxyAgent), error: proxyError };
+  return {
+    url: proxyUrl.replace(/\/\/[^@/]*@/, "//***@"),
+    active: Boolean(proxyAgent),
+    route: proxyFallback ? proxyRoute : null,
+    error: proxyError,
+  };
+}
+
+function ipv4Lookup(host, _opts, cb) {
+  dns.lookup(host, { family: 4 }, cb);
+}
+
+/**
+ * The proxy answered but would not open the connection to the target. Raised
+ * during the SOCKS handshake, before a byte of the HTTP request is written,
+ * so retrying over the other route cannot duplicate an order.
+ */
+function isSocksTargetError(msg) {
+  return /Socks[45] proxy rejected connection/i.test(String(msg || ""));
+}
+
+/** Maps a raw network failure to a code the UI can explain and fix. */
+function describeNetworkError(msg, { proxied = Boolean(proxyUrl) } = {}) {
+  const s = String(msg || "");
+  if (!s) return null;
+  if (/^proxy_unavailable/.test(s)) return "proxy_invalid";
+  if (isSocksTargetError(s)) return "proxy_target_refused";
+  if (/Socks5 Authentication failed|no accepted authentication type|RejectedIdent|\b407\b/i.test(s)) return "proxy_auth";
+  if (/Proxy connection timed out/i.test(s)) return "proxy_timeout";
+  if (proxied && /ECONNREFUSED|EHOSTUNREACH|ENETUNREACH/.test(s)) return "proxy_down";
+  if (proxied && /ENOTFOUND|EAI_AGAIN/.test(s)) return "proxy_host";
+  if (proxied && /socket hang up|ECONNRESET|Socket closed/i.test(s)) return "proxy_dropped";
+  if (/timeout|ETIMEDOUT/i.test(s)) return "timeout";
+  if (/ENOTFOUND|EAI_AGAIN/.test(s)) return "dns";
+  return "network";
 }
 
 const APP_VERSION = (() => {
@@ -65,23 +119,17 @@ const APP_VERSION = (() => {
 const DEFAULT_CLOB = "https://clob.polymarket.com";
 const DEFAULT_GAMMA = "https://gamma-api.polymarket.com";
 
-function requestJson(url, { method = "GET", headers = {}, body, timeoutMs = 15000 } = {}) {
+// Local clock minus CLOB clock, from the last /time; keeps L2 timestamps valid on a drifting PC.
+let clockSkewMs = 0;
+
+function serverNowMs() {
+  return Date.now() - clockSkewMs;
+}
+
+function sendOnce(url, { method, headers, payload, timeoutMs, agent, lookup }) {
   return new Promise((resolve) => {
     const started = Date.now();
-    // A configured but unusable proxy must not silently fall back to a direct call.
-    if (proxyUrl && !proxyAgent) {
-      resolve({
-        ok: false,
-        status: 0,
-        latencyMs: 0,
-        json: null,
-        raw: `proxy_unavailable: ${proxyError || "agent not loaded"}`,
-        networkError: `proxy_unavailable: ${proxyError || "agent not loaded"}`,
-      });
-      return;
-    }
     const u = new URL(url);
-    const payload = body == null ? null : Buffer.from(JSON.stringify(body));
     const req = https.request(
       {
         protocol: u.protocol,
@@ -96,7 +144,8 @@ function requestJson(url, { method = "GET", headers = {}, body, timeoutMs = 1500
           ...headers,
         },
         timeout: timeoutMs,
-        ...(proxyAgent ? { agent: proxyAgent } : {}),
+        ...(agent ? { agent } : {}),
+        ...(lookup ? { lookup } : {}),
       },
       (res) => {
         const chunks = [];
@@ -130,8 +179,7 @@ function requestJson(url, { method = "GET", headers = {}, body, timeoutMs = 1500
       });
     };
     req.on("timeout", () => {
-      req.destroy();
-      fail("timeout");
+      req.destroy(new Error("timeout"));
     });
     req.on("error", (err) => fail(String((err && err.message) || err)));
     if (payload) req.write(payload);
@@ -139,8 +187,39 @@ function requestJson(url, { method = "GET", headers = {}, body, timeoutMs = 1500
   });
 }
 
+async function requestJson(url, { method = "GET", headers = {}, body, timeoutMs = 15000 } = {}) {
+  // A configured but unusable proxy must not silently fall back to a direct call.
+  if (proxyUrl && !proxyAgent) {
+    const reason = `proxy_unavailable: ${proxyError || "agent not loaded"}`;
+    return { ok: false, status: 0, latencyMs: 0, json: null, raw: reason, networkError: reason, errorCode: "proxy_invalid" };
+  }
+  const payload = body == null ? null : Buffer.from(JSON.stringify(body));
+  const base = { method, headers, payload, timeoutMs };
+  const routes = { remote: { agent: proxyAgent }, ipv4: { agent: proxyFallback, lookup: ipv4Lookup } };
+  const first = proxyFallback ? proxyRoute : "remote";
+  let res = await sendOnce(url, { ...base, ...routes[first] });
+
+  if (res.networkError && proxyFallback && isSocksTargetError(res.networkError)) {
+    const other = first === "remote" ? "ipv4" : "remote";
+    const alt = await sendOnce(url, { ...base, ...routes[other] });
+    if (!isSocksTargetError(alt.networkError)) {
+      proxyRoute = other; // the proxy opened this route: stick to it so each order pays one handshake
+      res = alt;
+    } else {
+      const both = `${res.networkError}; ${other}: ${alt.networkError}`;
+      res = { ...alt, raw: both, networkError: both };
+    }
+  } else if (res.networkError && method === "GET" && /socket hang up|ECONNRESET|Socket closed/i.test(res.networkError)) {
+    // one retry for a dropped read; never for POST, which may already have reached the CLOB
+    const again = await sendOnce(url, { ...base, ...routes[first] });
+    if (!again.networkError) return again;
+  }
+  if (res.networkError) res.errorCode = describeNetworkError(res.networkError);
+  return res;
+}
+
 function l2Headers({ address, apiKey, secret, passphrase, method, path, body }) {
-  const timestamp = String(Math.floor(Date.now() / 1000));
+  const timestamp = String(Math.floor(serverNowMs() / 1000));
   const payload = body == null ? "" : typeof body === "string" ? body : JSON.stringify(body);
   const message = `${timestamp}${String(method || "GET").toUpperCase()}${path}${payload}`;
   let key;
@@ -229,7 +308,14 @@ class ClobClient {
   }
 
   async time() {
-    return this.request(`${this.clobUrl}/time`);
+    const sent = Date.now();
+    const res = await this.request(`${this.clobUrl}/time`);
+    const serverSec = res && res.ok ? Number(res.json != null ? res.json : res.raw) : NaN;
+    if (Number.isFinite(serverSec) && serverSec > 1e9) {
+      const mid = (sent + Date.now()) / 2;
+      clockSkewMs = mid - serverSec * 1000;
+    }
+    return res;
   }
 
   /**
@@ -415,6 +501,9 @@ module.exports = {
   setProxy,
   normalizeProxyUrl,
   currentProxy,
+  describeNetworkError,
+  isSocksTargetError,
+  serverNowMs,
   requestJson,
   l2Headers,
   _parseList,

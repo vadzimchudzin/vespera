@@ -115,6 +115,24 @@ const bar = (openTs) => ({ openTs, closeTs: openTs + 899_999, open: 100, high: 1
     assert.ok(unknown.pauseReason.startsWith("geoblocked"));
   }
 
+  // ── broken proxy: live Start refused with the reason, bad login pauses ────
+  {
+    let health = { ok: false, code: "proxy_target_refused", reason: "Socks5 proxy rejected connection - ConnectionRefused" };
+    const live = stubLive({
+      async health() { return health; },
+      async region() { return { ok: true, blocked: false, country: "LT" }; },
+    });
+    const e = new Engine({ userDataDir: dir(), settings: { mode: "auto", dryRun: false }, live, market: fakeMarket() });
+    const refused = await e.start({ confirmLive: true });
+    assert.deepStrictEqual([refused.ok, refused.reason], [false, "proxy_target_refused"]);
+    assert.ok(/ConnectionRefused/.test(refused.detail));
+    health = { ok: false, code: "timeout", reason: "timeout" };
+    assert.strictEqual((await e.start({ confirmLive: true })).ok, true, "a transient failure does not block Start");
+    e._onOrderError({ code: "clob_order_rejected", networkCode: "proxy_auth", response: { status: 0 } }, "Socks5 Authentication failed");
+    assert.strictEqual(e.status, "paused", "a proxy login failure pauses at once");
+    assert.ok(e.pauseReason.startsWith("proxy_auth"));
+  }
+
   // ── adapter: 403 region refusal becomes a geoblocked error ────────────────
   {
     const venue = new PolymarketAdapter({

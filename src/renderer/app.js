@@ -625,7 +625,10 @@
         const x = {
           network: {
             ok: () => [t("chkNetworkOk"), c.latencyMs ? `${c.latencyMs} ms` : ""],
-            fail: () => [c.blocked ? t("chkNetworkBlocked") : t("chkNetworkFail"), c.blocked ? t("chkNetworkBlockedFix") : reasonOf(c)],
+            fail: () => [
+              c.blocked ? t("chkNetworkBlocked") : t("chkNetworkFail"),
+              c.blocked ? t("chkNetworkBlockedFix") : c.code && /^proxy_/.test(c.code) ? `${esc(reasonText(c.code))}<br>${reasonOf(c)}` : reasonOf(c),
+            ],
           },
           region: {
             ok: () => [t("chkRegionOk"), where(c)],
@@ -1496,7 +1499,7 @@
             return;
           }
           if (res && res.ok === false) {
-            logNote(res.reason === "daily_limit" ? t("dailyLimitHit") : `${reasonText(res.reason)}${res.country ? ` (${res.country})` : ""}`);
+            logNote(res.reason === "daily_limit" ? t("dailyLimitHit") : `${reasonText(res.reason)}${res.country ? ` (${res.country})` : ""}${res.detail ? ` \u00b7 ${res.detail}` : ""}`);
           }
         }
       } catch (err) {
