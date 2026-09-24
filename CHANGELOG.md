@@ -2,6 +2,10 @@
 
 All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 
+## 0.18.5 — 2026-09-24
+
+- **Test bet.** API panel → *Test bet UP / DOWN* opens one minimum bet (5 shares at the order ceiling, about $3 at even odds) on the current round right now, after a confirmation that names the side, amount and price. It checks the whole live path (proxy, region, keys, balance, fill) without waiting up to an hour for a signal. It does not touch the series, statistics or the open-bet lock, and a failure never pauses Auto. In dry run it is signed and priced but not sent. It shows in the log as *Test bet*.
+
 ## 0.18.4 — 2026-09-24
 
 - **Orders are sent as FAK (fill-and-kill) instead of FOK.** A FOK buy has to spend the stake down to the last micro-cent. Whenever the fill price does not divide the stake evenly ($5 / 0.54 = 9.259259… shares), a sliver was left over and the CLOB killed the whole order with `couldn't be fully filled`, even with plenty of liquidity in the book. Polymarket's own client now defaults market orders to FAK. FAK fills what matches and drops the dust; the bet is booked at what actually filled.

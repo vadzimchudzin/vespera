@@ -146,6 +146,60 @@ class Engine {
   }
 
   /**
+   * One minimum-size order on the current round, placed now, to prove the
+   * whole live path (proxy, region, keys, balance, fill) without waiting for
+   * a signal. It never touches the series, stats or open-bet state; the
+   * position resolves on Polymarket like any other. The first call only
+   * prices the order; `confirm: true` places it.
+   */
+  async testOrder({ side = "UP", confirm = false } = {}) {
+    const wanted = side === "DOWN" ? "DOWN" : "UP";
+    if (this.mode !== "auto") return { ok: false, reason: "test_auto_only" };
+    if (this.openBet()) return { ok: false, reason: "test_open_bet" };
+    if (typeof this.live.getQuote !== "function" || typeof this.live.marketBuy !== "function") {
+      return { ok: false, reason: "auto_not_wired" };
+    }
+    const quote = await this.live.getQuote({ side: wanted, tsMs: Date.now() });
+    if (!quote || !quote.ok) return { ok: false, reason: (quote && quote.reason) || "no_quote" };
+    const tick = Number(quote.tickSize) > 0 ? Number(quote.tickSize) : 0.01;
+    const slip = Number.isFinite(Number(this.live.slippage)) ? Number(this.live.slippage) : 0.02;
+    // the venue checks the 5-share minimum at the signed ceiling, so size at the ceiling plus a cent
+    const ceiling = Math.min(1 - tick, Number(quote.price) + slip);
+    const minShares = Number(quote.minOrderSize) > 0 ? Number(quote.minOrderSize) : 5;
+    const sizeUsd = (Math.ceil(minShares * ceiling * 100) / 100 + 0.01).toFixed(2);
+    const dryRun = this.isDryRun();
+    const plan = { side: wanted, sizeUsd, price: quote.price, slug: quote.slug, dryRun };
+    if (!confirm) return { ok: false, reason: "test_confirm", ...plan };
+    try {
+      const order = await this.live.marketBuy({
+        side: wanted,
+        sizeUsd,
+        clientOrderId: `test-${Date.now()}-${wanted}`,
+        round: { openTs: Date.now() },
+        dryRun,
+      });
+      const row = {
+        side: wanted,
+        dryRun,
+        sizeUsd: order.sizeUsd,
+        price: order.price,
+        shares: order.shares,
+        orderId: order.orderId || null,
+        orderStatus: order.orderStatus || null,
+        slug: order.slug || quote.slug,
+      };
+      this.journal.write({ type: "test_order", ...row });
+      this.emit("log", { level: "info", message: `test_order: ${wanted} $${order.sizeUsd} @ ${order.price}${dryRun ? " (dry run, not sent)" : ` · ${order.orderStatus || "sent"}`}` });
+      return { ok: true, ...row };
+    } catch (err) {
+      const message = String((err && err.message) || err);
+      this.journal.write({ type: "test_order_error", side: wanted, code: (err && err.code) || null, message });
+      this.emit("log", { level: "error", message: `test_order_error: ${message}` });
+      return { ok: false, reason: (err && err.code) || "order_error", message, ...plan };
+    }
+  }
+
+  /**
    * Live Polymarket quote for a side. Returns null when the venue cannot
    * price the round (no network, unsupported timeframe, round already closed).
    */

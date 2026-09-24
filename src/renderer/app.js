@@ -97,6 +97,12 @@
       title = row.status === "win" ? t("logWin") : t("logLoss");
       const n = Number(row.pnl);
       detail = `${row.side || ""} · ${Number.isFinite(n) ? `${n < 0 ? "\u2212" : "+"}$${Math.abs(n).toFixed(2)}` : ""}`.trim();
+    } else if (type === "test_order") {
+      title = row.dryRun ? t("logTestDry") : t("logTest");
+      detail = `${row.side || ""} \u00b7 $${row.sizeUsd || ""} @ ${row.price || ""}`;
+    } else if (type === "test_order_error") {
+      title = t("logTestFail");
+      detail = row.message || "";
     } else if (type === "halt") title = t("logHalt");
     else if (type === "lot_confirmed") {
       title = t("logLot");
@@ -557,6 +563,14 @@
         </details>
         <button class="ok" id="btnConnect">${t("connect")}</button>
         <div class="checks" id="checks"></div>
+        <div class="test-bet">
+          <div class="test-bet-row">
+            <button type="button" class="ghost" id="btnTestUp">${t("testBetUp")}</button>
+            <button type="button" class="ghost" id="btnTestDown">${t("testBetDown")}</button>
+          </div>
+          <p class="hint">${t("testBetHint")}</p>
+          <p class="hint" id="testBetOut"></p>
+        </div>
       `;
       if (sApi.walletAddress) $("walletAddress").value = sApi.walletAddress;
       if (sApi.proxyUrl) {
@@ -704,6 +718,42 @@
         if ($("btnFund")) $("btnFund").onclick = () => openPanel("deposit");
       };
       paintChecks(state.snapshot?.lastConnect);
+      const testBet = async (side) => {
+        const out = $("testBetOut");
+        const btns = [$("btnTestUp"), $("btnTestDown")];
+        btns.forEach((b) => (b.disabled = true));
+        out.textContent = t("testBetWorking");
+        try {
+          let res = await window.vespera.testOrder({ side });
+          if (res && res.reason === "test_confirm") {
+            const ask = t(res.dryRun ? "testBetConfirmDry" : "testBetConfirm")
+              .replace("{side}", res.side)
+              .replace("{usd}", res.sizeUsd)
+              .replace("{price}", Number(res.price).toFixed(2));
+            if (!window.confirm(ask)) {
+              out.textContent = "";
+              return;
+            }
+            res = await window.vespera.testOrder({ side, confirm: true });
+          }
+          if (res && res.ok) {
+            out.textContent = (res.dryRun ? t("testBetDry") : t("testBetOk"))
+              .replace("{side}", res.side)
+              .replace("{usd}", res.sizeUsd)
+              .replace("{price}", res.price)
+              .replace("{shares}", res.shares);
+          } else {
+            out.textContent = `${t("testBetFail")}: ${reasonText(res && res.reason)}${res && res.message ? ` \u00b7 ${res.message}` : ""}`;
+          }
+        } catch (err) {
+          out.textContent = `${t("testBetFail")}: ${String((err && err.message) || err)}`;
+        } finally {
+          btns.forEach((b) => (b.disabled = false));
+          renderSnap(await window.vespera.snapshot());
+        }
+      };
+      $("btnTestUp").onclick = () => testBet("UP");
+      $("btnTestDown").onclick = () => testBet("DOWN");
       $("btnConnect").onclick = async () => {
         const btn = $("btnConnect");
         btn.disabled = true;

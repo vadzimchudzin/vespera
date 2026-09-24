@@ -133,6 +133,40 @@ const bar = (openTs) => ({ openTs, closeTs: openTs + 899_999, open: 100, high: 1
     assert.ok(e.pauseReason.startsWith("proxy_auth"));
   }
 
+  // ── test bet: priced first, placed only on confirm, series untouched ──────
+  {
+    const bought = [];
+    const live = stubLive({
+      slippage: 0.02,
+      async getQuote({ side }) { return { ok: true, side, price: 0.54, tickSize: 0.01, minOrderSize: 5, slug: "btc-updown-15m-1" }; },
+      async marketBuy(p) {
+        bought.push(p);
+        return { sizeUsd: p.sizeUsd, price: 0.54, shares: 5.2, orderId: "0x1", orderStatus: "matched", slug: "btc-updown-15m-1" };
+      },
+    });
+    const paper = new Engine({ userDataDir: dir(), settings: { mode: "paper" }, live, market: fakeMarket() });
+    assert.strictEqual((await paper.testOrder({ side: "UP" })).reason, "test_auto_only");
+
+    const e = new Engine({ userDataDir: dir(), settings: { mode: "auto", dryRun: false }, live, market: fakeMarket() });
+    const step = e.risk.step;
+    const plan = await e.testOrder({ side: "DOWN" });
+    assert.deepStrictEqual([plan.ok, plan.reason, plan.side, plan.dryRun], [false, "test_confirm", "DOWN", false]);
+    assert.strictEqual(plan.sizeUsd, "2.81", "5 shares at the 0.56 ceiling, plus a cent");
+    assert.strictEqual(bought.length, 0, "nothing is sent without confirm");
+    const done = await e.testOrder({ side: "DOWN", confirm: true });
+    assert.strictEqual(done.ok, true);
+    assert.strictEqual(bought.length, 1);
+    assert.strictEqual(bought[0].dryRun, false);
+    assert.strictEqual(e.liveBet, null, "not tracked as a strategy bet");
+    assert.strictEqual(e.risk.step, step, "series untouched");
+    assert.ok(e.journal.entries.some((r) => r.type === "test_order" && r.side === "DOWN"));
+
+    live.marketBuy = async () => { const err = new Error("clob_order_rejected: 400 x"); err.code = "clob_order_rejected"; throw err; };
+    const failed = await e.testOrder({ side: "UP", confirm: true });
+    assert.deepStrictEqual([failed.ok, failed.reason], [false, "clob_order_rejected"]);
+    assert.notStrictEqual(e.status, "paused", "a failed test bet never pauses Auto");
+  }
+
   // ── adapter: 403 region refusal becomes a geoblocked error ────────────────
   {
     const venue = new PolymarketAdapter({

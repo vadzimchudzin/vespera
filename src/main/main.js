@@ -137,6 +137,7 @@ ipcMain.handle("engine:connect", async (_e, patch) => {
   const { credentials, ...safe } = res;
   return safe;
 });
+ipcMain.handle("engine:testOrder", (_e, opts) => engine.testOrder(opts || {}));
 ipcMain.handle("engine:deriveKeys", async (_e, patch) => {
   const p = patch || {};
   const save = {};

@@ -1440,6 +1440,16 @@ details.adv[open] > summary {
 .checks {
   margin-top: 14px;
 }
+.test-bet {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--hair);
+}
+.test-bet-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
 .chk-head {
   display: flex;
   justify-content: space-between;
