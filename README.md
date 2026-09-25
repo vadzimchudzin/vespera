@@ -77,6 +77,14 @@ GitHub Actions builds:
 - Windows: `Vespera-<ver>-win-x64.exe` (NSIS, desktop + Start Menu shortcuts)
 - macOS: `Vespera-<ver>-mac.dmg`
 
+**First launch on a Mac.** The app is ad-hoc signed but not notarized by Apple (that needs a paid Developer ID). Drag Vespera to *Applications*, open it once, press *Done*, then **System Settings → Privacy & Security → “Vespera” was blocked → Open Anyway**. On macOS 15+ right-click → Open no longer offers this. If a copy arrived through a messenger and still refuses, run in Terminal:
+
+```bash
+xattr -cr /Applications/Vespera.app
+```
+
+Apple Silicon (M1 and later) only.
+
 Local:
 
 ```bash

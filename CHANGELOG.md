@@ -2,6 +2,10 @@
 
 All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 
+## 0.18.6 — 2026-09-25
+
+- **macOS build opens again.** The `.app` was shipped unsigned (`identity: null`): only the main binary carried the linker's ad-hoc signature, the bundle's resources and Info.plist were not sealed, and macOS on Apple Silicon refused it with *“Vespera” can't be opened*. The app is now ad-hoc signed during the build (`build/afterPack.js`) and the build fails if `codesign --verify --deep --strict` rejects it. It is still not notarized, so the first launch needs *Open Anyway* once (see README).
+
 ## 0.18.5 — 2026-09-24
 
 - **Test bet.** API panel → *Test bet UP / DOWN* opens one minimum bet (5 shares at the order ceiling, about $3 at even odds) on the current round right now, after a confirmation that names the side, amount and price. It checks the whole live path (proxy, region, keys, balance, fill) without waiting up to an hour for a signal. It does not touch the series, statistics or the open-bet lock, and a failure never pauses Auto. In dry run it is signed and priced but not sent. It shows in the log as *Test bet*.
