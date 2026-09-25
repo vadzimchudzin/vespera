@@ -1,0 +1,7 @@
+(* Секунды (UINT) -> TIME *)
+FUNCTION F_Sec : TIME
+VAR_INPUT
+    uSec : UINT;
+END_VAR
+F_Sec := UDINT_TO_TIME(UINT_TO_UDINT(uSec) * 1000);
+END_FUNCTION
