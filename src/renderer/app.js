@@ -27,6 +27,8 @@
     saveTimer: 0,
     savingPanel: false,
     depositTimer: 0,
+    panelKind: null,
+    panelKey: "",
   };
 
   function applyI18n() {
@@ -241,6 +243,21 @@
       window.VesperaChart.render(snap);
     }
     renderLog(snap);
+    if (!$("panel").hidden && (state.panelKind === "stats" || state.panelKind === "journal")) {
+      const key = panelSnapshotKey(state.panelKind, snap);
+      if (key !== state.panelKey) {
+        const body = $("panelBody");
+        const scroll = body.scrollTop;
+        const exportMessage = $("exportOut")?.textContent;
+        openPanel(state.panelKind);
+        body.scrollTop = scroll;
+        if (exportMessage && $("exportOut")) $("exportOut").textContent = exportMessage;
+      }
+    }
+  }
+
+  function panelSnapshotKey(kind, snap) {
+    return JSON.stringify(kind === "journal" ? snap.log : [snap.book, snap.mode, snap.risk, snap.paper?.balance, snap.todayPnl, snap.stats, snap.daily]);
   }
 
   function renderStrategies(snap) {
@@ -405,6 +422,8 @@
     clearInterval(state.depositTimer);
     state.depositTimer = 0;
     $("panel").hidden = true;
+    state.panelKind = null;
+    state.panelKey = "";
     $("backdrop").hidden = true;
     const foot = $("panelFoot");
     if (foot) {
@@ -502,6 +521,8 @@
     const title = $("panelTitle");
     const foot = $("panelFoot");
     $("panel").hidden = false;
+    state.panelKind = kind;
+    state.panelKey = kind === "stats" || kind === "journal" ? panelSnapshotKey(kind, state.snapshot || {}) : "";
     $("backdrop").hidden = false;
     clearInterval(state.depositTimer);
     state.depositTimer = 0;
@@ -1031,6 +1052,7 @@
         foot.innerHTML = `
           <button type="button" class="ok" id="saveSet">${t("save")}</button>
           <button type="button" class="ghost" id="resetPaper">${t("resetPaper")}</button>
+          <span class="hint warn" id="resetOut" role="status" hidden></span>
         `;
       }
       const paintPlan = (snap) => {
@@ -1269,8 +1291,23 @@
         e.preventDefault();
         e.stopPropagation();
         if (!window.vespera || !window.vespera.resetPaper) return;
-        const snap = await window.vespera.resetPaper(s.paperBalance || "1000.00");
-        renderSnap(snap);
+        if (state.snapshot?.paper?.openBet) {
+          $("resetOut").textContent = t("resetPaperBlocked");
+          $("resetOut").hidden = false;
+          return;
+        }
+        if (!window.confirm(t("resetPaperConfirm"))) return;
+        try {
+          const snap = await window.vespera.resetPaper(s.paperBalance || "1000.00");
+          if (snap?.paper?.openBet) {
+            $("resetOut").textContent = t("resetPaperBlocked");
+            $("resetOut").hidden = false;
+          }
+          renderSnap(snap);
+        } catch (err) {
+          $("resetOut").textContent = `${t("logError")}: ${String((err && err.message) || err)}`;
+          $("resetOut").hidden = false;
+        }
       };
       const saveBtn = $("saveSet");
       if (saveBtn) saveBtn.onclick = (e) => {
@@ -1368,11 +1405,17 @@
         <p class="hint" id="exportOut">${t("exportCsvHint")}</p>
       `;
       $("btnExportCsv").onclick = async () => {
-        const out = $("exportOut");
-        const res = await window.vespera.exportCsv();
-        if (res && res.ok) out.textContent = `${t("exportCsvDone")} ${res.count} \u2192 ${res.path}`;
-        else if (res && res.reason === "canceled") out.textContent = t("exportCsvHint");
-        else out.textContent = res && res.reason === "empty" ? t("exportCsvEmpty") : `${t("exportCsvFail")}: ${(res && res.reason) || ""}`;
+        const showResult = (message) => {
+          if (state.panelKind === "stats" && $("exportOut")) $("exportOut").textContent = message;
+        };
+        try {
+          const res = await window.vespera.exportCsv();
+          if (res && res.ok) showResult(`${t("exportCsvDone")} ${res.count} \u2192 ${res.path}`);
+          else if (res && res.reason === "canceled") showResult(t("exportCsvHint"));
+          else showResult(res && res.reason === "empty" ? t("exportCsvEmpty") : `${t("exportCsvFail")}: ${(res && res.reason) || ""}`);
+        } catch (err) {
+          showResult(`${t("exportCsvFail")}: ${String((err && err.message) || err)}`);
+        }
       };
     }
 
@@ -1384,8 +1427,8 @@
         (rows
           .map((row) => {
             const line = logLine(row);
-            return `<div class="hint journal-line"><span class="log-time">${line.when}</span> ${line.title}${
-              line.detail ? " · " + line.detail : ""
+            return `<div class="hint journal-line"><span class="log-time">${esc(line.when)}</span> ${esc(line.title)}${
+              line.detail ? " · " + esc(line.detail) : ""
             }</div>`;
           })
           .join("") || `<p class="hint">${t("logEmpty")}</p>`);

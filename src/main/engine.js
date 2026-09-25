@@ -511,6 +511,7 @@ class Engine {
     if (this.running) return { ok: true };
     if (this._dailyLimitHit()) {
       this.status = "daily_limit";
+      this.journal.write({ type: "start_refused", reason: "daily_limit" });
       this.emit("status", this.status);
       return { ok: false, reason: "daily_limit" };
     }
