@@ -2,6 +2,10 @@
 
 All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 
+## 0.18.8 — 2026-09-26
+
+- **macOS DMG is actually universal.** `npm run dist:mac` named the target on the command line (`--mac dmg`), which overrides the architecture in the config, so 0.18.7 still built Apple Silicon only; the new CI check caught it and 0.18.7 shipped for Windows only. The script now passes `--universal`.
+
 ## 0.18.7 — 2026-09-26
 
 - **macOS: Intel Macs are supported.** The DMG contained an Apple Silicon build only, so on an Intel Mac the app did not start at all. It is now a universal app (one DMG, native on both).

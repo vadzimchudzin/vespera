@@ -1,7 +1,7 @@
 {
   "name": "vespera",
   "productName": "Vespera",
-  "version": "0.18.7",
+  "version": "0.18.8",
   "description": "Vespera (VSP) — glass terminal for Polymarket MA200/MA20. Paper first.",
   "author": "VadimChudin",
   "license": "UNLICENSED",
@@ -13,7 +13,7 @@
     "pack": "electron-builder --dir",
     "dist": "electron-builder --win --mac",
     "dist:win": "electron-builder --win nsis --publish never",
-    "dist:mac": "electron-builder --mac dmg --publish never",
+    "dist:mac": "electron-builder --mac dmg --universal --publish never",
     "release": "electron-builder --win --mac --publish never"
   },
   "build": {
