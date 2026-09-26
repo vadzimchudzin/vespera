@@ -6,6 +6,9 @@ const path = require('path');
 
 exports.default = async function afterPack(context) {
   if (context.electronPlatformName !== 'darwin') return;
+  // Universal-сборка сначала пакует x64 и arm64 в *-temp и потом сливает их, перезаписывая бинарники:
+  // подписываем только итоговый .app.
+  if (context.appOutDir.endsWith('-temp')) return;
   const app = path.join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`);
   execFileSync('codesign', ['--force', '--deep', '--sign', '-', app], { stdio: 'inherit' });
   execFileSync('codesign', ['--verify', '--deep', '--strict', '--verbose=2', app], { stdio: 'inherit' });

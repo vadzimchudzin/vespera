@@ -2,6 +2,11 @@
 
 All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 
+## 0.18.7 — 2026-09-26
+
+- **macOS: Intel Macs are supported.** The DMG contained an Apple Silicon build only, so on an Intel Mac the app did not start at all. It is now a universal app (one DMG, native on both).
+- The release build checks the Mac app before publishing: the ad-hoc signature must verify and the binary must contain both `x86_64` and `arm64`.
+
 ## 0.18.6 — 2026-09-25
 
 - **macOS build opens again.** The `.app` was shipped unsigned (`identity: null`): only the main binary carried the linker's ad-hoc signature, the bundle's resources and Info.plist were not sealed, and macOS on Apple Silicon refused it with *“Vespera” can't be opened*. The app is now ad-hoc signed during the build (`build/afterPack.js`) and the build fails if `codesign --verify --deep --strict` rejects it. It is still not notarized, so the first launch needs *Open Anyway* once (see README).
