@@ -149,6 +149,8 @@ function sendOnce(url, { method, headers, payload, timeoutMs, agent, lookup }) {
       },
       (res) => {
         const chunks = [];
+        res.on("aborted", () => fail("response_aborted"));
+        res.on("error", (err) => fail(String((err && err.message) || err)));
         res.on("data", (c) => chunks.push(c));
         res.on("end", () => {
           const raw = Buffer.concat(chunks).toString("utf8");

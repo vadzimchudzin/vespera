@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.18.9 — 2026-10-06
+
+- **Feed recovery.** Binance WebSocket handshakes time out, connection failures reconnect, stale REST responses cannot overwrite a switched market, and history is bounded to 2,000 candles. Only authoritative closed candles signal; REST recovery does not replay expired entries, and gaps in the required MA window block new entries.
+- **Single-flight execution.** Closed candles process sequentially; simultaneous signal/test entries are blocked. Stop and settings changes cancel entry preparation before submission, including inside the live adapter.
+- A successful live test bet locks further entries for its round, including after restart, without changing the strategy series or statistics.
+- **Unknown order outcome protection.** Persist an intent before a live order. A lost POST response or HTTP 5xx locks further orders and Start across restarts rather than assuming the order failed. No automatic resend or automatic clearance; account reconciliation is required.
+- **Durable recovery state.** Atomic checkpoints retain balances, open positions and series state independently of noisy logs and rotation. Late settlement uses the original round candle, not the latest close.
+- **Temporary outage recovery.** Health checks continue through venue-down pauses and safely resume previously started sessions. Manual Stop, permanent order refusals, daily limits and unknown order outcomes remain blocked.
+- Added network-free regression suites for feed lifecycle, state retention, order ambiguity and execution races. Retains the Windows and universal macOS packaging fixes from 0.18.8.
+
 All notable versions of **Vespera (VSP)**. Tag `vX.Y.Z` to cut a build.
 
 ## 0.18.8 — 2026-09-26

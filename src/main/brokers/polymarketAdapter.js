@@ -566,7 +566,26 @@ class PolymarketAdapter {
         balanceChecked: this.hasL2(),
       };
     }
-    const res = await this.client.postOrder({ ...signed, orderType: ORDER_TYPE });
+    if (params.isActive && !params.isActive()) {
+      const err = new Error("execution_changed: entry cancelled before submission");
+      err.code = "execution_changed";
+      throw err;
+    }
+    let res;
+    try {
+      res = await this.client.postOrder({ ...signed, orderType: ORDER_TYPE });
+    } catch (cause) {
+      const err = new Error(`order_outcome_unknown: ${String(cause.message || cause)}`);
+      err.code = "order_outcome_unknown";
+      err.ambiguous = true;
+      throw err;
+    }
+    if (!res || res.status === 0 || res.status >= 500 || (res.ok && (!res.json || res.json.success === false))) {
+      const err = new Error("order_outcome_unknown: no reliable execution response");
+      err.code = "order_outcome_unknown";
+      err.ambiguous = true;
+      throw err;
+    }
     if (!res.ok) {
       const detail = (res.json && res.json.errorMsg) || (res.json && res.json.error) || res.raw || "";
       if (res.status === 403 && /restricted in your region|geoblock/i.test(String(detail))) {

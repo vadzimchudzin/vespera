@@ -69,10 +69,12 @@ function clampRefreshMs(value) {
 }
 
 class MarketData {
-  constructor({ symbol = "BTCUSDT", timeframe = "15m", fetchJson, refreshMs = 100 } = {}) {
+  constructor({ symbol = "BTCUSDT", timeframe = "15m", fetchJson, refreshMs = 100, webSocketImpl = WebSocketImpl, wsConnectTimeoutMs = 15_000 } = {}) {
     this.symbol = symbol;
     this.timeframe = timeframe;
     this.fetchJson = fetchJson || defaultFetchJson;
+    this.WebSocketImpl = webSocketImpl;
+    this.wsConnectTimeoutMs = wsConnectTimeoutMs;
     this.refreshMs = clampRefreshMs(refreshMs);
     this.bars = [];
     this.forming = null;
@@ -87,6 +89,11 @@ class MarketData {
     this._lastWsAt = 0;
     this._wsGeneration = 0;
     this._pingTimer = null;
+    this._wsConnectTimer = null;
+    this._lifecycleGeneration = 0;
+    this._historyRequest = 0;
+    this._wsClosedBars = new Map();
+    this._wsSignalledBars = new Set();
   }
 
   on(fn) {
@@ -100,6 +107,16 @@ class MarketData {
 
   emit(event, payload) {
     for (const fn of this.listeners) fn(event, payload);
+  }
+
+  _emitHealth(state, details = {}) {
+    this.emit("health", {
+      state,
+      at: Date.now(),
+      symbol: this.symbol,
+      timeframe: this.timeframe,
+      ...details,
+    });
   }
 
   setRefreshMs(ms) {
@@ -116,19 +133,25 @@ class MarketData {
     if (!changed) return this.bars;
     this.bars = [];
     this.forming = null;
+    this._wsClosedBars.clear();
+    this._wsSignalledBars.clear();
     const keep = this._wanted;
     this.stop({ keepWanted: keep });
-    await this.loadHistory(HISTORY_BARS);
-    if (keep) this.start();
+    const generation = this._lifecycleGeneration;
+    try {
+      await this.loadHistory(HISTORY_BARS);
+    } finally {
+      if (generation === this._lifecycleGeneration && keep) this.start();
+    }
     return this.bars;
   }
 
-  async _fetchKlinesPage(limit, endTime) {
+  async _fetchKlinesPage(limit, endTime, symbol = this.symbol, timeframe = this.timeframe) {
     let raw;
     let lastErr;
     const cap = Math.min(1000, Math.max(1, limit));
     for (const host of KLINE_HOSTS) {
-      let url = `${host}/api/v3/klines?symbol=${this.symbol}&interval=${this.timeframe}&limit=${cap}`;
+      let url = `${host}/api/v3/klines?symbol=${symbol}&interval=${timeframe}&limit=${cap}`;
       if (endTime) url += `&endTime=${endTime}`;
       try {
         raw = await this.fetchJson(url);
@@ -142,12 +165,17 @@ class MarketData {
   }
 
   async loadHistory(limit = HISTORY_BARS, { emitHistory = true } = {}) {
-    const want = Math.max(200, Number(limit) || HISTORY_BARS);
+    const want = Math.min(HISTORY_BARS, Math.max(200, Number(limit) || HISTORY_BARS));
+    const generation = this._lifecycleGeneration;
+    const request = ++this._historyRequest;
+    const symbol = this.symbol;
+    const timeframe = this.timeframe;
     let pages = [];
     let endTime = null;
     while (pages.length < want) {
       const remaining = want - pages.length;
-      const raw = await this._fetchKlinesPage(remaining, endTime);
+      const raw = await this._fetchKlinesPage(remaining, endTime, symbol, timeframe);
+      if (generation !== this._lifecycleGeneration || request !== this._historyRequest) return this.bars;
       if (!Array.isArray(raw) || !raw.length) break;
       pages = raw.concat(pages);
       if (raw.length < Math.min(1000, remaining)) break;
@@ -166,17 +194,26 @@ class MarketData {
     }
     unique.sort((a, b) => Number(a[0]) - Number(b[0]));
     const raw = unique.slice(-want);
-    const bars = parseKlines(raw);
-    const last = bars[bars.length - 1];
-    const interval = INTERVAL_MS[this.timeframe] || 900_000;
-    if (last && Date.now() < last.openTs + interval) {
+    const history = new Map(parseKlines(raw).map((bar) => [bar.openTs, bar]));
+    for (const bar of this.bars) if (!history.has(bar.openTs)) history.set(bar.openTs, bar);
+    for (const [openTs, bar] of this._wsClosedBars) history.set(openTs, bar);
+    const interval = INTERVAL_MS[timeframe] || 900_000;
+    const ordered = [...history.values()].sort((a, b) => a.openTs - b.openTs).slice(-want);
+    const last = ordered[ordered.length - 1];
+    let forming = null;
+    let closedBars = ordered;
+    if (last && last.closeTs >= Date.now() && !this._wsClosedBars.has(last.openTs)) {
       last.closed = false;
-      this.forming = last;
-      this.bars = bars.slice(0, -1);
-    } else {
-      this.forming = null;
-      this.bars = bars;
+      forming = last;
+      closedBars = ordered.slice(0, -1);
     }
+    const liveForming = this.forming;
+    if (liveForming && !this._wsClosedBars.has(liveForming.openTs) && (!forming || liveForming.openTs >= forming.openTs)) {
+      forming = liveForming;
+    }
+    this.forming = forming;
+    this.bars = closedBars;
+    this._trimBars();
     if (emitHistory) {
       this.emit("history", { bars: this.bars, forming: this.forming });
     }
@@ -189,17 +226,18 @@ class MarketData {
     const reconcile = async () => {
       if (this._busy) return;
       this._busy = true;
+      const generation = this._lifecycleGeneration;
       try {
         const staleWs = this.ws && this._lastWsAt && Date.now() - this._lastWsAt > 90_000;
         if (staleWs) {
           this._safeClose(this.ws);
           this.ws = null;
-          this._scheduleReconnect();
+          this._emitHealth("reconnecting", { reason: "stale" });
         }
         const prevTs = this.bars.length ? this.bars[this.bars.length - 1].openTs : null;
         const liveForming = this.forming && this.ws ? { ...this.forming } : null;
-        const initial = this.bars.length === 0;
         await this.loadHistory(HISTORY_BARS, { emitHistory: true });
+        if (generation !== this._lifecycleGeneration) return;
         if (liveForming) {
           if (this.forming && this.forming.openTs === liveForming.openTs) {
             this.forming.close = liveForming.close;
@@ -209,15 +247,11 @@ class MarketData {
             this.forming = liveForming;
           }
         }
-        if (prevTs != null) {
-          for (const bar of this.bars) {
-            if (bar.openTs > prevTs) this.emit("bar_close", bar);
-          }
-        }
+        this._emitReconciledClose(prevTs);
         this._emitTick(true);
         if (!this.ws && this._wanted) this._openWs();
       } catch (err) {
-        this.emit("error", String(err.message || err));
+        if (generation === this._lifecycleGeneration) this.emit("error", String(err.message || err));
       } finally {
         this._busy = false;
       }
@@ -228,6 +262,9 @@ class MarketData {
   }
 
   stop({ keepWanted = false } = {}) {
+    this._lifecycleGeneration += 1;
+    this._historyRequest += 1;
+    this._wsGeneration += 1;
     if (!keepWanted) this._wanted = false;
     if (this.timer) {
       clearInterval(this.timer);
@@ -241,6 +278,10 @@ class MarketData {
       clearInterval(this._pingTimer);
       this._pingTimer = null;
     }
+    if (this._wsConnectTimer) {
+      clearTimeout(this._wsConnectTimer);
+      this._wsConnectTimer = null;
+    }
     if (this.ws) {
       this._safeClose(this.ws);
       this.ws = null;
@@ -251,12 +292,13 @@ class MarketData {
     if (!ws) return;
     try {
       ws.removeAllListeners();
+      ws.on("error", () => {});
     } catch {
       /* ignore */
     }
     try {
-      const connecting = WebSocketImpl && ws.readyState === WebSocketImpl.CONNECTING;
-      const open = WebSocketImpl && ws.readyState === WebSocketImpl.OPEN;
+      const connecting = this.WebSocketImpl && ws.readyState === this.WebSocketImpl.CONNECTING;
+      const open = this.WebSocketImpl && ws.readyState === this.WebSocketImpl.OPEN;
       if (connecting && typeof ws.terminate === "function") {
         ws.terminate();
       } else if (open) {
@@ -270,7 +312,11 @@ class MarketData {
   }
 
   _openWs() {
-    if (!WebSocketImpl || !this._wanted) return;
+    if (!this.WebSocketImpl || !this._wanted) return;
+    if (this._reconnectTimer) {
+      clearTimeout(this._reconnectTimer);
+      this._reconnectTimer = null;
+    }
     if (this.ws) {
       this._safeClose(this.ws);
       this.ws = null;
@@ -278,16 +324,28 @@ class MarketData {
     const host = WS_HOSTS[this._wsIndex % WS_HOSTS.length];
     const url = wsUrl(host, this.symbol, this.timeframe);
     const generation = (this._wsGeneration += 1);
+    this._emitHealth("connecting", { host });
     let ws;
     try {
-      ws = new WebSocketImpl(url);
+      ws = new this.WebSocketImpl(url);
     } catch (err) {
       this.emit("error", String(err.message || err));
       this._scheduleReconnect();
+      this._emitHealth("reconnecting", { host, reason: "connect_error" });
       return;
     }
     this.ws = ws;
     this._lastWsAt = Date.now();
+    this._wsConnectTimer = setTimeout(() => {
+      if (this._wsGeneration !== generation || this.ws !== ws) return;
+      this._wsConnectTimer = null;
+      this._safeClose(ws);
+      this.ws = null;
+      if (this._pingTimer) clearInterval(this._pingTimer);
+      this._pingTimer = null;
+      this._scheduleReconnect();
+      this._emitHealth("reconnecting", { host, reason: "connect_timeout" });
+    }, this.wsConnectTimeoutMs);
     if (this._pingTimer) {
       clearInterval(this._pingTimer);
       this._pingTimer = null;
@@ -300,12 +358,18 @@ class MarketData {
         this._safeClose(ws);
         if (this.ws === ws) this.ws = null;
         this._scheduleReconnect();
+        this._emitHealth("reconnecting", { host, reason: "ping_error" });
       }
     }, 20_000);
     ws.on("open", () => {
+      if (this._wsGeneration !== generation || this.ws !== ws) return;
+      if (this._wsConnectTimer) clearTimeout(this._wsConnectTimer);
+      this._wsConnectTimer = null;
       this._lastWsAt = Date.now();
+      this._emitHealth("connected", { host });
     });
     ws.on("ping", () => {
+      if (this._wsGeneration !== generation || this.ws !== ws) return;
       this._lastWsAt = Date.now();
       try {
         if (typeof ws.pong === "function") ws.pong();
@@ -319,16 +383,33 @@ class MarketData {
       this._onWs(buf);
     });
     ws.on("close", () => {
+      if (this._wsGeneration !== generation || this.ws !== ws) return;
+      if (this._wsConnectTimer) {
+        clearTimeout(this._wsConnectTimer);
+        this._wsConnectTimer = null;
+      }
       if (this._pingTimer) {
         clearInterval(this._pingTimer);
         this._pingTimer = null;
       }
       if (this.ws === ws) this.ws = null;
+      this._emitHealth("reconnecting", { host, reason: "close" });
       this._scheduleReconnect();
     });
     ws.on("error", () => {
+      if (this._wsGeneration !== generation || this.ws !== ws) return;
       this._safeClose(ws);
-      if (this.ws === ws) this.ws = null;
+      this.ws = null;
+      if (this._wsConnectTimer) {
+        clearTimeout(this._wsConnectTimer);
+        this._wsConnectTimer = null;
+      }
+      if (this._pingTimer) {
+        clearInterval(this._pingTimer);
+        this._pingTimer = null;
+      }
+      this._scheduleReconnect();
+      this._emitHealth("reconnecting", { host, reason: "socket_error" });
     });
   }
 
@@ -380,8 +461,7 @@ class MarketData {
       };
       const last = this.bars[this.bars.length - 1];
       if (!last || last.openTs !== closed.openTs) {
-        this.bars.push(closed);
-        this.emit("bar_close", closed);
+        this._upsertBar(closed);
       }
       this.forming = {
         openTs,
@@ -413,17 +493,25 @@ class MarketData {
       closed: Boolean(k.x),
     };
     if (bar.closed) {
-      const last = this.bars[this.bars.length - 1];
-      if (!last || last.openTs !== bar.openTs) {
-        this.bars.push({ ...bar, closed: true });
-        this.emit("bar_close", this.bars[this.bars.length - 1]);
-      } else {
-        this.bars[this.bars.length - 1] = { ...bar, closed: true };
+      const closedBar = { ...bar, closed: true };
+      this._wsClosedBars.set(closedBar.openTs, closedBar);
+      while (this._wsClosedBars.size > HISTORY_BARS) this._wsClosedBars.delete(this._wsClosedBars.keys().next().value);
+      this._upsertBar(closedBar);
+      const interval = INTERVAL_MS[this.timeframe] || 900_000;
+      const recent = closedBar.closeTs >= Date.now() - interval;
+      const contiguous = this.bars.some((item) => item.openTs === closedBar.openTs - interval);
+      if (recent && contiguous && !this._wsSignalledBars.has(closedBar.openTs)) {
+        this._wsSignalledBars.add(closedBar.openTs);
+        while (this._wsSignalledBars.size > HISTORY_BARS) this._wsSignalledBars.delete(this._wsSignalledBars.values().next().value);
+        this.emit("bar_close", closedBar);
       }
       if (this.forming && this.forming.openTs === bar.openTs) this.forming = null;
       this._emitTick(true);
       return;
     }
+    if (this._wsClosedBars.has(bar.openTs)) return;
+    const latest = this.bars[this.bars.length - 1];
+    if ((latest && bar.openTs <= latest.openTs) || (this.forming && bar.openTs < this.forming.openTs)) return;
     this.forming = bar;
     this._emitTick(false);
   }
@@ -433,6 +521,27 @@ class MarketData {
     if (!force && now - this._lastTickEmit < this.refreshMs) return;
     this._lastTickEmit = now;
     this.emit("tick", { forming: this.forming, last: this.bars[this.bars.length - 1] });
+  }
+
+  _upsertBar(bar) {
+    const index = this.bars.findIndex((item) => item.openTs === bar.openTs);
+    if (index >= 0) this.bars[index] = bar;
+    else this.bars.push(bar);
+    this.bars.sort((a, b) => a.openTs - b.openTs);
+    this._trimBars();
+  }
+
+  _trimBars() {
+    if (this.bars.length > HISTORY_BARS) this.bars.splice(0, this.bars.length - HISTORY_BARS);
+  }
+
+  _emitReconciledClose(prevTs) {
+    if (prevTs == null) return;
+    const latest = this.bars[this.bars.length - 1];
+    if (!latest || latest.openTs <= prevTs || this._wsSignalledBars.has(latest.openTs)) return;
+    this._wsSignalledBars.add(latest.openTs);
+    while (this._wsSignalledBars.size > HISTORY_BARS) this._wsSignalledBars.delete(this._wsSignalledBars.values().next().value);
+    this.emit("bar_close", { ...latest, recovered: true });
   }
 }
 

@@ -64,6 +64,7 @@ class Engine {
     if (restored.halted) this.risk.lotConfirmed = false;
     this.paper = createVenue("paper", { startingBalance: this.settings.paperBalance || "1000.00" });
     this._restorePaper();
+    this.lastTestOrder = this.journal.restoreEntries.filter((e) => e.type === "test_order").at(-1) || null;
     this.live =
       live ||
       createVenue("auto", {
@@ -101,6 +102,10 @@ class Engine {
     this.venueFailures = 0;
     this.orderRejects = 0;
     this._healthTimer = null;
+    this._healthBusy = false;
+    this._opening = false;
+    this._executionGeneration = 0;
+    this._barQueue = Promise.resolve();
     this.lastConnect = null;
     this.notificationsEnabled = this.settings.notificationsEnabled !== false;
     this.strategyId = this.settings.strategyId || DEFAULT_STRATEGY_ID;
@@ -145,6 +150,10 @@ class Engine {
     return this.mode === "auto" ? this.liveBet : this.paper.openBet;
   }
 
+  _testPositionActive() {
+    return this.lastTestOrder && !this.lastTestOrder.dryRun && Date.now() <= this.lastTestOrder.roundCloseTs;
+  }
+
   /**
    * One minimum-size order on the current round, placed now, to prove the
    * whole live path (proxy, region, keys, balance, fill) without waiting for
@@ -153,6 +162,19 @@ class Engine {
    * prices the order; `confirm: true` places it.
    */
   async testOrder({ side = "UP", confirm = false } = {}) {
+    if (this._opening || this.journal.pendingOrder()) return { ok: false, reason: "order_pending" };
+    if (this._testPositionActive()) return { ok: false, reason: "test_open_bet" };
+    if (confirm) this._executionGeneration += 1;
+    this._opening = true;
+    try {
+      return await this._testOrder({ side, confirm });
+    } finally {
+      this._opening = false;
+    }
+  }
+
+  async _testOrder({ side = "UP", confirm = false } = {}) {
+    const generation = this._executionGeneration;
     const wanted = side === "DOWN" ? "DOWN" : "UP";
     if (this.mode !== "auto") return { ok: false, reason: "test_auto_only" };
     if (this.openBet()) return { ok: false, reason: "test_open_bet" };
@@ -170,15 +192,25 @@ class Engine {
     const dryRun = this.isDryRun();
     const plan = { side: wanted, sizeUsd, price: quote.price, slug: quote.slug, dryRun };
     if (!confirm) return { ok: false, reason: "test_confirm", ...plan };
+    if (generation !== this._executionGeneration) return { ok: false, reason: "execution_changed" };
+    const clientOrderId = `test-${Date.now()}-${wanted}`;
+    const interval = INTERVAL_MS[this.settings.timeframe || "15m"] || 900_000;
+    const roundCloseTs = (Math.floor(Date.now() / interval) + 1) * interval - 1;
+    let accepted = false;
     try {
+      if (!dryRun) this.journal.beginOrder({ clientOrderId, side: wanted, sizeUsd, test: true });
       const order = await this.live.marketBuy({
         side: wanted,
         sizeUsd,
-        clientOrderId: `test-${Date.now()}-${wanted}`,
+        clientOrderId,
         round: { openTs: Date.now() },
         dryRun,
+        isActive: () => generation === this._executionGeneration,
       });
+      accepted = true;
       const row = {
+        clientOrderId,
+        roundCloseTs,
         side: wanted,
         dryRun,
         sizeUsd: order.sizeUsd,
@@ -189,9 +221,13 @@ class Engine {
         slug: order.slug || quote.slug,
       };
       this.journal.write({ type: "test_order", ...row });
+      this.lastTestOrder = row;
+      this.journal.completeOrder(clientOrderId);
       this.emit("log", { level: "info", message: `test_order: ${wanted} $${order.sizeUsd} @ ${order.price}${dryRun ? " (dry run, not sent)" : ` · ${order.orderStatus || "sent"}`}` });
       return { ok: true, ...row };
     } catch (err) {
+      if (!err.ambiguous && !accepted) this.journal.completeOrder(clientOrderId);
+      else this._pauseUnknownOrder();
       const message = String((err && err.message) || err);
       this.journal.write({ type: "test_order_error", side: wanted, code: (err && err.code) || null, message });
       this.emit("log", { level: "error", message: `test_order_error: ${message}` });
@@ -242,11 +278,18 @@ class Engine {
         this.emit("history", payload);
       }
       if (event === "bar_close") {
-        this.onBarClose(payload);
+        this.onBarClose(payload).catch((err) => {
+          this.pause(`processing_error: ${String(err.message || err)}`);
+        });
         this.emit("bar", payload);
       }
       if (event === "tick") {
         this.emit("tick", payload);
+      }
+      if (event === "health") {
+        this.dataHealth = payload;
+        this.journal.write({ type: "data_health", ...payload });
+        this.emit("log", { level: "info", message: `market_data: ${payload.state}${payload.reason ? ` (${payload.reason})` : ""}` });
       }
       if (event === "error") {
         this.journal.write({ type: "data_error", message: payload });
@@ -260,7 +303,7 @@ class Engine {
    * journal, so a restart mid-round settles with the same stake, shares and fee.
    */
   _restorePaper() {
-    const entries = this.journal.entries;
+    const entries = this.journal.restoreEntries;
     const isLive = (e) => e.mode === "auto";
     for (let i = entries.length - 1; i >= 0; i -= 1) {
       const e = entries[i];
@@ -362,6 +405,7 @@ class Engine {
   }
 
   async applySettings(input = {}) {
+    this._executionGeneration += 1;
     const patch = { ...input };
     if (this.mode === "auto") {
       if (patch.symbol != null && !isSupportedSymbol(patch.symbol)) {
@@ -475,6 +519,7 @@ class Engine {
       });
     }
     if (marketChanged && typeof this.market.configure === "function") {
+      this.tickSize = this._tickFor(symbol);
       await this.market.configure({
         symbol,
         timeframe,
@@ -543,7 +588,7 @@ class Engine {
   }
 
   todayPnl() {
-    return todayPnl(this.journal.entries, this._book());
+    return todayPnl(this.journal.restoreEntries, this._book());
   }
 
   _dailyLimitHit() {
@@ -556,6 +601,22 @@ class Engine {
    *   explicitly on every start; the UI shows what is at stake first.
    */
   async start(opts = {}) {
+    if (this._starting) return { ok: false, reason: "start_pending" };
+    this._starting = true;
+    try {
+      return await this._start(opts);
+    } finally {
+      this._starting = false;
+    }
+  }
+
+  async _start(opts = {}) {
+    const generation = this._executionGeneration;
+    if (this.mode === "auto" && this._testPositionActive()) return { ok: false, reason: "test_open_bet" };
+    if (this.journal.pendingOrder()) {
+      this._pauseUnknownOrder();
+      return { ok: false, reason: "order_outcome_unknown" };
+    }
     if (this.risk.halted || !this.risk.lotConfirmed) {
       this.running = false;
       this.status = "halt";
@@ -587,6 +648,7 @@ class Engine {
     if (this.isLiveMoney() && !opts.confirmLive) {
       return { ok: false, reason: "live_confirm_required" };
     }
+    if (generation !== this._executionGeneration) return { ok: false, reason: "execution_changed" };
     this.pauseReason = null;
     this.venueFailures = 0;
     this.orderRejects = 0;
@@ -594,9 +656,19 @@ class Engine {
     this.status = "warming_up";
     this.emit("status", this.status);
     if (typeof this.market.loadHistory === "function" && this.market.bars.length < this._slowPeriod()) {
-      await this.market.loadHistory(HISTORY_BARS);
+      try {
+        await this.market.loadHistory(HISTORY_BARS);
+      } catch (err) {
+        this.journal.write({ type: "data_error", message: String(err.message || err) });
+        this.emit("log", { level: "error", message: `history_unavailable: ${String(err.message || err)}` });
+      }
     }
+    if (generation !== this._executionGeneration) return { ok: false, reason: "execution_changed" };
     const last = this.market.bars[this.market.bars.length - 1];
+    if (last && this.openBet()) {
+      this._settleIfOpen(last);
+      if (!this.running) return { ok: false, reason: this.pauseReason || "halted" };
+    }
     if (last) this.lastHandledOpenTs = last.openTs;
     this._ensureMarket();
     if (this.market.bars.length < this._slowPeriod()) {
@@ -625,10 +697,34 @@ class Engine {
   }
 
   async _healthTick() {
-    if (!this.running || this.mode !== "auto" || typeof this.live.health !== "function") return;
-    const res = await this.live.health();
-    if (res && res.ok) this._venueOk();
-    else this._venueFailed(`health: ${(res && res.reason) || "unreachable"}`);
+    const recovering = !this.running && this.pauseReason && this.pauseReason.startsWith("venue_down:");
+    if ((!this.running && !recovering) || this._healthBusy || this.mode !== "auto" || typeof this.live.health !== "function") return;
+    this._healthBusy = true;
+    const generation = this._executionGeneration;
+    try {
+      const res = await this.live.health();
+      if (generation !== this._executionGeneration) return;
+      if (res && res.ok) {
+        if (recovering) {
+          if (this._opening || this._testPositionActive() || this.journal.pendingOrder() || this.risk.halted || this._dailyLimitHit()) return;
+          if (this.isLiveMoney() && typeof this.live.region === "function") {
+            const region = await this.live.region({ maxAgeMs: 0 });
+            if (!region || !region.ok || region.blocked || generation !== this._executionGeneration) return;
+          }
+          if (this._opening || this._testPositionActive() || this.journal.pendingOrder() || this.risk.halted || this._dailyLimitHit()) return;
+          this.running = true;
+          this.pauseReason = null;
+          this.status = this.openBet() ? "waiting_settlement" : "watching";
+          this.journal.write({ type: "auto_resumed", reason: "venue_recovered" });
+          this.emit("status", this.status);
+        }
+        this._venueOk();
+      } else this._venueFailed(`health: ${(res && res.reason) || "unreachable"}`);
+    } catch (err) {
+      if (generation === this._executionGeneration) this._venueFailed(`health: ${String(err.message || err)}`);
+    } finally {
+      this._healthBusy = false;
+    }
   }
 
   _venueOk() {
@@ -645,8 +741,9 @@ class Engine {
   /** Stop Auto and say why. Settlement of an open bet continues; Start resumes. */
   pause(reason) {
     if (!this.running) return;
+    this._executionGeneration += 1;
     this.running = false;
-    this._stopHealth();
+    if (!reason.startsWith("venue_down:")) this._stopHealth();
     this.pauseReason = reason;
     this.status = "paused";
     this.journal.write({ type: "auto_paused", reason });
@@ -656,6 +753,7 @@ class Engine {
   }
 
   _hitDailyLimit() {
+    this._executionGeneration += 1;
     this.running = false;
     this._stopHealth();
     this.status = "daily_limit";
@@ -666,6 +764,7 @@ class Engine {
   }
 
   stop() {
+    this._executionGeneration += 1;
     this._stopHealth();
     this.pauseReason = null;
     this.running = false;
@@ -675,6 +774,10 @@ class Engine {
   }
 
   async setMode(mode) {
+    if (this._opening || this.journal.pendingOrder()) {
+      this.emit("log", { level: "warn", message: "mode_blocked_order_pending" });
+      return this.snapshot();
+    }
     if (mode === this.mode) {
       if (mode === "auto") {
         await this.refreshLiveBalance();
@@ -687,6 +790,7 @@ class Engine {
       return this.snapshot();
     }
     this.mode = mode;
+    this._executionGeneration += 1;
     this.risk.reset();
     if (this.running) {
       // Switching books mid-run would start Auto without its confirmation.
@@ -719,9 +823,10 @@ class Engine {
   }
 
   confirmLot(baseUsd) {
+    const resetRisk = this.risk.halted;
     this.risk.confirmLot(baseUsd);
     this.settings.baseUsd = Decimal(baseUsd).toFixed(2);
-    this.journal.write({ type: "lot_confirmed", baseUsd: this.settings.baseUsd });
+    this.journal.write({ type: "lot_confirmed", baseUsd: this.settings.baseUsd, resetRisk });
     if (this.running) {
       this.status = this.paper.openBet ? "waiting_settlement" : "watching";
       this._ensureMarket();
@@ -1186,6 +1291,15 @@ class Engine {
   }
 
   _settleIfOpen(bar) {
+    const bet = this.openBet();
+    if (bet && bet.roundCloseTs && bar.closeTs > bet.roundCloseTs) {
+      const target = this.market.bars.find((b) => b.closeTs === bet.roundCloseTs);
+      if (!target) {
+        this.pause("missing_settlement_bar: waiting for the original round candle");
+        return null;
+      }
+      bar = target;
+    }
     if (this.mode === "auto") return this._settleLive(bar);
     if (!this.paper.openBet) return null;
     const settled = this.paper.settle(bar);
@@ -1211,6 +1325,13 @@ class Engine {
   }
 
   async onBarClose(bar) {
+    const next = this._barQueue.then(() => this._processBarClose(bar));
+    this._barQueue = next.catch(() => {});
+    return next;
+  }
+
+  async _processBarClose(bar) {
+    if (this.markers.length > HISTORY_BARS) this.markers.splice(0, this.markers.length - HISTORY_BARS);
     const bars = this.market.bars;
     let index = bars.findIndex((b) => b.openTs === bar.openTs);
     if (index < 0) {
@@ -1226,6 +1347,11 @@ class Engine {
     this._settleIfOpen(bar);
 
     if (!this.running) return;
+    const interval = INTERVAL_MS[this.settings.timeframe || "15m"] || 900_000;
+    if (bar.recovered && Date.now() >= bar.openTs + 2 * interval) {
+      this.journal.write({ type: "skip", reason: "expired_recovered_signal", openTs: bar.openTs });
+      return;
+    }
     if (this._dailyLimitHit()) {
       this._hitDailyLimit();
       return;
@@ -1241,6 +1367,15 @@ class Engine {
       return;
     }
     if (this.openBet()) return;
+
+    const firstRequired = Math.max(0, index - Math.max(this._slowPeriod(), confirmCountOf(this.settings) + 2) + 1);
+    for (let i = firstRequired + 1; i <= index; i += 1) {
+      if (bars[i].openTs - bars[i - 1].openTs !== interval) {
+        this.journal.write({ type: "skip", reason: "history_gap", openTs: bar.openTs });
+        this.status = "warming_up";
+        return;
+      }
+    }
 
     const ev = this.strategy().evaluate(bars, index, this._evalOptions());
     this.lastEval = { ...ev, bar };
@@ -1266,6 +1401,28 @@ class Engine {
   }
 
   async _openFromSignal(ev, bar) {
+    if (this._opening || this.journal.pendingOrder()) return null;
+    this._opening = true;
+    try {
+      return await this._executeSignal(ev, bar);
+    } finally {
+      this._opening = false;
+    }
+  }
+
+  _pauseUnknownOrder() {
+    this._executionGeneration += 1;
+    this.running = false;
+    this._stopHealth();
+    this.pauseReason = "order_outcome_unknown: check the order on Polymarket before resuming";
+    this.status = "paused";
+    this.emit("log", { level: "error", message: this.pauseReason });
+    this.emit("status", this.status);
+  }
+
+  async _executeSignal(ev, bar) {
+    const generation = this._executionGeneration;
+    if (this.mode === "auto" && this._testPositionActive()) return null;
     if (this.openBet()) return null;
     if (!this.risk.canOpen()) {
       this.status = this.risk.halted ? "halt" : "watching";
@@ -1281,6 +1438,7 @@ class Engine {
     };
     // The stake depends on the entry price (recovery sizing), so price first.
     const quote = await this._quoteFor(ev.signal, round);
+    if (generation !== this._executionGeneration) return null;
     if (this.mode === "auto" && !quote) {
       // No price means no order: say so and count it, never skip rounds silently.
       this.journal.write({ type: "skip", reason: "venue_unavailable", signal: ev.signal, openTs: bar.openTs });
@@ -1343,10 +1501,12 @@ class Engine {
         return null;
       }
 
+      let accepted = false;
       try {
         this.status = "order_sent";
         this.emit("status", this.status);
         const dryRun = this.isDryRun();
+        if (!dryRun) this.journal.beginOrder({ clientOrderId, side: ev.signal, sizeUsd: size, round });
         const order = await this.live.marketBuy({
           side: ev.signal,
           sizeUsd: size,
@@ -1354,7 +1514,9 @@ class Engine {
           round,
           dryRun,
           maxPrice,
+          isActive: () => generation === this._executionGeneration,
         });
+        accepted = true;
         this.orderRejects = 0;
         if (order.fokRetried) this.emit("log", { level: "warn", message: "order_retried: first order was not filled, placed again on a fresh book" });
         if (order.partial) {
@@ -1380,6 +1542,7 @@ class Engine {
         };
         this.markers.push(marker);
         this.journal.write({ type: "order_sent", mode: "auto", dryRun, ...order });
+        this.journal.completeOrder(clientOrderId);
         this.status = "waiting_settlement";
         this.emit("order", { ...order, live: !dryRun });
         this.notify(
@@ -1389,11 +1552,13 @@ class Engine {
         );
         return order;
       } catch (err) {
+        if (!err.ambiguous && !accepted) this.journal.completeOrder(clientOrderId);
         const message = String(err.message || err);
         this.journal.write({ type: "order_error", mode: "auto", code: err.code || null, message });
         this.status = "watching";
         this.emit("log", { level: "error", message: `live_order_error: ${message}` });
         this._onOrderError(err, message);
+        if (err.ambiguous || accepted) this._pauseUnknownOrder();
         return null;
       }
     }

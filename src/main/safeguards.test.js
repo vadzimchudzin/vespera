@@ -161,6 +161,9 @@ const bar = (openTs) => ({ openTs, closeTs: openTs + 899_999, open: 100, high: 1
     assert.strictEqual(e.risk.step, step, "series untouched");
     assert.ok(e.journal.entries.some((r) => r.type === "test_order" && r.side === "DOWN"));
 
+    assert.strictEqual((await e.testOrder({ side: "UP", confirm: true })).reason, "test_open_bet", "test position locks the round");
+    e.lastTestOrder.roundCloseTs = Date.now() - 1;
+
     live.marketBuy = async () => { const err = new Error("clob_order_rejected: 400 x"); err.code = "clob_order_rejected"; throw err; };
     const failed = await e.testOrder({ side: "UP", confirm: true });
     assert.deepStrictEqual([failed.ok, failed.reason], [false, "clob_order_rejected"]);
