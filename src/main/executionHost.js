@@ -128,7 +128,7 @@ class ExecutionHost {
     store.save(settings);
     fs.writeFileSync(path.join(dir, "journal.jsonl"), bundle.history.map((row) => JSON.stringify(row)).join("\n") + "\n", { mode: 0o600 });
     for (const file of [store.file, path.join(dir, "journal.jsonl")]) {
-      const fd = fs.openSync(file, "r");
+      const fd = fs.openSync(file, "r+");
       try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
     }
     atomicJson(path.join(dir, "journal.jsonl.state.json"), bundle.checkpoint);

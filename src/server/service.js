@@ -46,7 +46,7 @@ function atomicJson(file, value) {
 }
 
 function syncFileAndDirectory(file) {
-  const fd = fs.openSync(file, "r");
+  const fd = fs.openSync(file, "r+");
   try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
   const directory = path.dirname(file);
   try {
