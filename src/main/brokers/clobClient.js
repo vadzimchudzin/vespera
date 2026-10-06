@@ -497,6 +497,16 @@ class ClobClient {
     if (this.signatureType != null) qs.set("signature_type", String(this.signatureType));
     return this.authGet(`/balance-allowance?${qs}`);
   }
+
+  async getOrder(orderId) {
+    if (!/^0x[a-f0-9]{64}$/i.test(orderId || "")) throw new Error("invalid_order_hash");
+    return this.authGet(`/data/order/${encodeURIComponent(orderId)}`);
+  }
+
+  async getTrade(tradeId, makerAddress) {
+    const qs = new URLSearchParams({ id: String(tradeId), maker_address: String(makerAddress) });
+    return this.authGet(`/data/trades?${qs}`);
+  }
 }
 
 module.exports = {

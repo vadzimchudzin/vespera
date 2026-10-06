@@ -166,6 +166,10 @@ async function signOrder(order, privateKey, { negRisk = false } = {}) {
   return { order, signature };
 }
 
+function orderHash(order, { negRisk = false } = {}) {
+  return loadEthers().utils._TypedDataEncoder.hash(exchangeDomain(negRisk), ORDER_TYPES, orderMessage(order));
+}
+
 // ── legacy wallet address derivation (CREATE2) ────────────────────────────
 // Lets AUTO tell a legacy proxy / Safe account from a Deposit Wallet without an RPC.
 
@@ -288,6 +292,7 @@ module.exports = {
   signatureTypeFor,
   buildOrder,
   signOrder,
+  orderHash,
   signClobAuth,
   addressFromPrivateKey,
 };

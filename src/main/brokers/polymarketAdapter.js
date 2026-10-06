@@ -5,6 +5,7 @@ const { resolveUpDown, parseList } = require("./polymarketMarkets");
 const {
   buildOrder,
   signOrder,
+  orderHash,
   signClobAuth,
   addressFromPrivateKey,
   signatureTypeFor,
@@ -580,6 +581,20 @@ class PolymarketAdapter {
       throw err;
     }
     let res;
+    if (typeof params.onPrepared === "function") {
+      await params.onPrepared({
+        orderId: orderHash(order, { negRisk: Boolean(quote && quote.negRisk) }),
+        maker: order.maker, tokenId: String(tokenId), side: params.side,
+        slug: quote?.slug || null, sizeUsd: quote?.sizeUsd || (Number(makerAmount) / 1e6).toFixed(6),
+        limitPrice: quote?.limitPrice || Number(makerAmount) / Number(takerAmount),
+        feeRate: quote?.feeRate, feeExponent: quote?.feeExponent,
+      });
+    }
+    if (params.isActive && !params.isActive()) {
+      const err = new Error("execution_changed: entry cancelled before submission");
+      err.code = "execution_changed";
+      throw err;
+    }
     try {
       res = await this.client.postOrder({ ...signed, orderType: ORDER_TYPE });
     } catch (cause) {
@@ -740,14 +755,24 @@ class PolymarketAdapter {
     const res = await this.client.eventBySlug(slug);
     if (!res || !res.ok || !res.json) return { resolved: false };
     const market = Array.isArray(res.json.markets) && res.json.markets[0] ? res.json.markets[0] : res.json;
-    if (!market.closed) return { resolved: false };
+    if (market.closed !== true || market.umaResolutionStatus !== "resolved") return { resolved: false };
     const outcomes = parseList(market.outcomes).map((o) => String(o).toLowerCase());
     const prices = parseList(market.outcomePrices).map(Number);
-    const winner = prices.findIndex((p) => p >= 0.99);
+    if (prices.length !== 2 || outcomes.length !== 2 || prices.filter((p) => p === 1).length !== 1 || prices.filter((p) => p === 0).length !== 1) return { resolved: false };
+    const winner = prices.findIndex((p) => p === 1);
     if (winner < 0 || !outcomes[winner]) return { resolved: false };
     const name = outcomes[winner];
     const outcome = name === "up" || name === "yes" ? "UP" : name === "down" || name === "no" ? "DOWN" : null;
     return outcome ? { resolved: true, outcome } : { resolved: false };
+  }
+
+  async inspectOrder(pending) {
+    try {
+      this._syncClientIdentity();
+      return await require("./orderEvidence").inspectOrder(this.client, pending, this.walletAddress);
+    } catch {
+      return { ok: false, reason: "order_lookup_unavailable" };
+    }
   }
 
   async resolveRound(tsMs) {

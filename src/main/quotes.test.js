@@ -575,7 +575,7 @@ async function payoutCase({ payout, side, settleClose, expectPnl, label }) {
         eventBySlug: async () => ({
           ok: true,
           status: 200,
-          json: { markets: [{ closed: true, outcomes: '["Up","Down"]', outcomePrices: '["0","1"]' }] },
+          json: { markets: [{ closed: true, umaResolutionStatus: "resolved", outcomes: '["Up","Down"]', outcomePrices: '["0","1"]' }] },
         }),
       },
     });
@@ -584,6 +584,10 @@ async function payoutCase({ payout, side, settleClose, expectPnl, label }) {
       client: { eventBySlug: async () => ({ ok: true, status: 200, json: { markets: [{ closed: false }] } }) },
     });
     assert.deepStrictEqual(await open.resolvedOutcome("x"), { resolved: false });
+    for (const patch of [{ umaResolutionStatus: "proposed" }, { umaResolutionStatus: null }, { outcomePrices: '["0.01","0.99"]' }, { outcomePrices: '["0.5","0.5"]' }]) {
+      const pending = new PolymarketAdapter({ client: { eventBySlug: async () => ({ ok: true, json: { markets: [{ closed: true, umaResolutionStatus: "resolved", outcomes: '["Up","Down"]', outcomePrices: '["0","1"]', ...patch }] } }) } });
+      assert.deepStrictEqual(await pending.resolvedOutcome("x"), { resolved: false }, "price and closure alone do not prove final resolution");
+    }
   }
 
   // Derivation stores the credentials on the adapter.
