@@ -25,6 +25,8 @@
     pairLabel: "",
     chromeKey: "",
     saveTimer: 0,
+    savePatch: {},
+    planPatch: {},
     savingPanel: false,
     depositTimer: 0,
   };
@@ -415,8 +417,11 @@
   }
 
   function debounceSave(patch, ms = 80) {
+    Object.assign(state.savePatch, patch);
     clearTimeout(state.saveTimer);
     state.saveTimer = setTimeout(async () => {
+      const patch = state.savePatch;
+      state.savePatch = {};
       if (!window.vespera) return;
       const snap = await window.vespera.saveSettings(patch);
       if (!snap || !snap.settings) return;
@@ -939,6 +944,7 @@
       title.textContent = t("settings");
       const s = state.snapshot?.settings || {};
       body.innerHTML = `
+        <p class="hint warn" id="settingsSaveError" role="alert" hidden></p>
         <div class="field"><span class="field-label">${t("base")}</span><input id="base" value="${s.baseUsd || "1.00"}" /></div>
         <div class="field"><span class="field-label">${t("maxSteps")}</span><input id="steps" value="${s.maxSteps || 6}" /></div>
         <div class="field toggle-row">
@@ -1053,8 +1059,11 @@
       };
       paintPlan(state.snapshot);
       const planSave = (patch, ms) => {
+        Object.assign(state.planPatch, patch);
         clearTimeout(state.planTimer);
         state.planTimer = setTimeout(async () => {
+          const patch = state.planPatch;
+          state.planPatch = {};
           if (!window.vespera) return;
           const snap = await window.vespera.saveSettings(patch);
           if (snap) {
@@ -1236,23 +1245,36 @@
           notificationsEnabled: notifyEl ? notifyEl.classList.contains("on") : true,
         };
         hideTip();
-        closePanel();
+        // The full patch supersedes queued autosaves.
+        clearTimeout(state.saveTimer);
+        clearTimeout(state.planTimer);
+        state.savePatch = {};
+        state.planPatch = {};
+        const error = $("settingsSaveError");
+        const saveBtn = $("saveSet");
+        const controls = [...body.querySelectorAll("input, button"), ...foot.querySelectorAll("button")];
+        const disabled = controls.map((el) => el.disabled);
+        controls.forEach((el) => { el.disabled = true; });
+        error.hidden = true;
+        saveBtn.textContent = t("saving");
         try {
-          if (!window.vespera) return;
+          if (!window.vespera) throw new Error("Desktop API unavailable");
           const snap = await window.vespera.saveSettings(patch);
+          if (!snap || !snap.settings) throw new Error("Settings were not saved");
           try {
             await window.vespera.confirmLot(patch.baseUsd);
           } catch {
             /* lot confirm is secondary */
           }
-          renderSnap(snap || (await window.vespera.snapshot()));
+          renderSnap(snap);
+          if (saveBtn.isConnected) closePanel();
         } catch {
-          try {
-            renderSnap(await window.vespera.snapshot());
-          } catch {
-            /* already closed */
-          }
+          error.textContent = t("saveFailed");
+          error.hidden = false;
+          error.scrollIntoView({ block: "nearest" });
         } finally {
+          controls.forEach((el, i) => { el.disabled = disabled[i]; });
+          saveBtn.textContent = t("save");
           state.savingPanel = false;
         }
       };

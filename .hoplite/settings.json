@@ -1,0 +1,13 @@
+{
+	"version": 1,
+	"ports": {
+		"preview": 3000,
+		"additional": {}
+	},
+	"scripts": {
+		"run": {
+			"enabled": true,
+			"command": "python3 -m http.server 3000 --bind 0.0.0.0 --directory src/renderer"
+		}
+	}
+}

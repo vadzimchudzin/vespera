@@ -61,6 +61,10 @@ npm test
 npm start
 ```
 
+The managed Hoplite Preview serves the renderer only (requires Python 3).
+It does not expose Electron IPC, account connections, or trading; use `npm start`
+for the full desktop app. Renderer interaction checks can use a mocked desktop API.
+
 ## Cut a version (Win + Mac)
 
 Bump `version` in `package.json`, add a `CHANGELOG` line, tag:

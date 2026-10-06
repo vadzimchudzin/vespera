@@ -9,7 +9,7 @@
   "main": "src/main/main.js",
   "scripts": {
     "start": "electron .",
-    "test": "node src/main/strategy.test.js && node src/main/engine.test.js && node src/main/brokers/polymarket.test.js && node src/main/persistence.test.js && node src/main/quotes.test.js && node src/main/risk.test.js && node src/main/safeguards.test.js && node src/main/connect.test.js && node src/main/export.test.js && node src/main/brokers/bridge.test.js",
+    "test": "node src/main/strategy.test.js && node src/main/engine.test.js && node src/main/brokers/polymarket.test.js && node src/main/persistence.test.js && node src/main/quotes.test.js && node src/main/risk.test.js && node src/main/safeguards.test.js && node src/main/connect.test.js && node src/main/export.test.js && node src/main/brokers/bridge.test.js && node src/main/rendererSettings.test.js",
     "pack": "electron-builder --dir",
     "dist": "electron-builder --win --mac",
     "dist:win": "electron-builder --win nsis --publish never",
