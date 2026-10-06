@@ -402,7 +402,7 @@ async function run() {
     engine._replayMarkers(true);
     const before = engine.snapshot().markers.length;
     assert(before > 0, "markers at 0 ticks");
-    await engine.applySettings({ minCrossTicks: 10_000 });
+    await engine.applySettings({ minCrossTicks: 2000 });
     assert(engine.snapshot().markers.length === 0, "min-cross slider must drop arrows");
     await engine.applySettings({ minCrossTicks: 0 });
     assert(engine.snapshot().markers.length === before, "0 ticks restores arrows");
@@ -692,10 +692,16 @@ async function run() {
     const market = { ...fakeMarket(bars.slice(0, 219)), configured: 0, async configure() { this.configured += 1; } };
     const engine = new Engine({ userDataDir: tmpDir(), settings: { mode: "paper", symbol: "BTCUSDT", timeframe: "15m" }, live: stubLive(), market });
     await engine.paper.marketBuy({ side: "UP", sizeUsd: "1.00", clientOrderId: "x", round: { strike: 100, openTs: 1, closeTs: 2 } });
-    await engine.applySettings({ symbol: "ETHUSDT", timeframe: "5m", confirmCount: 2 });
+    let locked = false;
+    try {
+      await engine.applySettings({ symbol: "ETHUSDT", timeframe: "5m", confirmCount: 2 });
+    } catch (err) {
+      locked = err.code === "settings_locked";
+    }
+    assert(locked, "an active-position settings patch is rejected atomically");
     assert(engine.settings.symbol === "BTCUSDT" && engine.settings.timeframe === "15m", "market locked while a bet is open");
     assert(market.configured === 0, "the feed was not switched");
-    assert(engine.settings.confirmCount === 2, "other settings in the same save still apply");
+    assert(engine.settings.confirmCount === 0, "a rejected save applies no partial settings");
     engine.paper.settle({ close: 101, closeTs: 2 });
     await engine.applySettings({ symbol: "ETHUSDT" });
     assert(engine.settings.symbol === "ETHUSDT" && market.configured === 1, "unlocked after settlement");

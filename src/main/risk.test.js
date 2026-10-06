@@ -75,6 +75,50 @@ const { Journal } = require("./journal");
   assert.strictEqual(off.isCapped(0.5), false, "0 means no cap");
 }
 
+// ── fixed ladders are price-independent and series budgets include fees ─────
+{
+  const r = new Risk({ sizingMode: "fixed", fixedStakes: [5, 10, 20] });
+  assert.strictEqual(r.baseUsd.toFixed(2), "5.00");
+  assert.strictEqual(r.maxSteps, 3);
+  assert.strictEqual(r.size(0.7).toFixed(2), "5.00");
+  assert.strictEqual(r.size(0.5).toFixed(2), "5.00");
+  r.onLoss(1);
+  assert.strictEqual(r.size(0.7).toFixed(2), "10.00");
+  assert.strictEqual(r.size(0.5).toFixed(2), "10.00");
+
+  const capped = new Risk({ sizingMode: "fixed", fixedStakes: [5, 10, 20], maxStakeUsd: 3 });
+  assert.strictEqual(capped.size(0.5).toFixed(2), "3.00");
+  assert.strictEqual(capped.isCapped(0.5), true);
+
+  const budgeted = new Risk({ sizingMode: "fixed", fixedStakes: [5, 10, 20], maxSeriesLossUsd: 15.52 });
+  const plan = budgeted.plan(0.5);
+  assert.strictEqual(plan.budgetUsd, 15.52);
+  assert.strictEqual(plan.limitedByBudget, true);
+  assert.deepStrictEqual(plan.steps.map((step) => step.stake), [5], "the second fee-inclusive loss crosses the budget");
+  assert.strictEqual(plan.totalAtRisk, 5.18, "budget accounting rounds fees up to cents");
+  assert.strictEqual(budgeted.budgetAllows(0.5), true);
+  budgeted.onLoss(5.18);
+  assert.strictEqual(budgeted.budgetAllows(0.5), false);
+  assert.deepStrictEqual(budgeted.snapshot(0.5).fixedStakes, [5, 10, 20]);
+  assert.strictEqual(budgeted.snapshot(0.5).maxSeriesLossUsd, 15.52);
+  assert.strictEqual(new Risk({ maxSeriesLossUsd: 0 }).budgetAllows(0.5), true, "zero disables the series budget");
+}
+
+// Old or malformed persisted values are repaired on construction.
+{
+  const legacy = new Risk({ baseUsd: -1, maxSteps: 99, sizingMode: "old-mode", maxStakeUsd: -3 });
+  assert.strictEqual(legacy.baseUsd.toFixed(2), "0.01");
+  assert.strictEqual(legacy.maxSteps, 20);
+  assert.strictEqual(legacy.sizingMode, "double");
+  assert.strictEqual(legacy.maxStakeUsd, 0);
+
+  const configured = new Risk().configure({ sizingMode: "fixed", fixedStakes: "5, 10; 20", baseUsd: 99, maxSteps: 2 });
+  assert.deepStrictEqual(configured.fixedStakes, [5, 10, 20]);
+  assert.strictEqual(configured.maxSteps, 3);
+  assert.strictEqual(configured.baseUsd.toFixed(2), "5.00");
+  assert.throws(() => configured.configure({ maxSeriesLossUsd: -1 }), (error) => error.code === "invalid_settings");
+}
+
 // ── restart restores the series loss, paper reset / mode switch start fresh ──
 {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vsp-risk-"));

@@ -5,6 +5,7 @@ const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
 const { clampRefreshMs } = require("./markets");
+const { normalizeSettings } = require("../shared/settings");
 
 /**
  * Settings persistence.
@@ -26,6 +27,8 @@ const DEFAULTS = {
   baseUsd: "1.00",
   maxSteps: 6,
   sizingMode: "double",
+  fixedStakes: [1, 2, 4, 8, 16, 32],
+  maxSeriesLossUsd: 0,
   maxStakeUsd: 0,
   maxEntryPrice: 1,
   // Auto signs and checks the balance but does not post orders until turned off.
@@ -137,7 +140,7 @@ class SettingsStore {
   constructor(userDataDir) {
     this.file = path.join(userDataDir, "settings.json");
     this.scope = userDataDir || "vespera";
-    this.value = { ...DEFAULTS, ...this._read() };
+    this.value = normalizeSettings({ ...DEFAULTS, ...this._read() }, {}, { strict: false });
     this.value.refreshMs = clampRefreshMs(this.value.refreshMs);
   }
 
@@ -159,7 +162,7 @@ class SettingsStore {
     for (const key of SECRET_FIELDS) {
       if (key in clean && (clean[key] == null || clean[key] === "")) delete clean[key];
     }
-    this.value = { ...this.value, ...clean };
+    this.value = { ...this.value, ...normalizeSettings(clean, this.value) };
     if (clean.refreshMs != null) this.value.refreshMs = clampRefreshMs(clean.refreshMs);
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
     const onDisk = { ...this.value };

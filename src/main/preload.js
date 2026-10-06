@@ -8,7 +8,7 @@ contextBridge.exposeInMainWorld("vespera", {
   start: (opts) => ipcRenderer.invoke("engine:start", opts),
   stop: () => ipcRenderer.invoke("engine:stop"),
   setMode: (mode) => ipcRenderer.invoke("engine:setMode", mode),
-  confirmLot: (baseUsd) => ipcRenderer.invoke("engine:confirmLot", baseUsd),
+  confirmLot: (baseUsd, opts) => ipcRenderer.invoke("engine:confirmLot", baseUsd, opts),
   ping: (creds) => ipcRenderer.invoke("engine:ping", creds),
   deriveKeys: (patch) => ipcRenderer.invoke("engine:deriveKeys", patch),
   connect: (patch) => ipcRenderer.invoke("engine:connect", patch),

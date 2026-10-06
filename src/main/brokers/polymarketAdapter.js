@@ -508,6 +508,14 @@ class PolymarketAdapter {
       ? { tokenId: params.tokenId, makerAmount: params.makerAmount, takerAmount: params.takerAmount, side: params.side, quote: null }
       : await this._sizeFromSignal(params);
     const { tokenId, makerAmount, takerAmount, quote } = resolved;
+    if (quote && Number.isFinite(params.maxTotalCostUsd)) {
+      const cost = Math.ceil((Number(quote.sizeUsd) + Number(quote.feeUsd || 0)) * 100 - 1e-9) / 100;
+      if (cost > params.maxTotalCostUsd + 1e-9) {
+        const err = new Error("budget_exceeded: stake and fee exceed the remaining budget");
+        err.code = "budget_exceeded";
+        throw err;
+      }
+    }
     const side = typeof resolved.side === "number" ? resolved.side : 0;
     if (!tokenId) {
       const err = new Error("missing_tokenId");

@@ -103,9 +103,9 @@ ipcMain.handle("engine:setMode", async (_e, mode) => {
   store.save({ mode: engine.mode, symbol: engine.settings.symbol, timeframe: engine.settings.timeframe });
   return engine.snapshot();
 });
-ipcMain.handle("engine:confirmLot", (_e, baseUsd) => {
-  store.save({ baseUsd });
-  engine.confirmLot(baseUsd);
+ipcMain.handle("engine:confirmLot", (_e, baseUsd, opts) => {
+  engine.confirmLot(baseUsd, opts);
+  store.save({ baseUsd: engine.settings.baseUsd });
   return engine.snapshot();
 });
 ipcMain.handle("engine:ping", (_e, creds) => {
@@ -202,11 +202,22 @@ ipcMain.handle("settings:get", () => {
 });
 ipcMain.handle("settings:save", async (_e, patch) => {
   const p = patch || {};
-  await engine.applySettings(p);
+  try {
+    await engine.applySettings(p);
+  } catch (err) {
+    if (err.code === "invalid_settings" || err.code === "settings_locked") {
+      return { ok: false, reason: err.code, field: err.field || null, message: err.message, state: engine.snapshot() };
+    }
+    throw err;
+  }
   // persist what the engine accepted (Auto refuses pairs without a Polymarket round)
   const accepted = { ...p };
-  if (p.symbol != null) accepted.symbol = engine.settings.symbol;
-  if (p.timeframe != null) accepted.timeframe = engine.settings.timeframe;
+  for (const key of Object.keys(accepted)) {
+    if (key in engine.settings) accepted[key] = engine.settings[key];
+  }
+  for (const key of ["baseUsd", "maxSteps", "fixedStakes", "fastPeriod", "slowPeriod"]) {
+    if (key in engine.settings) accepted[key] = engine.settings[key];
+  }
   store.save(accepted);
   return engine.snapshot();
 });

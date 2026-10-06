@@ -12,6 +12,8 @@ const { Decimal } = require("./money");
 const { outcomeOf } = require("./paperBroker");
 const { SUPPORTED_TF, isSupportedSymbol, fitToPolymarket } = require("./brokers/polymarketMarkets");
 const { fastPeriodOf, slowPeriodOf, confirmCountOf, fullBodyOnSOf, maTypeOf } = require("./strategy");
+const { normalizeSettings, RISK_FIELDS } = require("../shared/settings");
+const { DEFAULTS } = require("./settingsStore");
 
 const STATUSES = [
   "stopped",
@@ -40,7 +42,7 @@ function maxEntryPriceOf(value) {
 class Engine {
   constructor({ userDataDir, settings, market, live } = {}) {
     this.userDataDir = userDataDir;
-    this.settings = settings || {};
+    this.settings = normalizeSettings({ ...DEFAULTS, ...(settings || {}) }, {}, { strict: false });
     this.running = false;
     this.status = "stopped";
     this.mode = this.settings.mode || "paper";
@@ -55,6 +57,8 @@ class Engine {
       maxSteps: this.settings.maxSteps || 6,
       sizingMode: this.settings.sizingMode,
       maxStakeUsd: this.settings.maxStakeUsd,
+      fixedStakes: this.settings.fixedStakes,
+      maxSeriesLossUsd: this.settings.maxSeriesLossUsd,
     });
     const restored = this.journal.restoreRisk(this.risk.maxSteps);
     this.risk.step = restored.step;
@@ -189,6 +193,13 @@ class Engine {
     const ceiling = Math.min(1 - tick, Number(quote.price) + slip);
     const minShares = Number(quote.minOrderSize) > 0 ? Number(quote.minOrderSize) : 5;
     const sizeUsd = (Math.ceil(minShares * ceiling * 100) / 100 + 0.01).toFixed(2);
+    if (this.risk.maxStakeUsd > 0 && Number(sizeUsd) > this.risk.maxStakeUsd) {
+      return { ok: false, reason: "stake_above_max" };
+    }
+    const maxTotalCostUsd = this._entryBudget();
+    const schedule = { rate: quote.feeRate, exponent: quote.feeExponent };
+    const testCost = Math.ceil(Number(sizeUsd) * perDollar(quote.price, schedule).loss * 100 - 1e-9) / 100;
+    if (testCost > maxTotalCostUsd + 1e-9) return { ok: false, reason: "budget_exceeded" };
     const dryRun = this.isDryRun();
     const plan = { side: wanted, sizeUsd, price: quote.price, slug: quote.slug, dryRun };
     if (!confirm) return { ok: false, reason: "test_confirm", ...plan };
@@ -206,6 +217,7 @@ class Engine {
         round: { openTs: Date.now() },
         dryRun,
         isActive: () => generation === this._executionGeneration,
+        maxTotalCostUsd,
       });
       accepted = true;
       const row = {
@@ -405,8 +417,21 @@ class Engine {
   }
 
   async applySettings(input = {}) {
-    this._executionGeneration += 1;
-    const patch = { ...input };
+    const patch = normalizeSettings(input, this.settings);
+    const changed = Object.keys(patch).filter((key) => JSON.stringify(patch[key]) !== JSON.stringify(this.settings[key]));
+    const tradingFields = new Set([...RISK_FIELDS, "maxEntryPrice", "dailyLossLimitUsd", "dryRun", "symbol", "timeframe", "maType", "fastPeriod", "slowPeriod", "minOpeningAtr", "minCrossTicks", "confirmCount", "fullBodyOnS", "strategyId", "privateKey", "walletAddress", "walletType", "proxyUrl", "apiKey", "apiSecret", "apiPassphrase"]);
+    const positionActive = this._opening || this.openBet() || this.liveBet || this.paper.openBet || this._testPositionActive() || this.journal.pendingOrder();
+    const lockedField = changed.find((key) =>
+      (positionActive && tradingFields.has(key)) ||
+      (this.risk.consecutiveLosses > 0 && RISK_FIELDS.includes(key))
+    );
+    if (lockedField) {
+      const err = new Error("settings_locked: finish the position or explicitly confirm a halted new series first");
+      err.code = "settings_locked";
+      err.field = lockedField;
+      throw err;
+    }
+    if (changed.some((key) => tradingFields.has(key))) this._executionGeneration += 1;
     if (this.mode === "auto") {
       if (patch.symbol != null && !isSupportedSymbol(patch.symbol)) {
         this.emit("log", { level: "warn", message: `market_unsupported_in_auto: ${patch.symbol}` });
@@ -464,6 +489,12 @@ class Engine {
     if (patch.maxStakeUsd != null) {
       next.maxStakeUsd = Math.max(0, Number(patch.maxStakeUsd) || 0);
       this.risk.configure({ maxStakeUsd: next.maxStakeUsd });
+    }
+    if (patch.fixedStakes != null || patch.maxSeriesLossUsd != null) {
+      const riskPatch = {};
+      if (patch.fixedStakes != null) riskPatch.fixedStakes = patch.fixedStakes;
+      if (patch.maxSeriesLossUsd != null) riskPatch.maxSeriesLossUsd = patch.maxSeriesLossUsd;
+      this.risk.configure(riskPatch);
     }
     if (patch.maxEntryPrice != null) {
       next.maxEntryPrice = maxEntryPriceOf(patch.maxEntryPrice);
@@ -822,8 +853,26 @@ class Engine {
     return this.snapshot();
   }
 
-  confirmLot(baseUsd) {
-    const resetRisk = this.risk.halted;
+  confirmLot(baseUsd, { resetSeries = false } = {}) {
+    if (this._opening || this.openBet() || this.liveBet || this.paper.openBet || this.journal.pendingOrder() || this._testPositionActive()) {
+      const err = new Error("settings_locked: a position or order is active");
+      err.code = "settings_locked";
+      throw err;
+    }
+    const accepted = normalizeSettings({ baseUsd }, this.settings);
+    if (resetSeries && this.running) {
+      const err = new Error("settings_locked: Stop before starting a new series");
+      err.code = "settings_locked";
+      throw err;
+    }
+    if (!resetSeries && !this.risk.halted && this.risk.consecutiveLosses > 0 && accepted.baseUsd !== this.risk.baseUsd.toFixed(2)) {
+      const err = new Error("settings_locked: base cannot change mid-series");
+      err.code = "settings_locked";
+      throw err;
+    }
+    baseUsd = accepted.baseUsd;
+    const resetRisk = this.risk.halted || resetSeries;
+    if (resetSeries) this.risk.reset();
     this.risk.confirmLot(baseUsd);
     this.settings.baseUsd = Decimal(baseUsd).toFixed(2);
     this.journal.write({ type: "lot_confirmed", baseUsd: this.settings.baseUsd, resetRisk });
@@ -835,7 +884,7 @@ class Engine {
   }
 
   resetPaper(startingBalance) {
-    if (this.paper.openBet) {
+    if (this.mode !== "paper" || this.paper.openBet || this.liveBet || this._opening || this.journal.pendingOrder()) {
       this.emit("log", { level: "warn", message: "reset_blocked_open_bet" });
       return this.snapshot();
     }
@@ -1460,6 +1509,13 @@ class Engine {
     }
     const entryPrice = quote ? quote.price : undefined;
     const size = this.risk.size(entryPrice, schedule).toFixed(2);
+    const maxTotalCostUsd = this._entryBudget();
+    const lossCost = Math.ceil(Number(size) * perDollar(entryPrice, schedule).loss * 100 - 1e-9) / 100;
+    if (lossCost > maxTotalCostUsd + 1e-9) {
+      this.pause("budget_exceeded: stake and fee exceed the remaining series or daily budget");
+      this.journal.write({ type: "budget_blocked", sizeUsd: size, lossCost, remainingUsd: maxTotalCostUsd });
+      return null;
+    }
     if (this.risk.isCapped(entryPrice, schedule)) {
       const needed = this.risk.rawSize(entryPrice, schedule).toFixed(2);
       this.journal.write({ type: "stake_capped", needed, cap: this.risk.maxStakeUsd, step: this.risk.step });
@@ -1514,6 +1570,7 @@ class Engine {
           round,
           dryRun,
           maxPrice,
+          maxTotalCostUsd,
           isActive: () => generation === this._executionGeneration,
         });
         accepted = true;
@@ -1558,6 +1615,7 @@ class Engine {
         this.status = "watching";
         this.emit("log", { level: "error", message: `live_order_error: ${message}` });
         this._onOrderError(err, message);
+        if (err.code === "budget_exceeded") this.pause("budget_exceeded: refreshed order cost exceeds the remaining budget");
         if (err.ambiguous || accepted) this._pauseUnknownOrder();
         return null;
       }
@@ -1633,6 +1691,14 @@ class Engine {
     if (marker) marker.result = settled.status;
   }
 
+  _entryBudget() {
+    const series = Number(this.risk.maxSeriesLossUsd) > 0
+      ? Math.max(0, this.risk.maxSeriesLossUsd - this.risk.seriesLossUsd) : Infinity;
+    const daily = this.dailyLossLimit() > 0
+      ? Math.max(0, this.dailyLossLimit() + this.todayPnl()) : Infinity;
+    return Math.min(series, daily);
+  }
+
   snapshot() {
     const forming = this.market.forming
       ? {
@@ -1649,7 +1715,7 @@ class Engine {
         ? this.market.bars[this.market.bars.length - 1].close
         : null;
     return {
-      version: "0.11.1",
+      version: require("../../package.json").version,
       running: this.running,
       status: this.status,
       mode: this.mode,
@@ -1669,6 +1735,8 @@ class Engine {
         maxSteps: this.risk.maxSteps,
         sizingMode: this.risk.sizingMode,
         maxStakeUsd: this.risk.maxStakeUsd,
+        fixedStakes: this.risk.fixedStakes.slice(),
+        maxSeriesLossUsd: this.risk.maxSeriesLossUsd,
         maxEntryPrice: maxEntryPriceOf(this.settings.maxEntryPrice),
         dryRun: this.isDryRun(),
         dailyLossLimitUsd: this.dailyLossLimit(),
@@ -1707,6 +1775,9 @@ class Engine {
       book: this._book(),
       daily: dailyBreakdown(this.journal.entries, this._book(), 14),
       pauseReason: this.pauseReason,
+      settingsLocked: Boolean(this._opening || this.openBet() || this._testPositionActive() || this.journal.pendingOrder() || this.risk.consecutiveLosses > 0),
+      orderPending: Boolean(this._opening || this.journal.pendingOrder()),
+      testPositionActive: Boolean(this._testPositionActive()),
       lastConnect: this.lastConnect || null,
       paper: this.paper.snapshot(),
       liveBalance: this.liveBalance,
