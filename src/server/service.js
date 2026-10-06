@@ -13,6 +13,7 @@ const MAX_BODY = 1024 * 1024;
 const MAX_BUNDLE = 16 * 1024 * 1024;
 const MAX_EVENTS = 1000;
 const METHODS = new Set([
+  "inspectPendingOrder", "resolvePendingOrder", "reconcileFinalSettlement",
   "snapshot", "warmChart", "start", "stop", "setMode", "confirmLot", "ping", "connect", "testOrder",
   "deriveKeys", "setStrategy", "resetPaper", "getSettings", "saveSettings", "exportCsv", "depositAssets",
   "depositAddress", "depositStatus",
@@ -108,6 +109,12 @@ function clean(value, depth = 0, redactions = []) {
 
 function createService({ userDataDir, token, host, hostFactory, now = Date.now, telegramTransport = null } = {}) {
   if (!userDataDir) throw new TypeError("userDataDir is required");
+  try {
+    fs.lstatSync(path.join(userDataDir, ".restore-validation.json"));
+    throw new Error("restore_validation_executor_blocked");
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
   if (typeof token !== "string" || Buffer.byteLength(token) < 32 || /\s/.test(token)) throw new TypeError("token must contain at least 32 bytes and no whitespace");
   privateDir(userDataDir);
   const ownershipFile = path.join(userDataDir, "ownership.json");

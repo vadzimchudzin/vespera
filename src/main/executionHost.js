@@ -90,8 +90,7 @@ class ExecutionHost {
 
   dispose() {
     this.setTelegramContext({ active: false, command: null });
-    this.engine.stop();
-    this.engine.market.stop?.();
+    this.engine.dispose();
     this.unsubscribe?.();
   }
 
@@ -195,6 +194,12 @@ class ExecutionHost {
       case "warmChart": return e.warmChart();
       case "start": return e.start(args[0] || {});
       case "stop": e.stop(); return e.snapshot();
+      case "inspectPendingOrder": {
+        const result = await e.inspectPendingOrder();
+        return { ...result, clientOrderId: e.journal.pendingOrder()?.clientOrderId || null };
+      }
+      case "resolvePendingOrder": return e.resolvePendingOrder(args[0] || {});
+      case "reconcileFinalSettlement": return e.reconcileFinalSettlement({ attempts: 1 });
       case "setMode":
         await e.setMode(args[0]);
         this.store.save({ mode: e.mode, symbol: e.settings.symbol, timeframe: e.settings.timeframe });

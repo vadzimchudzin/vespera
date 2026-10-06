@@ -9,6 +9,21 @@ const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 
 const MANIFEST = "manifest.json";
+const RESTORE_FENCE = ".restore-validation.json";
+
+function noSymlinkAncestors(input) {
+  const absolute = path.resolve(input);
+  let current = path.parse(absolute).root;
+  for (const part of absolute.slice(current.length).split(path.sep).filter(Boolean)) {
+    current = path.join(current, part);
+    try {
+      if (fs.lstatSync(current).isSymbolicLink()) fail("symlink_not_allowed");
+    } catch (error) {
+      if (error.code === "ENOENT") break;
+      throw error;
+    }
+  }
+}
 
 function fail(code) {
   const error = new Error(code);
@@ -18,6 +33,7 @@ function fail(code) {
 
 function realDirectory(input, { create = false } = {}) {
   const dir = path.resolve(input);
+  noSymlinkAncestors(dir);
   if (create) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const stat = fs.lstatSync(dir);
   if (!stat.isDirectory() || stat.isSymbolicLink()) fail("directory_invalid");
@@ -99,13 +115,14 @@ function acquireMaintenanceLock(dataDir) {
 
 function assertOutside(parent, child, code) {
   const relative = path.relative(parent, child);
-  if (!relative.startsWith("..") && relative !== "") fail(code);
+  if (relative === "" || !relative.startsWith("..")) fail(code);
   const reverse = path.relative(child, parent);
   if (!reverse.startsWith("..") && reverse !== "") fail(code);
 }
 
 function existingEmptyDirectory(input) {
   const dir = path.resolve(input);
+  noSymlinkAncestors(dir);
   try {
     const stat = fs.lstatSync(dir);
     if (!stat.isDirectory() || stat.isSymbolicLink()) fail("restore_target_invalid");
@@ -161,6 +178,7 @@ function verifyBackup(backupDir) {
 function backup({ dataDir, tokenFile, destination }) {
   const source = realDirectory(dataDir);
   const token = path.resolve(tokenFile);
+  noSymlinkAncestors(token);
   const tokenStat = fs.lstatSync(token);
   if (!tokenStat.isFile() || tokenStat.isSymbolicLink()) fail("token_file_invalid");
   if (process.platform !== "win32" && (tokenStat.mode & 0o077)) fail("token_file_permissions_invalid");
@@ -168,6 +186,7 @@ function backup({ dataDir, tokenFile, destination }) {
   if (tokenData.length < 32) fail("token_file_invalid");
   assertOutside(source, token, "token_file_must_be_outside_data");
   const target = path.resolve(destination);
+  noSymlinkAncestors(target);
   assertOutside(source, target, "backup_destination_overlap");
   assertOutside(token, target, "backup_destination_overlap");
   const releaseLock = acquireMaintenanceLock(source);
@@ -225,6 +244,7 @@ function restore({ backupDir, dataDir, tokenFile, isolatedValidation, executorSt
   const verified = verifyBackup(backupDir);
   const targetData = existingEmptyDirectory(dataDir);
   const targetToken = path.resolve(tokenFile);
+  noSymlinkAncestors(targetToken);
   try {
     fs.lstatSync(targetToken);
     fail("restore_token_target_exists");
@@ -264,6 +284,7 @@ function restore({ backupDir, dataDir, tokenFile, isolatedValidation, executorSt
       }
     }
     fs.copyFileSync(path.join(verified.root, "server.token"), stageToken, fs.constants.COPYFILE_EXCL);
+    fs.writeFileSync(path.join(stageData, RESTORE_FENCE), JSON.stringify({ version: 1, isolatedValidation: true, executorStart: false }), { flag: "wx", mode: 0o600 });
     if (process.platform !== "win32") fs.chmodSync(stageToken, 0o600);
     try {
       fs.mkdirSync(targetData, { mode: 0o700 });

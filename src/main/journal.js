@@ -17,6 +17,8 @@ const REPLAY_TYPES = new Set([
   "order_sent",
   "test_order",
   "settled",
+  "settlement_provisional",
+  "settlement_failed",
   "paper_reset",
   "mode",
   "dry_run",
@@ -108,7 +110,7 @@ class Journal {
     for (const entry of entries) {
       if (entry.type === "paper_reset") lastPaperReset = entry;
       if (entry.type === "test_order") lastTestOrder = entry;
-      if (entry.type === "order_sent" || entry.type === "settled") {
+      if (entry.type === "order_sent" || entry.type === "settled" || entry.type === "settlement_provisional") {
         const book = entry.mode === "auto" ? (entry.dryRun ? "dry" : "live") : "paper";
         lastByBook.set(book, entry);
       }
@@ -366,6 +368,25 @@ class Journal {
     this._atomicJson(this.pendingPath, { version: 1, entry });
     this._pendingOrder = entry;
     return entry;
+  }
+
+  attachOrderEvidence(clientOrderId, evidence) {
+    if (!this._pendingOrder || this._pendingOrder.clientOrderId !== clientOrderId) {
+      throw new Error("Pending order clientOrderId mismatch");
+    }
+    if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)) {
+      throw new Error("Order evidence must be an object");
+    }
+    const allowed = ["orderId", "maker", "tokenId", "slug", "side", "sizeUsd", "limitPrice", "feeRate", "feeExponent", "makerAddress", "signerAddress", "signatureType"];
+    const safeEvidence = {};
+    for (const key of allowed) {
+      const value = evidence[key];
+      if (value != null && ["string", "number"].includes(typeof value)) safeEvidence[key] = value;
+    }
+    const next = { ...this._pendingOrder, evidence: { ...(this._pendingOrder.evidence || {}), ...safeEvidence } };
+    this._atomicJson(this.pendingPath, { version: 1, entry: next });
+    this._pendingOrder = next;
+    return next;
   }
 
   completeOrder(clientOrderId) {

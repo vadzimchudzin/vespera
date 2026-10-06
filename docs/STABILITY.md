@@ -1,7 +1,8 @@
-# Stability and recovery — 0.18.10
+# Stability and recovery — updated for 0.22.0 source
 
-This is the first reliability stage. Server execution, Zero Mode, Telegram,
-fixed stake ladders, backtests and AI are not part of this release.
+The original reliability stage was 0.18.10. Server execution, Zero Mode,
+Telegram and fixed stake ladders have since been added; backtests and AI remain
+future work. Final venue settlement is described in [RECONCILIATION](RECONCILIATION.md).
 
 ## Connection behaviour
 
@@ -47,10 +48,12 @@ accepted position must be reconciled with local position/series state before
 trading is allowed again. Do not repeatedly press Start or remove the pending
 marker simply because the network works again.
 
-Automatic exchange reconciliation and a guided resolution interface are not
-implemented in this release; an unresolved intent requires a reviewed manual
-state repair after verifying account execution. The marker contains local
-order context, not API/private keys. Do not share settings or unredacted logs.
+The API panel now inspects exact order hashes and confirmed fills and can
+restore verified execution after a second fresh check. It never resends the
+order or clears a lock on a 404. Old markers without sufficient identity remain
+blocked and require reviewed recovery. See [RECONCILIATION](RECONCILIATION.md).
+The marker contains local order context, not API/private keys. Do not share
+settings or unredacted logs.
 
 ## Verification
 

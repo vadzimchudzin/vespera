@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.22.0 — source changes, 2026-10-06
+
+- **Operations readiness:** preflight, private checksummed offline backup, isolated restore, local health/resource monitor and systemd/TLS templates. Restored copies are fenced from server startup; symlink ancestors and active service locks are refused. Production deployment and a long soak are not claimed.
+- **Unknown execution:** persist the exact V2 order hash before POST, inspect authenticated order and confirmed taker fills, and restore proven partial execution through the API panel without resending. Missing/404/zero-fill/inconsistent evidence retains the safety lock; legacy intents without identity require reviewed recovery.
+- **Final settlement:** real-money positions remain locked after a provisional Binance close until the original Polymarket token's market reports resolved, binary final outcomes. Only the final result updates risk/P&L. Paper/dry run remain unchanged; this first conservative implementation requires Start after final settlement. Historical live losses remain counted and CSV labels their legacy source.
+- **Secrets:** secure OS storage or AES-GCM with a random protected master key, atomic settings writes, no plaintext fallback, explicit legacy migration and recoverable key rotation. Full-directory backup is required; older binaries do not understand the new format.
+- **Fill precision:** retain filled USD micro-units and shares; an incomplete successful POST response no longer substitutes the quote for execution evidence. Fees remain derived from confirmed trade rate and the saved market schedule, not independently verified on-chain receipts.
+
+
 ## 0.21.0 — 2026-10-06
 
 - **Telegram control.** Configure a bot token in Settings, pair the root administrator with an expiring one-time code, and approve or revoke private-chat access requests. Status, balance, strategy, mode, restricted settings, Start/Stop and a confirmed New series use the existing executor, not a separate trading engine. Real-money Start confirms the risk plan once; strategy bets remain automatic.

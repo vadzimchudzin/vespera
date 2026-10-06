@@ -1,25 +1,30 @@
 "use strict";
 
 const fs = require("fs");
-const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
 const { clampRefreshMs } = require("./markets");
 const { normalizeSettings } = require("../shared/settings");
+const {
+  encryptSecret,
+  decryptSecret,
+  releaseSecretCache,
+  stageMasterKey,
+  commitStagedMasterKey,
+  recoverSecretRotation,
+  MASTER_PREFIX,
+  syncDirectory,
+} = require("./secretStore");
 
 /**
  * Settings persistence.
  *
  * TZ 11: API secrets must not sit in the config as plain text.
- * apiKey / apiSecret / apiPassphrase are encrypted with Electron safeStorage
- * when it is available (OS keychain), otherwise with a machine-bound
- * AES-256-GCM key. Values written by older builds are read as-is and
- * re-encrypted on the next save.
+ * Secrets use Electron safeStorage or AES-256-GCM with a random per-install
+ * master key. Legacy values are migrated on their next successful save.
  */
 
 const SECRET_FIELDS = ["apiKey", "apiSecret", "apiPassphrase", "privateKey", "serverToken", "transferBundle"];
-const ENC_PREFIX = "enc:v1:";
-const LOCAL_PREFIX = "encl:v1:";
 
 const DEFAULTS = {
   symbol: "BTCUSDT",
@@ -59,82 +64,6 @@ const DEFAULTS = {
   refreshMs: 100,
   notificationsEnabled: true,
 };
-
-function safeStorage() {
-  try {
-    // Electron is absent in unit tests and in any plain-node tooling.
-    const electron = require("electron");
-    const store = electron && electron.safeStorage;
-    if (store && typeof store.isEncryptionAvailable === "function" && store.isEncryptionAvailable()) {
-      return store;
-    }
-  } catch {
-    /* not running inside Electron */
-  }
-  return null;
-}
-
-function localKey(scope) {
-  return crypto.scryptSync(`${os.hostname()}::${os.userInfo().username}::${scope}`, "vespera.settings.v1", 32);
-}
-
-function encryptLocal(value, scope) {
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv("aes-256-gcm", localKey(scope), iv);
-  const body = Buffer.concat([cipher.update(String(value), "utf8"), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return LOCAL_PREFIX + Buffer.concat([iv, tag, body]).toString("base64");
-}
-
-function decryptLocal(value, scope) {
-  const raw = Buffer.from(value.slice(LOCAL_PREFIX.length), "base64");
-  const iv = raw.subarray(0, 12);
-  const tag = raw.subarray(12, 28);
-  const body = raw.subarray(28);
-  const decipher = crypto.createDecipheriv("aes-256-gcm", localKey(scope), iv);
-  decipher.setAuthTag(tag);
-  return Buffer.concat([decipher.update(body), decipher.final()]).toString("utf8");
-}
-
-function encryptSecret(value, scope) {
-  if (value == null || value === "") return "";
-  const str = String(value);
-  if (str.startsWith(ENC_PREFIX) || str.startsWith(LOCAL_PREFIX)) return str;
-  const store = safeStorage();
-  if (store) {
-    try {
-      return ENC_PREFIX + store.encryptString(str).toString("base64");
-    } catch {
-      /* fall through to the local cipher */
-    }
-  }
-  try {
-    return encryptLocal(str, scope);
-  } catch {
-    return str;
-  }
-}
-
-function decryptSecret(value, scope) {
-  if (typeof value !== "string" || !value) return "";
-  if (value.startsWith(ENC_PREFIX)) {
-    const store = safeStorage();
-    if (!store) return "";
-    try {
-      return store.decryptString(Buffer.from(value.slice(ENC_PREFIX.length), "base64"));
-    } catch {
-      return "";
-    }
-  }
-  if (value.startsWith(LOCAL_PREFIX)) {
-    try {
-      return decryptLocal(value, scope);
-    } catch {
-      return "";
-    }
-  }
-  return value; // legacy plain value, re-encrypted on the next save
-}
 
 const TELEGRAM_DEFAULTS = Object.freeze({
   version: 1,
@@ -263,52 +192,141 @@ class TelegramConfigStore {
 
 class SettingsStore {
   constructor(userDataDir) {
-    this.file = path.join(userDataDir, "settings.json");
-    this.scope = userDataDir || "vespera";
+    this.scope = path.resolve(userDataDir || "vespera");
+    this.file = path.join(this.scope, "settings.json");
+    recoverSecretRotation(this.scope);
     this.value = normalizeSettings({ ...DEFAULTS, ...this._read() }, {}, { strict: false });
     this.value.refreshMs = clampRefreshMs(this.value.refreshMs);
   }
 
   _read() {
+    let raw;
     try {
-      const raw = JSON.parse(fs.readFileSync(this.file, "utf8"));
-      for (const key of SECRET_FIELDS) {
-        if (raw[key]) raw[key] = decryptSecret(raw[key], this.scope);
-      }
-      return raw;
-    } catch {
-      return {};
+      raw = JSON.parse(fs.readFileSync(this.file, "utf8"));
+    } catch (error) {
+      if (error.code === "ENOENT") return {};
+      throw new Error("settings_read_failed", { cause: error });
     }
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("settings_format_invalid");
+    for (const key of SECRET_FIELDS) {
+      if (raw[key] != null && typeof raw[key] !== "string") throw new Error("settings_secret_invalid");
+      if (typeof raw[key] === "string" && raw[key] !== "") raw[key] = decryptSecret(raw[key], this.scope);
+    }
+    return raw;
   }
 
   /** Empty strings for secrets are ignored: the UI never re-sends a stored key. */
   save(patch = {}) {
+    if (!patch || typeof patch !== "object" || Array.isArray(patch)) throw new Error("settings_patch_invalid");
     const clean = { ...patch };
     for (const key of SECRET_FIELDS) {
       if (key in clean && (clean[key] == null || clean[key] === "")) delete clean[key];
     }
-    this.value = { ...this.value, ...normalizeSettings(clean, this.value) };
-    if (clean.refreshMs != null) this.value.refreshMs = clampRefreshMs(clean.refreshMs);
-    fs.mkdirSync(path.dirname(this.file), { recursive: true });
-    const onDisk = { ...this.value };
-    for (const key of SECRET_FIELDS) {
-      onDisk[key] = encryptSecret(this.value[key], this.scope);
-    }
-    fs.writeFileSync(this.file, JSON.stringify(onDisk, null, 2), { mode: 0o600 });
-    try {
-      fs.chmodSync(this.file, 0o600);
-    } catch {
-      /* windows */
-    }
+    const candidate = { ...this.value, ...normalizeSettings(clean, this.value) };
+    if (clean.refreshMs != null) candidate.refreshMs = clampRefreshMs(clean.refreshMs);
+    this._persist(candidate);
+    this.value = candidate;
     return this.value;
+  }
+
+  _persist(candidate, options = {}) {
+    fs.mkdirSync(path.dirname(this.file), { recursive: true, mode: 0o700 });
+    const onDisk = { ...candidate };
+    for (const key of SECRET_FIELDS) {
+      onDisk[key] = encryptSecret(candidate[key], this.scope, options);
+    }
+    const temp = `${this.file}.${process.pid}.${crypto.randomBytes(8).toString("hex")}.tmp`;
+    let fd;
+    try {
+      fd = fs.openSync(temp, "wx", 0o600);
+      fs.writeFileSync(fd, JSON.stringify(onDisk, null, 2));
+      fs.fsyncSync(fd);
+      fs.closeSync(fd);
+      fd = undefined;
+      fs.chmodSync(temp, 0o600);
+      fs.renameSync(temp, this.file);
+      try { fs.chmodSync(this.file, 0o600); } catch (error) { if (process.platform !== "win32") throw error; }
+      syncDirectory(path.dirname(this.file));
+    } catch (error) {
+      if (fd != null) fs.closeSync(fd);
+      try { fs.unlinkSync(temp); } catch { /* absent after successful rename */ }
+      throw new Error("settings_write_failed", { cause: error });
+    }
   }
 
   /** Wipe a stored credential on purpose (UI "clear" action). */
   clearSecret(key) {
     if (!SECRET_FIELDS.includes(key)) return this.value;
-    this.value[key] = "";
-    return this.save({});
+    const candidate = { ...this.value, [key]: "" };
+    this._persist(candidate);
+    this.value = candidate;
+    return this.value;
+  }
+
+  /** Rotate the local master key while stopped; no plaintext is written to disk. */
+  rotateSecretKey() {
+    recoverSecretRotation(this.scope);
+    const nextKey = crypto.randomBytes(32);
+    const tempSettings = `${this.file}.rotation`;
+    const journal = path.join(this.scope, ".secrets", "rotation.json");
+    const nextSettings = { ...this.value };
+    let prepared = false;
+    try {
+      stageMasterKey(this.scope, nextKey);
+      this._persistRotationSettings(tempSettings, nextSettings, nextKey);
+      const settingsBytes = fs.readFileSync(tempSettings);
+      fs.mkdirSync(path.dirname(journal), { recursive: true, mode: 0o700 });
+      const journalTemp = `${journal}.tmp`;
+      let journalFd;
+      try {
+        journalFd = fs.openSync(journalTemp, "wx", 0o600);
+        fs.writeFileSync(journalFd, JSON.stringify({ version: 1, settingsHash: crypto.createHash("sha256").update(settingsBytes).digest("hex") }));
+        fs.fsyncSync(journalFd);
+      } finally {
+        if (journalFd != null) fs.closeSync(journalFd);
+      }
+      fs.renameSync(journalTemp, journal);
+      syncDirectory(path.dirname(journal));
+      prepared = true;
+      fs.renameSync(tempSettings, this.file);
+      syncDirectory(this.scope);
+      commitStagedMasterKey(this.scope);
+      fs.unlinkSync(journal);
+      syncDirectory(path.dirname(journal));
+      return true;
+    } catch (error) {
+      if (!prepared) {
+        try { fs.unlinkSync(tempSettings); } catch { /* absent */ }
+        try { fs.unlinkSync(journal); } catch { /* absent */ }
+        try { fs.unlinkSync(`${journal}.tmp`); } catch { /* absent */ }
+        try { fs.unlinkSync(path.join(this.scope, ".secrets", "master.key.next")); } catch { /* absent */ }
+        nextKey.fill(0);
+      }
+      throw new Error("secret_rotation_failed", { cause: error });
+    }
+  }
+
+  _persistRotationSettings(file, candidate, masterKey) {
+    const onDisk = { ...candidate };
+    for (const key of SECRET_FIELDS) onDisk[key] = encryptSecret(candidate[key], this.scope, { masterKey });
+    let fd;
+    try {
+      fd = fs.openSync(file, "wx", 0o600);
+      fs.writeFileSync(fd, JSON.stringify(onDisk, null, 2));
+      fs.fsyncSync(fd);
+      fs.closeSync(fd);
+      fd = undefined;
+      fs.chmodSync(file, 0o600);
+      syncDirectory(this.scope);
+    } catch (error) {
+      if (fd != null) fs.closeSync(fd);
+      try { fs.unlinkSync(file); } catch { /* absent */ }
+      throw error;
+    }
   }
 }
 
-module.exports = { SettingsStore, DEFAULTS, SECRET_FIELDS, TelegramConfigStore, TELEGRAM_DEFAULTS };
+module.exports = {
+  SettingsStore, DEFAULTS, SECRET_FIELDS, TelegramConfigStore, TELEGRAM_DEFAULTS,
+  encryptSecret, decryptSecret, releaseSecretCache, MASTER_PREFIX,
+};

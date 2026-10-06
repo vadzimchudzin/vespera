@@ -630,12 +630,18 @@ class PolymarketAdapter {
     // Book what actually filled (price improvement gives more shares than asked).
     const spent = filledAmount(res.json && res.json.makingAmount, makerAmount);
     const got = filledAmount(res.json && res.json.takingAmount, takerAmount);
+    if (quote && (!spent || !got || spent > Number(quote.sizeUsd) + 1e-6 || spent / got > Number(quote.limitPrice) + 1e-6 || !(spent / got > 0 && spent / got < 1))) {
+      const err = new Error("order_outcome_unknown: fill amounts are missing or inconsistent");
+      err.code = "order_outcome_unknown";
+      err.ambiguous = true;
+      throw err;
+    }
     let fill = null;
     if (quote && spent && got) {
       const avg = spent / got;
       fill = {
-        sizeUsd: spent.toFixed(2),
-        shares: Number(got.toFixed(4)),
+        sizeUsd: spent.toFixed(6),
+        shares: got,
         price: Number(avg.toFixed(5)),
         payout: got / spent,
         feeUsd: takerFee(got, avg, { rate: quote.feeRate, exponent: quote.feeExponent }).toFixed(5),
@@ -750,11 +756,17 @@ class PolymarketAdapter {
    * Final result of a round as Polymarket resolved it (Chainlink TWAP),
    * read from Gamma's outcomePrices once the market is closed.
    */
-  async resolvedOutcome(slug) {
+  async resolvedOutcome(slug, bet = null) {
     if (!slug || typeof this.client.eventBySlug !== "function") return { resolved: false };
     const res = await this.client.eventBySlug(slug);
     if (!res || !res.ok || !res.json) return { resolved: false };
     const market = Array.isArray(res.json.markets) && res.json.markets[0] ? res.json.markets[0] : res.json;
+    if (bet) {
+      const tokens = parseList(market.clobTokenIds).map(String);
+      const labels = parseList(market.outcomes).map((value) => String(value).toUpperCase());
+      const index = labels.indexOf(bet.side);
+      if (!bet.tokenId || index < 0 || String(tokens[index]) !== String(bet.tokenId) || (market.slug && market.slug !== slug)) return { resolved: false };
+    }
     if (market.closed !== true || market.umaResolutionStatus !== "resolved") return { resolved: false };
     const outcomes = parseList(market.outcomes).map((o) => String(o).toLowerCase());
     const prices = parseList(market.outcomePrices).map(Number);

@@ -8,6 +8,12 @@ function bookOf(entry) {
   return entry.dryRun ? "dry" : "live";
 }
 
+function finalizedForBook(entry, book) {
+  // Older releases booked Binance outcomes immediately. Preserve those
+  // historical rows while excluding any explicitly provisional row.
+  return book !== "live" || !entry.settlementStatus || entry.settlementStatus === "final";
+}
+
 /** Local calendar day, so the daily limit resets at the user's midnight. */
 function localDay(ts) {
   const d = ts ? new Date(ts) : new Date();
@@ -22,7 +28,7 @@ function todayPnl(entries, book, now = Date.now()) {
     const e = entries[i];
     if (e.ts && localDay(e.ts) !== day) break;
     if (book === "paper" && e.type === "paper_reset") break;
-    if (e.type === "settled" && bookOf(e) === book) sum += Number(e.pnl) || 0;
+    if (e.type === "settled" && bookOf(e) === book && finalizedForBook(e, book)) sum += Number(e.pnl) || 0;
   }
   return Number(sum.toFixed(2));
 }
@@ -38,6 +44,7 @@ function computeStats(entries, { book = "paper", maxSteps = 6 } = {}) {
     if (book === "paper" && e.type === "paper_reset") break;
     if (e.type !== "settled") continue;
     if (bookOf(e) !== book) continue;
+    if (!finalizedForBook(e, book)) continue;
     rows.push(e);
   }
   rows.reverse();
@@ -112,7 +119,7 @@ function computeStats(entries, { book = "paper", maxSteps = 6 } = {}) {
 function dailyBreakdown(entries, book, days = 14) {
   const byDay = new Map();
   for (const e of entries) {
-    if (e.type !== "settled" || bookOf(e) !== book) continue;
+    if (e.type !== "settled" || bookOf(e) !== book || !finalizedForBook(e, book)) continue;
     const d = e.ts ? new Date(e.ts) : new Date();
     const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
     const row = byDay.get(key) || { day: key, bets: 0, wins: 0, pnl: 0, fees: 0 };
@@ -143,6 +150,8 @@ const CSV_COLUMNS = [
   ["pnl_usd", (e) => e.pnl ?? ""],
   ["balance_after", (e) => e.balanceAfter ?? ""],
   ["round", (e) => e.slug || ""],
+  ["settlement_status", (e) => e.settlementStatus || (bookOf(e) === "live" ? "legacy" : "")],
+  ["settlement_source", (e) => e.settlementSource || (bookOf(e) === "live" ? "legacy_binance" : "")],
   ["order_id", (e) => e.orderId || ""],
 ];
 
@@ -156,11 +165,11 @@ function toCsv(entries) {
   const lines = [CSV_COLUMNS.map(([h]) => h).join(",")];
   let count = 0;
   for (const e of entries) {
-    if (e.type !== "settled") continue;
+    if (e.type !== "settled" || (bookOf(e) === "live" && !finalizedForBook(e, "live"))) continue;
     lines.push(CSV_COLUMNS.map(([, get]) => csvCell(get(e))).join(","));
     count += 1;
   }
   return { csv: `\ufeff${lines.join("\r\n")}\r\n`, count };
 }
 
-module.exports = { computeStats, todayPnl, bookOf, localDay, dailyBreakdown, toCsv };
+module.exports = { computeStats, todayPnl, bookOf, localDay, dailyBreakdown, toCsv, finalizedForBook };

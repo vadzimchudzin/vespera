@@ -1,7 +1,7 @@
 {
   "name": "vespera",
   "productName": "Vespera",
-  "version": "0.21.0",
+  "version": "0.22.0",
   "description": "Vespera (VSP) — glass terminal for Polymarket MA200/MA20. Paper first.",
   "author": "VadimChudin",
   "license": "UNLICENSED",
@@ -10,7 +10,7 @@
   "scripts": {
     "start": "electron .",
     "server": "node src/server/start.js",
-    "test": "node src/main/strategy.test.js && node src/main/engine.test.js && node src/main/brokers/polymarket.test.js && node src/main/persistence.test.js && node src/main/quotes.test.js && node src/main/risk.test.js && node src/main/safeguards.test.js && node src/main/connect.test.js && node src/main/export.test.js && node src/main/brokers/bridge.test.js && node src/main/brokers/proxy.test.js && node src/main/marketData.test.js && node src/main/journalState.test.js && node src/main/reliability.test.js && node src/main/settings.test.js && node src/main/settingsEngine.test.js && node src/main/executionHost.test.js && node src/main/executionRouter.test.js && node src/server/service.test.js && node src/main/zeroIntegration.test.js && node src/main/telegramBot.test.js && node src/main/telegramIntegration.test.js",
+    "test": "node src/main/strategy.test.js && node src/main/engine.test.js && node src/main/brokers/polymarket.test.js && node src/main/brokers/orderEvidence.test.js && node src/main/persistence.test.js && node src/main/secretStore.test.js && node src/main/quotes.test.js && node src/main/risk.test.js && node src/main/safeguards.test.js && node src/main/connect.test.js && node src/main/export.test.js && node src/main/brokers/bridge.test.js && node src/main/brokers/proxy.test.js && node src/main/marketData.test.js && node src/main/journalState.test.js && node src/main/reliability.test.js && node src/main/settings.test.js && node src/main/settingsEngine.test.js && node src/main/executionHost.test.js && node src/main/executionRouter.test.js && node src/main/reconciliationEngine.test.js && node src/main/reconciliationIntegration.test.js && node src/main/finalSettlement.test.js && node src/server/service.test.js && node src/main/zeroIntegration.test.js && node src/main/telegramBot.test.js && node src/main/telegramIntegration.test.js && node scripts/operations.test.js",
     "pack": "electron-builder --dir",
     "dist": "electron-builder --win --mac",
     "dist:win": "electron-builder --win nsis --publish never",

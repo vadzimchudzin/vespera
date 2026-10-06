@@ -13,7 +13,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { Journal } = require("./journal");
-const { SettingsStore, SECRET_FIELDS } = require("./settingsStore");
+const { SettingsStore, SECRET_FIELDS, MASTER_PREFIX } = require("./settingsStore");
 const { Engine } = require("./engine");
 const { sma } = require("./strategy");
 
@@ -162,7 +162,7 @@ async function run() {
       assert(!raw.includes(secret), `${secret} must not appear in settings.json`);
     }
     for (const key of SECRET_FIELDS) {
-      assert(/^enc/.test(JSON.parse(raw)[key]), `${key} is stored encrypted`);
+      assert(/^(enc:v2:|enc:v1:)/.test(JSON.parse(raw)[key]), `${key} is stored encrypted`);
     }
     const reopened = new SettingsStore(dir);
     assert(reopened.value.apiKey === "KEY-1", "apiKey decrypts back");
@@ -193,6 +193,69 @@ async function run() {
       !fs.readFileSync(path.join(legacyDir, "settings.json"), "utf8").includes("OLDPLAIN"),
       "legacy key is re-encrypted on the next save"
     );
+
+    // Failed persistence never publishes the candidate into memory.
+    const before = migrated.value.theme;
+    const rename = fs.renameSync;
+    fs.renameSync = (from, to) => {
+      if (to === path.join(legacyDir, "settings.json")) throw new Error("simulated_disk_failure");
+      return rename(from, to);
+    };
+    try {
+      let failed = false;
+      try { migrated.save({ theme: "glass-dark" }); } catch { failed = true; }
+      assert(failed, "failed atomic save is reported");
+      assert(migrated.value.theme === before, "failed save leaves in-memory settings unchanged");
+    } finally {
+      fs.renameSync = rename;
+    }
+
+    // Rotation decrypts all current values before committing a new master key.
+    migrated.save({ apiSecret: "ROTATE-ME" });
+    const durableBeforeClear = JSON.parse(fs.readFileSync(path.join(legacyDir, "settings.json"), "utf8")).apiSecret;
+    fs.renameSync = (from, to) => {
+      if (to === path.join(legacyDir, "settings.json")) throw new Error("simulated_disk_failure");
+      return rename(from, to);
+    };
+    try {
+      let clearFailed = false;
+      try { migrated.clearSecret("apiSecret"); } catch { clearFailed = true; }
+      assert(clearFailed, "failed clear is reported");
+      assert(migrated.value.apiSecret === "ROTATE-ME", "failed clear leaves in-memory secret unchanged");
+      assert(JSON.parse(fs.readFileSync(path.join(legacyDir, "settings.json"), "utf8")).apiSecret === durableBeforeClear,
+        "failed clear leaves durable secret unchanged");
+    } finally {
+      fs.renameSync = rename;
+    }
+    assert(migrated.rotateSecretKey() === true, "rotation completes");
+    const rotated = JSON.parse(fs.readFileSync(path.join(legacyDir, "settings.json"), "utf8"));
+    assert(rotated.apiSecret.startsWith(MASTER_PREFIX), "rotation re-encrypts with the new master key");
+    assert(new SettingsStore(legacyDir).value.apiSecret === "ROTATE-ME", "rotated credential survives restart");
+  }
+
+  // --- encrypted settings never silently degrade to empty defaults
+  {
+    const dir = tmpDir();
+    const store = new SettingsStore(dir);
+    store.save({ apiSecret: "FAIL-CLOSED" });
+    const keyFile = path.join(dir, ".secrets", "master.key");
+    const savedKey = fs.readFileSync(keyFile);
+    fs.unlinkSync(keyFile);
+    require("./secretStore").releaseSecretCache(dir);
+    let failedClosed = false;
+    try { new SettingsStore(dir); } catch (error) { failedClosed = error.message === "secret_key_missing"; }
+    assert(failedClosed, "missing master key is an error, not an empty credential");
+    assert(!fs.existsSync(keyFile), "reading encrypted settings does not replace a missing key");
+    fs.writeFileSync(keyFile, savedKey, { mode: 0o600 });
+    require("./secretStore").releaseSecretCache(dir);
+
+    const settingsPath = path.join(dir, "settings.json");
+    const corrupted = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+    corrupted.apiSecret = `${corrupted.apiSecret.slice(0, -1)}${corrupted.apiSecret.endsWith("A") ? "B" : "A"}`;
+    fs.writeFileSync(settingsPath, JSON.stringify(corrupted));
+    let corruptFailedClosed = false;
+    try { new SettingsStore(dir); } catch { corruptFailedClosed = true; }
+    assert(corruptFailedClosed, "corrupt non-empty secret fails closed");
   }
 
   // --- engine keeps stored credentials when the panel sends empty fields

@@ -254,8 +254,8 @@ async function payoutCase({ payout, side, settleClose, expectPnl, label }) {
     fills.balance = "50000000";
     const filled = await venue.marketBuy({ side: "UP", sizeUsd: "10.00", round: { openTs: 1 } });
     assert.strictEqual(filled.filled, true);
-    assert.strictEqual(filled.shares, 20.4082, "price improvement books the extra shares");
-    assert.strictEqual(filled.sizeUsd, "10.00");
+    assert.strictEqual(filled.shares, 20.408163, "price improvement preserves the actual filled shares");
+    assert.strictEqual(filled.sizeUsd, "10.000000");
     assert.strictEqual(filled.limitPrice, 0.5);
     assert.ok(filled.price < 0.5);
   }
@@ -395,7 +395,7 @@ async function payoutCase({ payout, side, settleClose, expectPnl, label }) {
     const part = await venue.marketBuy({ side: "UP", sizeUsd: "10.00", round: { openTs: 1 } });
     assert.strictEqual(posted.length, 2);
     assert.strictEqual(part.partial, true, "a partial FAK fill is flagged");
-    assert.strictEqual(part.sizeUsd, "6.00", "and booked as filled");
+    assert.strictEqual(part.sizeUsd, "6.000000", "and booked as filled without dropping micro-units");
 
     posted.length = 0;
     replies = [{ ok: false, status: 400, json: { error: "not enough balance / allowance" }, raw: "" }];
@@ -575,11 +575,13 @@ async function payoutCase({ payout, side, settleClose, expectPnl, label }) {
         eventBySlug: async () => ({
           ok: true,
           status: 200,
-          json: { markets: [{ closed: true, umaResolutionStatus: "resolved", outcomes: '["Up","Down"]', outcomePrices: '["0","1"]' }] },
+          json: { markets: [{ closed: true, umaResolutionStatus: "resolved", clobTokenIds: '["111","222"]', outcomes: '["Up","Down"]', outcomePrices: '["0","1"]' }] },
         }),
       },
     });
     assert.deepStrictEqual(await resolver.resolvedOutcome("btc-updown-15m-1"), { resolved: true, outcome: "DOWN" });
+    assert.deepStrictEqual(await resolver.resolvedOutcome("btc-updown-15m-1", { tokenId: "111", side: "UP" }), { resolved: true, outcome: "DOWN" });
+    assert.deepStrictEqual(await resolver.resolvedOutcome("btc-updown-15m-1", { tokenId: "222", side: "UP" }), { resolved: false }, "same market must contain the held outcome token");
     const open = new PolymarketAdapter({
       client: { eventBySlug: async () => ({ ok: true, status: 200, json: { markets: [{ closed: false }] } }) },
     });

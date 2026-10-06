@@ -9,7 +9,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { Risk, perDollar, breakEvenWinRate } = require("./risk");
-const { computeStats } = require("./stats");
+const { computeStats, todayPnl } = require("./stats");
 const { Journal } = require("./journal");
 
 // ── per-dollar economics ────────────────────────────────────────────────────
@@ -167,6 +167,11 @@ const { Journal } = require("./journal");
   assert.strictEqual(Number(s.breakEvenWinRate.toFixed(4)), 0.5175);
   const live = computeStats(entries, { book: "live", maxSteps: 6 });
   assert.strictEqual(live.count, 1, "live stats are separate");
+  const legacyLive = [{ type: "settled", mode: "auto", status: "loss", pnl: "-7.00" }];
+  assert.strictEqual(computeStats(legacyLive, { book: "live" }).pnl, -7, "legacy live rows remain booked after migration");
+  assert.strictEqual(todayPnl(legacyLive, "live"), -7, "legacy live loss still consumes daily risk budget");
+  assert.strictEqual(computeStats([{ ...legacyLive[0], settlementStatus: "provisional" }], { book: "live" }).count, 0,
+    "explicit provisional rows never enter realized stats");
   const halted = computeStats(
     Array.from({ length: 3 }, () => ({ type: "settled", status: "loss", pnl: "-1", sizeUsd: "1" })),
     { book: "paper", maxSteps: 3 }

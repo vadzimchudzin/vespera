@@ -1017,6 +1017,16 @@
         </details>
         <button class="ok" id="btnConnect">${t("connect")}</button>
         <div class="checks" id="checks"></div>
+        <section class="settings-info-card reconciliation-card">
+          <div>
+            <strong>${t("orderReconciliation")}</strong>
+            <p class="hint">${t("orderReconciliationHint")}</p>
+            <div class="settings-button-row"><button type="button" class="ghost" id="inspectPendingOrder">${t("inspectOrder")}</button><button type="button" class="ghost" id="restorePendingFill" hidden>${t("restoreFill")}</button></div>
+            <p class="hint" id="orderEvidenceOutput" role="status" aria-live="polite"></p>
+            <p class="hint">${t("finalSettlementHint")}</p>
+            <button type="button" class="ghost" id="retryFinalSettlement">${t("retryFinalSettlement")}</button>
+          </div>
+        </section>
         <div class="test-bet">
           <div class="test-bet-row">
             <button type="button" class="ghost" id="btnTestUp">${t("testBetUp")}</button>
@@ -1026,6 +1036,45 @@
           <p class="hint" id="testBetOut"></p>
         </div>
       `;
+      let inspectedOrder = null;
+      const reconciliationOutput = $("orderEvidenceOutput");
+      const showReconciliation = (message) => { reconciliationOutput.textContent = message; };
+      const reconciliationBusy = (busy) => {
+        ["inspectPendingOrder", "restorePendingFill", "retryFinalSettlement"].forEach((id) => { $(id).disabled = busy || executionUnavailable(); });
+      };
+      $("inspectPendingOrder").onclick = async () => {
+        reconciliationBusy(true);
+        $("restorePendingFill").hidden = true;
+        inspectedOrder = null;
+        try {
+          const result = await window.vespera.inspectPendingOrder();
+          if (result.ok && result.kind === "filled") {
+            inspectedOrder = result;
+            showReconciliation(`${result.order.orderId} · ${result.order.side} · $${result.order.sizeUsd} · ${result.order.shares} shares @ ${Number(result.order.price).toFixed(5)} · fee $${result.order.feeUsd}`);
+            $("restorePendingFill").hidden = false;
+          } else showReconciliation(result.reason === "no_pending_order" ? t("reconciliationNone") : `${t("reconciliationBlocked")} ${result.reason || "unavailable"}`);
+        } catch { showReconciliation(`${t("reconciliationBlocked")} unavailable`); }
+        finally { reconciliationBusy(false); }
+      };
+      $("restorePendingFill").onclick = async () => {
+        if (!inspectedOrder || !window.confirm(t("restoreFillConfirm"))) return;
+        reconciliationBusy(true);
+        try {
+          const result = await window.vespera.resolvePendingOrder({ clientOrderId: inspectedOrder.clientOrderId, orderId: inspectedOrder.order.orderId, confirm: true });
+          showReconciliation(result.ok ? t("reconciliationRestored") : `${t("reconciliationBlocked")} ${result.reason || "unavailable"}`);
+          if (result.ok) { inspectedOrder = null; $("restorePendingFill").hidden = true; renderSnap(await window.vespera.snapshot()); }
+        } catch { showReconciliation(`${t("reconciliationBlocked")} unavailable`); }
+        finally { reconciliationBusy(false); }
+      };
+      $("retryFinalSettlement").onclick = async () => {
+        reconciliationBusy(true);
+        try {
+          const result = await window.vespera.reconcileFinalSettlement();
+          showReconciliation(result.ok ? t("finalSettlementReady") : result.reason === "no_final_settlement_pending" ? t("finalSettlementNone") : `${t("reconciliationBlocked")} ${result.reason || "pending"}`);
+          renderSnap(await window.vespera.snapshot());
+        } catch { showReconciliation(`${t("reconciliationBlocked")} unavailable`); }
+        finally { reconciliationBusy(false); }
+      };
       if (sApi.walletAddress) $("walletAddress").value = sApi.walletAddress;
       if (sApi.proxyUrl) {
         $("proxyUrl").value = sApi.proxyUrl;

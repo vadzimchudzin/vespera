@@ -39,6 +39,24 @@ function setup() {
 
 after(() => { for (const root of roots) fs.rmSync(root, { recursive: true, force: true }); });
 
+test("restored random master keys decrypt real settings without starting an executor", () => {
+  const { SettingsStore, releaseSecretCache } = require("../src/main/settingsStore");
+  const context = setup();
+  const scope = path.join(context.dataDir, "book-abc");
+  const store = new SettingsStore(scope);
+  store.save({ apiSecret: "isolated-backup-secret", privateKey: "isolated-signing-material" });
+  backup(context);
+  const target = path.join(context.root, "validation-data");
+  restore({ backupDir: context.destination, dataDir: target, tokenFile: path.join(context.root, "validation.token"), isolatedValidation: true, executorStart: false });
+  const restoredScope = path.join(target, "book-abc");
+  const restored = new SettingsStore(restoredScope);
+  assert.equal(restored.value.apiSecret, store.value.apiSecret);
+  assert.equal(restored.value.privateKey, store.value.privateKey);
+  assert.ok(!fs.readFileSync(restored.file, "utf8").includes("isolated-backup-secret"));
+  releaseSecretCache(scope);
+  releaseSecretCache(restoredScope);
+});
+
 test("backup and isolated restore preserve owner, tombstones, master keys and every byte", () => {
   const context = setup();
   const original = new Map();
@@ -67,6 +85,9 @@ test("backup and isolated restore preserve owner, tombstones, master keys and ev
     assert.deepEqual(fs.readFileSync(file), contents, relative);
   }
   assert.equal(fs.existsSync(path.join(target, ".service.lock")), false);
+  assert.ok(fs.existsSync(path.join(target, ".restore-validation.json")), "isolated copy is fenced from service startup");
+  const { createService } = require("../src/server/service");
+  assert.throws(() => createService({ userDataDir: target, token: "t".repeat(48) }), /restore_validation_executor_blocked/);
 });
 
 test("backup refuses active, unreadable and stale runtime locks", () => {
@@ -129,6 +150,19 @@ test("preflight checks runtime, private readable token metadata, clock, disk and
     fs.chmodSync(context.tokenFile, 0o644);
     await assert.rejects(preflight({ dataDir: context.dataDir, tokenFile: context.tokenFile, healthUrl: "http://127.0.0.1/healthz", minimumFreeBytes: 1, clock: { synchronized: true }, health: async () => ({ healthy: true, protocol: 1 }) }), { code: "token_file_permissions_invalid" });
   }
+});
+
+test("restore rejects symlink ancestors and accepts the documented no-start CLI", () => {
+  const context = setup();
+  backup(context);
+  const real = path.join(context.root, "real");
+  fs.mkdirSync(real);
+  const link = path.join(context.root, "linked-parent");
+  fs.symlinkSync(real, link, process.platform === "win32" ? "junction" : "dir");
+  assert.throws(() => restore({ backupDir: context.destination, dataDir: path.join(link, "data"), tokenFile: path.join(context.root, "new.token"), isolatedValidation: true, executorStart: false }), { code: "symlink_not_allowed" });
+  assert.throws(() => restore({ backupDir: context.destination, dataDir: path.join(context.root, "empty"), tokenFile: path.join(link, "nested", "new.token"), isolatedValidation: true, executorStart: false }), { code: "symlink_not_allowed" });
+  assert.equal(fs.readdirSync(real).length, 0);
+  assert.deepEqual(restoreArgs(["--backup", "b", "--data-dir", "d", "--token-file", "t", "--isolated-validation", "--executor-start=false"]), { backupDir: "b", dataDir: "d", tokenFile: "t", isolatedValidation: true, executorStart: false });
 });
 
 test("health probe accepts only minimal healthy protocol response and refuses remote cleartext", async (t) => {

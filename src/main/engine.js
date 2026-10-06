@@ -31,6 +31,8 @@ const HEALTH_INTERVAL_MS = 60_000;
 const VENUE_FAILURE_LIMIT = 3;
 // Consecutive order rejections from the CLOB before Auto pauses.
 const REJECT_LIMIT = 2;
+const FINAL_RECONCILE_ATTEMPTS = 120;
+const FINAL_RECONCILE_DELAY_MS = 30_000;
 
 /** Highest ask to enter at; 1 means no filter. */
 function maxEntryPriceOf(value) {
@@ -67,7 +69,12 @@ class Engine {
     this.risk.halted = restored.halted;
     if (restored.halted) this.risk.lotConfirmed = false;
     this.paper = createVenue("paper", { startingBalance: this.settings.paperBalance || "1000.00" });
+    this.finalPending = null;
     this._restorePaper();
+    this._appliedSettlementIds = new Set(this.journal.restoreEntries
+      .filter((entry) => entry.type === "settled" && entry.clientOrderId)
+      .map((entry) => entry.clientOrderId));
+    this._emittedSettlementIds = new Set();
     this.lastTestOrder = this.journal.restoreEntries.filter((e) => e.type === "test_order").at(-1) || null;
     this.live =
       live ||
@@ -108,6 +115,8 @@ class Engine {
     this._healthTimer = null;
     this._healthBusy = false;
     this._opening = false;
+    this._disposed = false;
+    this._finalReconcileWait = null;
     this._executionGeneration = 0;
     this._barQueue = Promise.resolve();
     this.lastConnect = null;
@@ -116,6 +125,7 @@ class Engine {
     this.symbols = SYMBOLS.map((s) => ({ ...s, tickSize: fallbackTick(s.id) }));
     this.tickSize = fallbackTick(this.settings.symbol || "BTCUSDT");
     this._bindMarket();
+    if (this.finalPending) this._scheduleFinalReconciliation(0);
   }
 
   strategy() {
@@ -209,27 +219,40 @@ class Engine {
     const roundCloseTs = (Math.floor(Date.now() / interval) + 1) * interval - 1;
     let accepted = false;
     try {
-      if (!dryRun) this.journal.beginOrder({ clientOrderId, side: wanted, sizeUsd, test: true });
+      const round = { openTs: Date.now(), closeTs: roundCloseTs };
+      if (!dryRun) this.journal.beginOrder({
+        mode: "auto", dryRun: false, clientOrderId, side: wanted, sizeUsd,
+        round, roundOpenTs: round.openTs, roundCloseTs, strike: quote.strike ?? null,
+        test: true, feeRate: quote.feeRate ?? null, feeExponent: quote.feeExponent ?? null,
+      });
       const order = await this.live.marketBuy({
         side: wanted,
         sizeUsd,
         clientOrderId,
-        round: { openTs: Date.now() },
+        round,
         dryRun,
         isActive: () => generation === this._executionGeneration,
         maxTotalCostUsd,
+        onPrepared: (evidence) => {
+          if (!dryRun) this.journal.attachOrderEvidence(clientOrderId, evidence);
+        },
       });
       accepted = true;
       const row = {
         clientOrderId,
+        mode: "auto",
         roundCloseTs,
+        roundOpenTs: round.openTs,
+        strike: quote.strike ?? null,
         side: wanted,
         dryRun,
         sizeUsd: order.sizeUsd,
         price: order.price,
         shares: order.shares,
+        feeUsd: order.feeUsd || "0",
         orderId: order.orderId || null,
         orderStatus: order.orderStatus || null,
+        tokenId: order.tokenId || quote.tokenId || null,
         slug: order.slug || quote.slug,
       };
       this.journal.write({ type: "test_order", ...row });
@@ -361,6 +384,7 @@ class Engine {
           shares: e.shares,
           feeUsd: e.feeUsd,
           orderId: e.orderId,
+          tokenId: e.tokenId || null,
           slug: e.slug,
           strike: e.strike,
           roundOpenTs: e.roundOpenTs,
@@ -370,6 +394,22 @@ class Engine {
         };
         break;
       }
+    }
+    const pendingSettlements = new Map();
+    for (const entry of entries) {
+      if (entry.type === "settlement_provisional") pendingSettlements.set(entry.clientOrderId, entry);
+      if (entry.type === "settlement_failed" && pendingSettlements.has(entry.clientOrderId)) {
+        const current = pendingSettlements.get(entry.clientOrderId);
+        pendingSettlements.set(entry.clientOrderId, { ...current, failed: true, failureReason: entry.reason });
+      }
+      if (entry.type === "settled" && entry.clientOrderId) {
+        pendingSettlements.delete(entry.clientOrderId);
+      }
+    }
+    const provisional = [...pendingSettlements.values()].at(-1);
+    if (provisional) {
+      this.finalPending = provisional;
+      this.liveBet = provisional.bet || this.liveBet;
     }
   }
 
@@ -646,6 +686,13 @@ class Engine {
       this._pauseUnknownOrder();
       return { ok: false, reason: "order_outcome_unknown" };
     }
+    if (this.finalPending) {
+      this.running = false;
+      this.status = "paused";
+      this.pauseReason = "final_settlement_pending: waiting for Polymarket resolution";
+      this.emit("status", this.status);
+      return { ok: false, reason: "final_settlement_pending" };
+    }
     if (this.risk.halted || !this.risk.lotConfirmed) {
       this.running = false;
       this.status = "halt";
@@ -795,7 +842,7 @@ class Engine {
   stop() {
     this._executionGeneration += 1;
     this._stopHealth();
-    this.pauseReason = null;
+    if (!this.journal.pendingOrder() && !this.finalPending) this.pauseReason = null;
     this.running = false;
     this.status = this.openBet() ? "waiting_settlement" : "stopped";
     this.journal.write({ type: "stop" });
@@ -1238,7 +1285,40 @@ class Engine {
   _settleLive(bar) {
     const bet = this.liveBet;
     if (!bet) return null;
+    if (this.finalPending && this.finalPending.clientOrderId === bet.clientOrderId) return this.finalPending;
     if (bet.roundCloseTs && bar.closeTs && bar.closeTs < bet.roundCloseTs) return null;
+    if (!bet.dryRun) {
+      const close = Number(bar.close);
+      const pending = {
+        type: "settlement_provisional",
+        mode: "auto",
+        clientOrderId: bet.clientOrderId,
+        slug: bet.slug,
+        bet: { ...bet },
+        bar: { close, closeTs: bar.closeTs, openTs: bar.openTs },
+        provisionalOutcome: outcomeOf(close, Number(bet.strike)),
+        createdAt: Date.now(),
+      };
+      try {
+        this.journal.write(pending);
+      } catch (err) {
+        this.running = false;
+        this.status = "paused";
+        this.pauseReason = "final_settlement_checkpoint_failed: live result remains blocked";
+        this.emit("log", { level: "error", message: `${this.pauseReason}: ${String(err.message || err)}` });
+        this.emit("status", this.status);
+        return null;
+      }
+      this.finalPending = pending;
+      this.running = false;
+      this._stopHealth();
+      this.status = "paused";
+      this.pauseReason = "final_settlement_pending: waiting for Polymarket resolution";
+      this.emit("log", { level: "warn", message: `settlement_provisional: ${bet.slug || bet.clientOrderId} awaiting Polymarket resolution` });
+      this.emit("status", this.status);
+      this._scheduleFinalReconciliation(FINAL_RECONCILE_DELAY_MS);
+      return pending;
+    }
     const strike = Number(bet.strike);
     const close = Number(bar.close);
     const outcome = outcomeOf(close, strike);
@@ -1283,58 +1363,164 @@ class Engine {
       this.notify("halt", "Series halted", `${this.risk.maxSteps} losses \u2014 confirm lot`);
     }
     this.refreshLiveBalance().catch(() => {});
-    this._reconcileLive(settled);
+    // Dry runs retain their immediate Binance-close settlement behavior.
     return settled;
   }
 
-  /**
-   * The series steps on the Binance close so the next bet is not delayed, but
-   * Polymarket resolves on the Chainlink TWAP. Check the real resolution
-   * afterwards and flag any disagreement loudly instead of hiding it.
-   */
-  _reconcileLive(settled, { attempts = 30, delayMs = 30_000 } = {}) {
-    if (!settled.slug || typeof this.live.resolvedOutcome !== "function") return;
-    let left = attempts;
-    const tick = async () => {
-      left -= 1;
-      let res = null;
+  /** Keep final-result polling independent of the trading Start/Stop state. */
+  _scheduleFinalReconciliation(delayMs = FINAL_RECONCILE_DELAY_MS) {
+    if (this._disposed || !this.finalPending || this._finalReconcileTimer) return;
+    this._finalReconcileTimer = setTimeout(() => {
+      this._finalReconcileTimer = null;
+      this.reconcileFinalSettlement().catch((err) => {
+        this.emit("log", { level: "error", message: `final_settlement_error: ${String(err.message || err)}` });
+      });
+    }, Math.max(0, delayMs));
+    if (this._finalReconcileTimer && typeof this._finalReconcileTimer.unref === "function") this._finalReconcileTimer.unref();
+  }
+
+  async reconcileFinalSettlement({ attempts = FINAL_RECONCILE_ATTEMPTS, delayMs = FINAL_RECONCILE_DELAY_MS } = {}) {
+    if (this._disposed) return { ok: false, reason: "disposed" };
+    if (!this.finalPending || this._finalReconcileBusy) return { ok: false, reason: "no_final_settlement_pending" };
+    this._finalReconcileBusy = true;
+    try {
+      let left = Math.max(1, Number(attempts) || 1);
+      while (this.finalPending && left > 0) {
+        if (this._disposed) return { ok: false, reason: "disposed" };
+        left -= 1;
+        let result = null;
+        try {
+          if (this.finalPending.slug && typeof this.live.resolvedOutcome === "function") {
+            result = await this.live.resolvedOutcome(this.finalPending.slug, this.finalPending.bet);
+          }
+        } catch (err) {
+          if (this._disposed) return { ok: false, reason: "disposed" };
+          this.finalPending.lastReason = String(err.code || err.message || "venue_unavailable");
+        }
+        if (this._disposed) return { ok: false, reason: "disposed" };
+        if (result && result.resolved === true && ["UP", "DOWN"].includes(result.outcome)) {
+          return this._finalizeLiveSettlement(result.outcome);
+        }
+        if (left > 0 && !(await this._waitFinalReconciliation(delayMs))) return { ok: false, reason: "disposed" };
+      }
+      if (this.finalPending) {
+        this.finalPending.failed = true;
+        this.finalPending.failureReason = this.finalPending.lastReason || "polymarket_outcome_unavailable";
+        try {
+          this.journal.write({
+            type: "settlement_failed",
+            mode: "auto",
+            clientOrderId: this.finalPending.clientOrderId,
+            slug: this.finalPending.slug,
+            reason: this.finalPending.failureReason,
+          });
+        } catch { /* retain the in-memory lock if persistence is unavailable */ }
+        this.running = false;
+        this.status = "paused";
+        this.pauseReason = `final_settlement_failed: ${this.finalPending.failureReason}`;
+        this.emit("log", { level: "error", message: this.pauseReason });
+        this.emit("status", this.status);
+        return { ok: false, reason: this.finalPending.failureReason };
+      }
+      return { ok: true };
+    } finally {
+      this._finalReconcileBusy = false;
+    }
+  }
+
+  _waitFinalReconciliation(delayMs) {
+    if (this._disposed) return Promise.resolve(false);
+    return new Promise((resolve) => {
+      const wait = { timer: null, resolve: null };
+      const finish = (keepPolling) => {
+        if (this._finalReconcileWait === wait) this._finalReconcileWait = null;
+        wait.resolve = null;
+        resolve(keepPolling && !this._disposed);
+      };
+      wait.resolve = finish;
+      const delay = Math.max(0, Number(delayMs) || 0);
+      wait.timer = setTimeout(() => finish(true), delay);
+      if (delay > 0 && typeof wait.timer.unref === "function") wait.timer.unref();
+      this._finalReconcileWait = wait;
+    });
+  }
+
+  dispose() {
+    if (this._disposed) return;
+    this._disposed = true;
+    this._executionGeneration += 1;
+    this._stopHealth();
+    if (this._finalReconcileTimer) clearTimeout(this._finalReconcileTimer);
+    this._finalReconcileTimer = null;
+    if (this._finalReconcileWait) {
+      clearTimeout(this._finalReconcileWait.timer);
+      this._finalReconcileWait.resolve?.(false);
+      this._finalReconcileWait = null;
+    }
+    this.market.stop?.();
+  }
+
+  _finalizeLiveSettlement(outcome) {
+    if (this._disposed) return { ok: false, reason: "disposed" };
+    const pending = this.finalPending;
+    if (!pending) return { ok: false, reason: "no_final_settlement_pending" };
+    const bet = pending.bet;
+    const found = () => this.journal.restoreEntries.find((entry) =>
+      entry.type === "settled" && entry.clientOrderId === pending.clientOrderId && entry.settlementStatus === "final");
+    let settled = found();
+    if (!settled) {
+      const won = bet.side === outcome;
+      const size = Number(bet.sizeUsd);
+      const entry = Number(bet.entryPrice);
+      const shares = Number(bet.shares) > 0
+        ? Number(bet.shares)
+        : entry > 0 && entry < 1 ? size / entry : size * (Number(bet.payout) > 1 ? Number(bet.payout) : 2);
+      const fee = Number(bet.feeUsd) > 0 ? Number(bet.feeUsd) : 0;
+      const pnl = Decimal((won ? shares - size : -size) - fee);
+      const row = {
+        ...bet,
+        mode: "auto",
+        status: won ? "win" : "loss",
+        outcome,
+        provisionalOutcome: pending.provisionalOutcome,
+        barClose: pending.bar && pending.bar.close,
+        settledAt: Date.now(),
+        settlementStatus: "final",
+        settlementSource: "polymarket",
+        pnl: pnl.toFixed(2),
+      };
       try {
-        res = await this.live.resolvedOutcome(settled.slug);
+        settled = this.journal.write({ type: "settled", ...row });
       } catch {
-        res = null;
+        settled = found();
+        if (!settled) return { ok: false, reason: "persistence_failed" };
       }
-      if (!res || !res.resolved) {
-        if (left > 0) schedule();
-        return;
-      }
-      if (res.outcome === settled.outcome) {
-        this.journal.write({ type: "settle_confirmed", slug: settled.slug, outcome: res.outcome });
-        return;
-      }
-      this.journal.write({
-        type: "settle_mismatch",
-        slug: settled.slug,
-        local: settled.outcome,
-        venue: res.outcome,
-        side: settled.side,
-        localPnl: settled.pnl,
-      });
-      this.emit("log", {
-        level: "error",
-        message: `settle_mismatch: ${settled.slug} booked ${settled.outcome}, Polymarket resolved ${res.outcome}`,
-      });
-      this.notify(
-        "halt",
-        "Result differs from Polymarket",
-        `${settled.slug}: booked ${settled.outcome}, venue ${res.outcome} \u2014 check the series`
-      );
-      this.refreshLiveBalance().catch(() => {});
-    };
-    const schedule = () => {
-      const timer = setTimeout(tick, delayMs);
-      if (timer && typeof timer.unref === "function") timer.unref();
-    };
-    schedule();
+    }
+    if (!this._appliedSettlementIds.has(pending.clientOrderId)) {
+      if (settled.status === "win") this.risk.onWin();
+      else this.risk.onLoss(-Number(settled.pnl));
+      this._appliedSettlementIds.add(pending.clientOrderId);
+    }
+    this.liveBet = null;
+    this.finalPending = null;
+    if (this._finalReconcileTimer) clearTimeout(this._finalReconcileTimer);
+    this._finalReconcileTimer = null;
+    this.pauseReason = null;
+    this._markResult(settled);
+    this.status = this.risk.halted ? "halt" : this.running ? "watching" : "stopped";
+    if (!this._emittedSettlementIds.has(settled.clientOrderId)) {
+      this._emittedSettlementIds.add(settled.clientOrderId);
+      this.emit("settled", settled);
+      this.notify(settled.status, settled.status === "win" ? "Win" : "Loss", `${settled.side} · $${settled.pnl} · live · final`);
+    }
+    if (this.risk.halted) {
+      this.running = false;
+      this.journal.write({ type: "halt" });
+      this.emit("halt", this.risk.snapshot());
+    }
+    this.refreshLiveBalance().catch(() => {});
+    this.emit("status", this.status);
+    return { ok: true, settled };
   }
 
   _settleIfOpen(bar) {
@@ -1467,6 +1653,119 @@ class Engine {
     this.emit("status", this.status);
   }
 
+  async inspectPendingOrder() {
+    const pending = this.journal.pendingOrder();
+    if (!pending) return { ok: false, reason: "no_pending_order" };
+    if (typeof this.live.inspectOrder !== "function") return { ok: false, reason: "unsupported_inspection" };
+    try {
+      return await this.live.inspectOrder(pending);
+    } catch (err) {
+      return { ok: false, reason: String(err.code || err.message || "inspection_failed") };
+    }
+  }
+
+  async resolvePendingOrder({ clientOrderId, orderId, confirm = false } = {}) {
+    const pending = this.journal.pendingOrder();
+    if (!pending) {
+      const existing = this.journal.restoreEntries.find((entry) =>
+        ["order_sent", "test_order"].includes(entry.type) && entry.clientOrderId === clientOrderId);
+      if (existing && (!orderId || existing.orderId === orderId)) return { ok: true, alreadyResolved: true, order: existing };
+      return { ok: false, reason: "no_pending_order" };
+    }
+    if (pending.clientOrderId !== clientOrderId) return { ok: false, reason: "client_order_id_mismatch" };
+    if (confirm !== true || !orderId) return { ok: false, reason: "confirmation_required" };
+    const inspected = await this.inspectPendingOrder();
+    if (!inspected || inspected.ok !== true) return { ok: false, reason: (inspected && inspected.reason) || "inspection_failed" };
+    if (inspected.kind !== "filled" || !inspected.order || !inspected.evidence) {
+      return { ok: false, reason: inspected.kind === "not_found" ? "not_found" : (inspected.reason || "not_filled") };
+    }
+    const order = inspected.order;
+    const evidence = inspected.evidence;
+    if (String(evidence.orderId || "") !== String(orderId) || String(order.orderId || "") !== String(orderId)) {
+      return { ok: false, reason: "order_id_mismatch" };
+    }
+    const sizeUsd = Number(order.sizeUsd);
+    const price = Number(order.price);
+    const shares = Number(order.shares);
+    const feeUsd = Number(order.feeUsd);
+    const side = String(order.side || "").toUpperCase();
+    if (!["UP", "DOWN"].includes(side) || (pending.side && side !== pending.side) ||
+        !(sizeUsd > 0) || !(price > 0 && price < 1) || !(shares > 0) ||
+        !(feeUsd >= 0) || !Number.isFinite(feeUsd) || !order.slug) {
+      return { ok: false, reason: "invalid_fill_evidence" };
+    }
+    const durable = {
+      ...pending,
+      mode: "auto",
+      dryRun: false,
+      side,
+      sizeUsd: String(order.sizeUsd),
+      price,
+      shares,
+      feeUsd: String(order.feeUsd),
+      orderId,
+      tokenId: order.tokenId || pending.evidence?.tokenId || null,
+      slug: order.slug,
+      entryPrice: price,
+      placedAt: Date.now(),
+      status: "open",
+      resolvedFromUnknown: true,
+      resolutionEvidence: evidence,
+    };
+    const event = pending.test
+      ? { type: "test_order", ...durable, roundCloseTs: pending.roundCloseTs }
+      : {
+          type: "order_sent",
+          ...durable,
+          roundOpenTs: pending.roundOpenTs || (pending.round && pending.round.openTs),
+          roundCloseTs: pending.roundCloseTs || (pending.round && pending.round.closeTs),
+          strike: pending.strike ?? (pending.round && pending.round.strike),
+        };
+    let persisted = this.journal.restoreEntries.find((entry) => entry.type === event.type && entry.clientOrderId === clientOrderId);
+    if (!persisted) {
+      try {
+        persisted = this.journal.write(event);
+      } catch (err) {
+        persisted = this.journal.restoreEntries.find((entry) => entry.type === event.type && entry.clientOrderId === clientOrderId);
+        if (!persisted) return { ok: false, reason: "persistence_failed" };
+      }
+    }
+    if (pending.test) {
+      this.lastTestOrder = persisted;
+    } else {
+      this.liveBet = {
+        dryRun: false,
+        clientOrderId,
+        side,
+        sizeUsd: durable.sizeUsd,
+        payout: shares / sizeUsd,
+        entryPrice: price,
+        shares,
+        feeUsd: durable.feeUsd,
+        orderId,
+        tokenId: durable.tokenId,
+        slug: durable.slug,
+        strike: durable.strike,
+        roundOpenTs: durable.roundOpenTs,
+        roundCloseTs: durable.roundCloseTs,
+        placedAt: durable.placedAt,
+        status: "open",
+      };
+    }
+    try {
+      this.journal.completeOrder(clientOrderId);
+    } catch {
+      // The durable fill row is sufficient to safely finish this on retry.
+    }
+    this.running = false;
+    this._stopHealth();
+    this.pauseReason = null;
+    this.status = this.risk.halted ? "halt" : (pending.test ? "stopped" : "waiting_settlement");
+    this.emit("log", { level: "info", message: `order_reconciled: ${clientOrderId} ${pending.test ? "test" : "live"} fill restored; press Start to resume` });
+    this.emit("status", this.status);
+    return { ok: true, order: persisted, state: this.snapshot() };
+  }
+
   async _executeSignal(ev, bar) {
     const generation = this._executionGeneration;
     if (this.mode === "auto" && this._testPositionActive()) return null;
@@ -1560,7 +1859,11 @@ class Engine {
         this.status = "order_sent";
         this.emit("status", this.status);
         const dryRun = this.isDryRun();
-        if (!dryRun) this.journal.beginOrder({ clientOrderId, side: ev.signal, sizeUsd: size, round });
+        if (!dryRun) this.journal.beginOrder({
+          mode: "auto", dryRun: false, clientOrderId, side: ev.signal, sizeUsd: size,
+          round, strike: round.strike, roundOpenTs: round.openTs, roundCloseTs: round.closeTs,
+          feeRate: quote && quote.feeRate, feeExponent: quote && quote.feeExponent,
+        });
         const order = await this.live.marketBuy({
           side: ev.signal,
           sizeUsd: size,
@@ -1570,6 +1873,9 @@ class Engine {
           maxPrice,
           maxTotalCostUsd,
           isActive: () => generation === this._executionGeneration,
+          onPrepared: (evidence) => {
+            if (!dryRun) this.journal.attachOrderEvidence(clientOrderId, evidence);
+          },
         });
         accepted = true;
         this.orderRejects = 0;
@@ -1578,6 +1884,7 @@ class Engine {
           this.journal.write({ type: "partial_fill", requested: size, filled: order.sizeUsd, shares: order.shares });
           this.emit("log", { level: "warn", message: `partial_fill: $${order.sizeUsd} of $${size} filled, booked as filled` });
         }
+        const placedAt = Date.now();
         this.liveBet = {
           dryRun,
           clientOrderId,
@@ -1588,15 +1895,19 @@ class Engine {
           shares: order.shares || null,
           feeUsd: order.feeUsd || null,
           orderId: order.orderId || null,
+          tokenId: order.tokenId || (quote && quote.tokenId) || null,
           slug: order.slug || (quote && quote.slug) || null,
           strike: round.strike,
           roundOpenTs: round.openTs,
           roundCloseTs: round.closeTs,
-          placedAt: Date.now(),
+          placedAt,
           status: "open",
         };
         this.markers.push(marker);
-        this.journal.write({ type: "order_sent", mode: "auto", dryRun, ...order });
+        this.journal.write({
+          type: "order_sent", ...order, mode: "auto", dryRun, clientOrderId,
+          strike: round.strike, roundOpenTs: round.openTs, roundCloseTs: round.closeTs, placedAt,
+        });
         this.journal.completeOrder(clientOrderId);
         this.status = "waiting_settlement";
         this.emit("order", { ...order, live: !dryRun });
@@ -1775,6 +2086,7 @@ class Engine {
       pauseReason: this.pauseReason,
       settingsLocked: Boolean(this._opening || this.openBet() || this._testPositionActive() || this.journal.pendingOrder() || this.risk.consecutiveLosses > 0),
       orderPending: Boolean(this._opening || this.journal.pendingOrder()),
+      finalPending: this.finalPending ? { ...this.finalPending, bet: this.finalPending.bet ? { ...this.finalPending.bet } : null } : null,
       testPositionActive: Boolean(this._testPositionActive()),
       lastConnect: this.lastConnect || null,
       paper: this.paper.snapshot(),

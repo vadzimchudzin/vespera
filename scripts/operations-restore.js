@@ -8,8 +8,13 @@ function args(values) {
     const key = values[i];
     if (!key.startsWith("--")) throw new Error("invalid_argument");
     const name = key.slice(2);
-    if (name === "isolated-validation") result[name] = true;
-    else if (name === "executor-start") result[name] = values[++i] === "true";
+    if (name === "executor-start=false") result["executor-start"] = false;
+    else if (name === "isolated-validation") result[name] = true;
+    else if (name === "executor-start") {
+      const value = values[++i];
+      if (!["false", "true"].includes(value)) throw new Error("invalid_executor_start");
+      result[name] = value === "true";
+    }
     else {
       if (!values[i + 1] || values[i + 1].startsWith("--")) throw new Error("missing_argument_value");
       result[name] = values[++i];

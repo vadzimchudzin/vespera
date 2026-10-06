@@ -54,6 +54,8 @@ app.on("window-all-closed", () => {
 app.on("before-quit", () => router?.dispose());
 
 const ROUTES = {
+  "risk:inspectOrder": "inspectPendingOrder", "risk:resolveOrder": "resolvePendingOrder",
+  "risk:finalSettlement": "reconcileFinalSettlement",
   "engine:snapshot": "snapshot", "engine:warmChart": "warmChart", "engine:start": "start",
   "engine:stop": "stop", "engine:setMode": "setMode", "engine:confirmLot": "confirmLot",
   "engine:ping": "ping", "engine:connect": "connect", "engine:testOrder": "testOrder",

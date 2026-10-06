@@ -542,7 +542,7 @@ async function run() {
   }
 
   {
-    // Live result is booked on the bar, then checked against Polymarket's resolution.
+    // Real live settlement waits for Polymarket and books its authoritative outcome.
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vsp-reconcile-"));
     const bars = makeTrendBars({ n: 220, close: 110, trend: 0.05 });
     const live = { ...stubLive(), async resolvedOutcome() { return { resolved: true, outcome: "DOWN" }; } };
@@ -554,6 +554,7 @@ async function run() {
     });
     engine.mode = "auto";
     engine.liveBet = {
+      clientOrderId: "live-reconcile-1",
       side: "UP",
       sizeUsd: "10.00",
       payout: 2,
@@ -563,16 +564,21 @@ async function run() {
       roundCloseTs: 2,
       placedAt: Date.now(),
     };
-    const settled = engine._settleLive({ close: 100, closeTs: 2 });
-    assert(settled.outcome === "UP" && settled.status === "win", "flat close books UP");
-    assert(settled.pnl === "9.65", `live pnl nets the taker fee, got ${settled.pnl}`);
+    const provisional = engine._settleLive({ close: 100, closeTs: 2 });
+    if (engine._finalReconcileTimer) clearTimeout(engine._finalReconcileTimer);
+    engine._finalReconcileTimer = null;
+    assert(provisional.type === "settlement_provisional", "Binance close remains provisional");
+    assert(engine.risk.step === 1, "provisional close does not advance series risk");
+    assert(!engine.journal.restoreEntries.some((entry) => entry.type === "settled"), "no provisional settlement is booked");
     const logs = [];
     engine.on((evt) => {
       if (evt.type === "log") logs.push(evt.payload.message);
     });
-    engine._reconcileLive(settled, { attempts: 1, delayMs: 1 });
-    await new Promise((r) => setTimeout(r, 30));
-    assert(logs.some((m) => m.startsWith("settle_mismatch")), "a venue disagreement is reported");
+    const result = await engine.reconcileFinalSettlement({ attempts: 1, delayMs: 0 });
+    assert(result.settled.outcome === "DOWN" && result.settled.status === "loss", "Polymarket corrects a flat Binance close");
+    assert(result.settled.pnl === "-10.35", `final loss includes the taker fee, got ${result.settled.pnl}`);
+    assert(result.settled.settlementSource === "polymarket", "authoritative source is retained");
+    assert(logs.every((message) => !message.startsWith("settle_mismatch")), "correction is booked, not left as a warning");
   }
 
   {

@@ -134,7 +134,7 @@ async function run() {
     const e = engine();
     const target = { ...bar, openTs: 900000, closeTs: 1799999, close: 99 };
     e.market.bars = [target];
-    e.liveBet = { side: "UP", sizeUsd: "5", strike: 100, shares: 10, roundCloseTs: target.closeTs };
+    e.liveBet = { dryRun: true, side: "UP", sizeUsd: "5", strike: 100, shares: 10, roundCloseTs: target.closeTs };
     const settled = e._settleIfOpen({ ...target, closeTs: 2699999, close: 110 });
     assert.strictEqual(settled.status, "loss");
     assert.strictEqual(settled.settleClose, 99);

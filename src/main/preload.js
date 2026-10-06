@@ -3,6 +3,9 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("vespera", {
+  inspectPendingOrder: () => ipcRenderer.invoke("risk:inspectOrder"),
+  resolvePendingOrder: (input) => ipcRenderer.invoke("risk:resolveOrder", input),
+  reconcileFinalSettlement: () => ipcRenderer.invoke("risk:finalSettlement"),
   snapshot: () => ipcRenderer.invoke("engine:snapshot"),
   warmChart: () => ipcRenderer.invoke("engine:warmChart"),
   start: (opts) => ipcRenderer.invoke("engine:start", opts),

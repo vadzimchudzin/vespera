@@ -27,6 +27,7 @@ const { toCsv, dailyBreakdown } = require("./stats");
   assert.ok(lines[0].startsWith("time,book,side,stake_usd,entry_price"));
   assert.ok(lines[1].includes(",paper,UP,2.50,0.5,5,0.09,"));
   assert.ok(lines[2].includes(",dry,DOWN,5.00,"), "books are labelled");
+  assert.ok(lines[0].includes("settlement_status,settlement_source,order_id"), "exports identify settlement provenance");
   assert.ok(lines[2].endsWith(',"a""b,c"'), "cells with quotes / commas are escaped");
   assert.strictEqual(toCsv([]).count, 0);
 }

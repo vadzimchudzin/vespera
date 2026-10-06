@@ -70,10 +70,16 @@ node scripts/operations-restore.js \
 ```
 
 Do not point validation at production directories, reuse another active book,
-or start an executor against restored data. Verify ownership, request-ledger
+or start an executor against restored data. The restored directory contains
+`.restore-validation.json`; the server refuses to start while that fence exists,
+even when the saved owner had `desiredRunning: true`. Keep the fence on validation
+copies. Removing it is not a validation step: only a reviewed real recovery with
+the original executor stopped and confirmed ownership may promote the copy.
+Verify ownership, request-ledger
 tombstones, journal/checkpoint files and key-file presence while stopped;
-maintain the restore copy as isolated evidence. This tooling does not prove
-decryption, venue reconciliation, a live restart, or a safe rollback. Before
+maintain the restore copy as isolated evidence. Automated tests verify decryption
+of copied random-key settings as well as file integrity; the tooling itself
+does not start an executor, verify venue reconciliation, a live restart, or a safe rollback. Before
 real rollback, follow [Zero Mode handoff rules](ZERO_MODE.md) and verify no
 unknown order or active position. Never delete tombstones or reset ownership.
 

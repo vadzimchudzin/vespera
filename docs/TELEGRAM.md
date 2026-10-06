@@ -53,10 +53,12 @@ Telegram failures must not stop the trading engine. A lost send response can
 produce a duplicate notification: Telegram does not provide an idempotency key
 for `sendMessage`. Delivery is not an exactly-once guarantee.
 
-Trade results currently retain the provisional Binance settlement behavior
-documented in [STABILITY](STABILITY.md); Telegram does not implement final
-Polymarket/Chainlink reconciliation. Never interpret a notification as evidence
-that this remaining financial-safety milestone has been completed.
+In 0.22.0 source, real-money settlement waits for the final venue outcome;
+Telegram receives the final settled event rather than a provisional Binance
+win/loss. Paper and dry run remain Binance-based. The first conservative
+implementation requires a new Start after final settlement. See
+[RECONCILIATION](RECONCILIATION.md); production fee receipts and account activity
+remain unverified.
 
 Protocol reference: [Telegram Bot API](https://core.telegram.org/bots/api).
 Production onboarding with a real bot and real-money tests require separate
