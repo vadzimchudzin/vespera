@@ -77,6 +77,27 @@ const { toCsv, dailyBreakdown } = require("./stats");
   const used = [...app.matchAll(/\bt\("([A-Za-z0-9_]+)"\)/g)].map((m) => m[1]);
   const unknown = [...new Set(used)].filter((k) => !(k in en));
   assert.deepStrictEqual(unknown, [], `unknown i18n keys: ${unknown.join(", ")}`);
+
+  const start = app.indexOf("  function updateSettingsLockUi(snap) {");
+  const end = app.indexOf("  function queueDebouncedSettings(", start);
+  assert.ok(start >= 0 && end > start);
+  const fields = {
+    base: { disabled: true, value: "1.00" },
+    steps: { disabled: true, value: "6" },
+    fixedStakes: { value: "5, 10, 20" },
+  };
+  const context = {
+    $: (id) => fields[id] || null,
+    canStartNewSeries: () => false,
+    snap: { settings: { sizingMode: "fixed", baseUsd: "5.00", maxSteps: 3 } },
+  };
+  vm.runInNewContext(`${app.slice(start, end)}\nupdateSettingsLockUi(snap);`, context);
+  assert.deepStrictEqual([fields.base.value, fields.steps.value], ["5.00", 3], "disabled ladder-derived fields follow accepted settings");
+  assert.strictEqual(fields.fixedStakes.value, "5, 10, 20", "accepted snapshots do not overwrite the ladder draft");
+  fields.base.disabled = false;
+  fields.base.value = "8.00";
+  vm.runInNewContext(`${app.slice(start, end)}\nupdateSettingsLockUi(snap);`, context);
+  assert.strictEqual(fields.base.value, "8.00", "editable base draft is preserved");
 }
 
 console.log("export + renderer tests ok");

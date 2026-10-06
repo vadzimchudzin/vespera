@@ -866,6 +866,7 @@ body.mac .chrome {
   color: var(--ink);
 }
 .field input:not([type="range"]),
+.field textarea,
 .field select {
   width: 100%;
   border: 1px solid var(--hair);
@@ -878,6 +879,27 @@ body.mac .chrome {
 .field input:not([type="range"]):focus {
   border-color: color-mix(in srgb, var(--apple) 60%, transparent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--apple) 18%, transparent);
+}
+.field input:disabled,
+.field textarea:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.field textarea {
+  min-height: 58px;
+  resize: vertical;
+}
+.field textarea:focus {
+  border-color: color-mix(in srgb, var(--apple) 60%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--apple) 18%, transparent);
+}
+.settings-error {
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--warn) 38%, transparent);
+  border-radius: 10px;
+}
+.settings-error[hidden] {
+  display: none;
 }
 .field input::placeholder {
   color: var(--muted);

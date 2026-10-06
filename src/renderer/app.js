@@ -25,6 +25,8 @@
     pairLabel: "",
     chromeKey: "",
     saveTimer: 0,
+    queuedSettingsPatch: {},
+    settingsSaveQueue: Promise.resolve(),
     savingPanel: false,
     depositTimer: 0,
   };
@@ -71,6 +73,7 @@
 
   function reasonText(reason) {
     if (!reason) return "";
+    if (String(reason).startsWith("budget_exceeded")) return t("reason_budget_exceeded");
     return t(`reason_${reason}`) !== `reason_${reason}` ? t(`reason_${reason}`) : String(reason).replace(/_/g, " ");
   }
 
@@ -247,6 +250,8 @@
       window.VesperaChart.render(snap);
     }
     renderLog(snap);
+    if ($("panelBody")?.querySelector("#planBox")) state.paintPlan?.(snap);
+    updateSettingsLockUi(snap);
   }
 
   function renderStrategies(snap) {
@@ -420,27 +425,114 @@
     closeMenus();
   }
 
-  function debounceSave(patch, ms = 80) {
+  function saveSettingsSerial(patch) {
+    const run = state.settingsSaveQueue.catch(() => {}).then(() => {
+      if (!window.vespera) return null;
+      return window.vespera.saveSettings(patch).then(applySettingsReply);
+    });
+    state.settingsSaveQueue = run.catch(() => {});
+    return run;
+  }
+
+  function settingError(message, field) {
+    const box = $("settingsError");
+    if (!box) return;
+    box.textContent = message;
+    box.hidden = false;
+    if (field) {
+      const input = $(({ baseUsd: "base", maxSteps: "steps", maxSeriesLossUsd: "maxSeriesLoss" })[field] || field);
+      if (input) {
+        input.setAttribute("aria-invalid", "true");
+        input.focus();
+      }
+    }
+  }
+
+  function clearSettingError() {
+    const box = $("settingsError");
+    if (box) {
+      box.textContent = "";
+      box.hidden = true;
+    }
+    $("panelBody")?.querySelectorAll('[aria-invalid="true"]').forEach((el) => el.removeAttribute("aria-invalid"));
+  }
+
+  function localizedSettingsError(err) {
+    if (err && err.code === "settings_locked") return t("settingsLocked");
+    if (err && err.code === "budget_exceeded") return t("reason_budget_exceeded");
+    if (err && err.code === "invalid_settings") {
+      const field = err.field || "";
+      const key = `invalid_${field}`;
+      return t(key) !== key ? t(key) : `${t("invalidSettings")}${field ? ` ${field}` : ""}`;
+    }
+    return `${t("settingsSaveFailed")}${err && err.message ? `: ${err.message}` : ""}`;
+  }
+
+  function applySettingsReply(reply) {
+    if (reply && reply.ok === false) {
+      if (reply.state && reply.state.settings) {
+        state.snapshot = reply.state;
+        renderSnap(reply.state);
+      }
+      const error = new Error(reply.message || reply.reason || "Settings save failed");
+      error.code = reply.reason;
+      error.field = reply.field;
+      throw error;
+    }
+    return reply;
+  }
+
+  function canStartNewSeries(snap) {
+    return Boolean(
+      snap && !snap.running && Number(snap.risk?.consecutiveLosses) > 0 &&
+      !snap.orderPending && !snap.testPositionActive && !snap.liveBet && !snap.paper?.openBet
+    );
+  }
+
+  function updateSettingsLockUi(snap) {
+    if (snap?.settings?.sizingMode === "fixed" && $("base")?.disabled && $("steps")?.disabled) {
+      $("base").value = snap.settings.baseUsd;
+      $("steps").value = snap.settings.maxSteps;
+    }
+    const notice = $("settingsLockNotice");
+    if (notice) {
+      notice.hidden = !snap?.settingsLocked;
+      const reason = snap?.settingsLockReason;
+      notice.textContent = reason
+        ? (t(`settingsLock_${reason}`) !== `settingsLock_${reason}` ? t(`settingsLock_${reason}`) : String(reason))
+        : t("settingsLocked");
+    }
+    const button = $("newSeries");
+    if (button) button.hidden = !canStartNewSeries(snap);
+  }
+
+  function queueDebouncedSettings(patch, ms = 80) {
+    state.queuedSettingsPatch = { ...state.queuedSettingsPatch, ...patch };
     clearTimeout(state.saveTimer);
     state.saveTimer = setTimeout(async () => {
-      if (!window.vespera) return;
-      const snap = await window.vespera.saveSettings(patch);
-      if (!snap || !snap.settings) return;
-      state.snapshot = snap;
-      if (window.VesperaChart && window.VesperaChart.setRefreshMs) {
-        window.VesperaChart.setRefreshMs(snap.settings.refreshMs);
-      }
-      if (
-        patch.minCrossTicks != null ||
-        patch.minOpeningAtr != null ||
-        patch.confirmCount != null ||
-        patch.fullBodyOnS != null ||
-        patch.fastPeriod != null ||
-        patch.slowPeriod != null
-      ) {
-        renderSnap(snap);
+      const queued = state.queuedSettingsPatch;
+      state.queuedSettingsPatch = {};
+      try {
+        const current = state.snapshot?.settings || {};
+        const normalized = window.VesperaSettings.normalizeSettings(queued, current, { strict: true });
+        const snap = await saveSettingsSerial(normalized);
+        if (!snap || !snap.settings) return;
+        state.snapshot = snap;
+        updateSettingsLockUi(snap);
+        if (window.VesperaChart?.setRefreshMs) window.VesperaChart.setRefreshMs(snap.settings.refreshMs);
+        if (queued.minCrossTicks != null || queued.minOpeningAtr != null || queued.confirmCount != null || queued.fullBodyOnS != null || queued.fastPeriod != null || queued.slowPeriod != null || queued.maType != null) {
+          renderSnap(snap);
+        }
+        const panel = $("panelBody");
+        if (panel && !$("panel").hidden) state.paintPlan?.(snap);
+      } catch (err) {
+        if (!$("panel").hidden) settingError(localizedSettingsError(err), err && err.field);
       }
     }, ms);
+  }
+
+  function debounceSave(patch, ms = 80) {
+    queueDebouncedSettings(patch, ms);
   }
 
   function paintChromePicks(snap) {
@@ -477,7 +569,15 @@
     hostTf.innerHTML = "";
     const onMarket = async (patch) => {
       if (!window.vespera) return;
-      const next = await window.vespera.saveSettings(patch);
+      let next;
+      try {
+        next = await saveSettingsSerial(patch);
+      } catch (err) {
+        state.chromeKey = "";
+        logNote(localizedSettingsError(err));
+        if (state.snapshot) renderSnap(state.snapshot);
+        return;
+      }
       if (!next || !next.settings) return;
       const refused =
         (patch.symbol != null && next.settings.symbol !== patch.symbol) ||
@@ -618,14 +718,14 @@
           async (value) => {
             walletType = value;
             paintWalletType();
-            await window.vespera.saveSettings({ walletType: value });
+            await saveSettingsSerial({ walletType: value });
             await refreshDetected();
           }
         )
       );
       paintWalletType();
       $("walletAddress").onchange = async () => {
-        await window.vespera.saveSettings({ walletAddress: $("walletAddress").value.trim() });
+        await saveSettingsSerial({ walletAddress: $("walletAddress").value.trim() });
         await refreshDetected();
       };
 
@@ -909,7 +1009,7 @@
             chainId,
             (v) => {
               chainId = v;
-              window.vespera.saveSettings({ depositChain: v });
+              saveSettingsSerial({ depositChain: v }).catch((err) => logNote(localizedSettingsError(err)));
               paintAddress();
             }
           )
@@ -935,7 +1035,7 @@
             symbol,
             (v) => {
               symbol = v;
-              window.vespera.saveSettings({ depositToken: v });
+              saveSettingsSerial({ depositToken: v }).catch((err) => logNote(localizedSettingsError(err)));
               paintChains();
             }
           )
@@ -963,7 +1063,7 @@
           document.querySelectorAll("#themeSeg button").forEach((x) =>
             x.classList.toggle("on", x.dataset.theme === state.theme)
           );
-          if (window.vespera) await window.vespera.saveSettings({ theme: state.theme });
+          if (window.vespera) await saveSettingsSerial({ theme: state.theme });
         };
       });
     }
@@ -982,7 +1082,7 @@
           document.querySelectorAll("#langSeg button").forEach((x) =>
             x.classList.toggle("on", x.dataset.lang === state.locale)
           );
-          if (window.vespera) await window.vespera.saveSettings({ locale: state.locale });
+          if (window.vespera) await saveSettingsSerial({ locale: state.locale });
           renderSnap(state.snapshot);
         };
       });
@@ -991,26 +1091,34 @@
     if (kind === "settings") {
       title.textContent = t("settings");
       const s = state.snapshot?.settings || {};
+      const limits = window.VesperaSettings.LIMITS;
       body.innerHTML = `
-        <div class="field"><span class="field-label">${t("base")}</span><input id="base" value="${s.baseUsd || "1.00"}" /></div>
-        <div class="field"><span class="field-label">${t("maxSteps")}</span><input id="steps" value="${s.maxSteps || 6}" /></div>
         <div class="field toggle-row">
           <span class="field-label">${t("sizing")}${helpBtn("sizingHint")}</span>
           <div class="seg seg-sm" id="sizingSeg">
-            <button type="button" data-sizing="double" class="${(s.sizingMode || "double") === "double" ? "on" : ""}">\u00d72</button>
+            <button type="button" data-sizing="double" class="${(s.sizingMode || "double") === "double" ? "on" : ""}">${t("sizingDouble")}</button>
+            <button type="button" data-sizing="fixed" class="${s.sizingMode === "fixed" ? "on" : ""}">${t("sizingFixed")}</button>
             <button type="button" data-sizing="recover" class="${s.sizingMode === "recover" ? "on" : ""}">${t("sizingRecover")}</button>
           </div>
         </div>
-        <div class="field"><span class="field-label">${t("maxStake")}${helpBtn("maxStakeHint")}</span><input id="maxStake" inputmode="decimal" value="${Number(s.maxStakeUsd) > 0 ? s.maxStakeUsd : ""}" placeholder="${t("maxStakeOff")}" /></div>
+        <div class="field"><span class="field-label">${t("fixedStakes")}</span><textarea id="fixedStakes" rows="2">${esc(Array.isArray(s.fixedStakes) ? s.fixedStakes.join(", ") : "1, 2, 4, 8, 16, 32")}</textarea><p class="hint">${t("fixedStakesHint")}</p></div>
+        <p class="hint" id="fixedModeHint" hidden>${t("fixedModeHint")}</p>
+        <p class="hint warn" id="sizingWarning" hidden></p>
+        <p class="hint warn settings-error" id="settingsLockNotice" role="status" hidden></p>
+        <div class="field"><span class="field-label">${t("base")}</span><input id="base" type="number" min="${limits.baseUsd.min}" max="${limits.baseUsd.max}" step="${limits.baseUsd.step}" value="${esc(s.baseUsd || "1.00")}" /></div>
+        <div class="field"><span class="field-label">${t("maxSteps")}</span><input id="steps" type="number" min="${limits.maxSteps.min}" max="${limits.maxSteps.max}" step="${limits.maxSteps.step}" value="${esc(s.maxSteps || 6)}" /></div>
+        <div class="field"><span class="field-label">${t("maxStake")}${helpBtn("maxStakeHint")}</span><input id="maxStake" type="number" min="${limits.maxStakeUsd.min}" max="${limits.maxStakeUsd.max}" step="${limits.maxStakeUsd.step}" inputmode="decimal" value="${Number(s.maxStakeUsd) > 0 ? s.maxStakeUsd : ""}" placeholder="${t("maxStakeOff")}" /></div>
         <div class="field">
           <span class="field-label">${t("maxEntryPrice")}${helpBtn("maxEntryPriceHint")}</span>
           <div class="range-row">
-            <input id="maxEntry" type="range" min="50" max="100" step="1" />
+            <input id="maxEntry" type="range" min="${limits.maxEntryPrice.min * 100}" max="${limits.maxEntryPrice.max * 100}" step="${limits.maxEntryPrice.step * 100}" />
             <span class="range-val" id="maxEntryVal"></span>
           </div>
         </div>
         <div class="plan-box" id="planBox"></div>
-        <div class="field"><span class="field-label">${t("dailyLimit")}${helpBtn("dailyLimitHint")}</span><input id="dailyLimit" inputmode="decimal" value="${Number(s.dailyLossLimitUsd) > 0 ? s.dailyLossLimitUsd : ""}" placeholder="${t("maxStakeOff")}" /></div>
+        <div class="field"><span class="field-label">${t("dailyLimit")}${helpBtn("dailyLimitHint")}</span><input id="dailyLimit" type="number" min="${limits.dailyLossLimitUsd.min}" max="${limits.dailyLossLimitUsd.max}" step="${limits.dailyLossLimitUsd.step}" inputmode="decimal" value="${Number(s.dailyLossLimitUsd) > 0 ? s.dailyLossLimitUsd : ""}" placeholder="${t("maxStakeOff")}" /></div>
+        <div class="field"><span class="field-label">${t("maxSeriesLoss")}${helpBtn("maxSeriesLossHint")}</span><input id="maxSeriesLoss" type="number" min="${limits.maxSeriesLossUsd.min}" max="${limits.maxSeriesLossUsd.max}" step="${limits.maxSeriesLossUsd.step}" inputmode="decimal" value="${Number(s.maxSeriesLossUsd) > 0 ? s.maxSeriesLossUsd : ""}" placeholder="${t("maxStakeOff")}" /></div>
+        <div id="settingsError" class="hint warn settings-error" role="alert" hidden></div>
         <div class="field toggle-row">
           <span class="field-label">${t("dryRun")}${helpBtn("dryRunHint")}</span>
           <button type="button" class="toggle ${s.dryRun !== false ? "on" : ""}" id="dryRunToggle" aria-pressed="${s.dryRun !== false}">
@@ -1020,21 +1128,21 @@
         <div class="field">
           <span class="field-label">${t("minOpening")}${helpBtn("minOpeningHint")}</span>
           <div class="range-row">
-            <input id="opening" type="range" min="0" max="40" step="1" />
+            <input id="opening" type="range" min="${limits.minOpeningAtr.min * 20}" max="${limits.minOpeningAtr.max * 20}" step="${limits.minOpeningAtr.step * 20}" />
             <span class="range-val" id="openingVal">0.00 ATR</span>
           </div>
         </div>
         <div class="field">
           <span class="field-label">${t("minCross")}${helpBtn("minCrossHint")}</span>
           <div class="range-row">
-            <input id="crossTicks" type="range" min="0" max="2000" step="1" />
+            <input id="crossTicks" type="range" min="${limits.minCrossTicks.min}" max="${limits.minCrossTicks.max}" step="${limits.minCrossTicks.step}" />
             <span class="range-val" id="crossVal">0 ${plural(0, t("minCrossUnit"))}</span>
           </div>
         </div>
         <div class="field">
           <span class="field-label">${t("confirmCount")}${helpBtn("confirmCountHint")}</span>
           <div class="range-row">
-            <input id="confirms" type="range" min="0" max="10" step="1" />
+            <input id="confirms" type="range" min="${limits.confirmCount.min}" max="${limits.confirmCount.max}" step="${limits.confirmCount.step}" />
             <span class="range-val" id="confirmsVal">0</span>
           </div>
         </div>
@@ -1048,21 +1156,21 @@
         <div class="field">
           <span class="field-label">${t("fastPeriod")}${helpBtn("fastPeriodHint")}</span>
           <div class="range-row">
-            <input id="fastPeriod" type="range" min="2" max="80" step="1" />
+            <input id="fastPeriod" type="range" min="${limits.fastPeriod.min}" max="${limits.fastPeriod.max}" step="${limits.fastPeriod.step}" />
             <span class="range-val" id="fastPeriodVal">SMA20</span>
           </div>
         </div>
         <div class="field">
           <span class="field-label">${t("slowPeriod")}${helpBtn("slowPeriodHint")}</span>
           <div class="range-row">
-            <input id="slowPeriod" type="range" min="20" max="400" step="1" />
+            <input id="slowPeriod" type="range" min="${limits.slowPeriod.min}" max="${limits.slowPeriod.max}" step="${limits.slowPeriod.step}" />
             <span class="range-val" id="slowPeriodVal">SMA200</span>
           </div>
         </div>
         <div class="field">
           <span class="field-label">${t("refresh")}${helpBtn("refreshHint")}</span>
           <div class="range-row">
-            <input id="refresh" type="range" min="1" max="1000" step="1" />
+            <input id="refresh" type="range" min="${limits.refreshMs.min}" max="${limits.refreshMs.max}" step="${limits.refreshMs.step}" />
             <span class="range-val" id="refreshVal">100 ${t("refreshUnit")}</span>
           </div>
         </div>
@@ -1083,55 +1191,76 @@
         foot.hidden = false;
         foot.innerHTML = `
           <button type="button" class="ok" id="saveSet">${t("save")}</button>
+          <button type="button" class="ghost" id="newSeries" hidden>${t("newSeries")}</button>
           <button type="button" class="ghost" id="resetPaper">${t("resetPaper")}</button>
         `;
       }
+      updateSettingsLockUi(state.snapshot);
       const paintPlan = (snap) => {
         const box = $("planBox");
         const plan = snap && snap.plan;
         if (!box || !plan) return;
-        const stakes = plan.steps
+        const steps = Array.isArray(plan.steps) ? plan.steps : [];
+        const stakes = steps
           .map((x) => `<span class="plan-step${x.winNet < 0 ? " neg" : ""}${x.capped ? " capped" : ""}" title="${esc(
             `${t("planWinNet")}: $${x.winNet.toFixed(2)}`
           )}">$${x.stake.toFixed(2)}</span>`)
           .join("");
-        const worst = plan.steps.reduce((m, x) => Math.min(m, x.winNet), Infinity);
+        const worst = steps.reduce((m, x) => Math.min(m, x.winNet), Infinity);
+        const quotePrice = snap.quote && snap.quote.ok && Number(snap.quote.price) > 0 ? Number(snap.quote.price) : 0;
+        const price = quotePrice || Number(plan.price) || 0.5;
         box.innerHTML = `
-          <div class="plan-head">${t("planTitle")} ${plan.price.toFixed(2)}</div>
+          <div class="plan-head">${quotePrice ? t("planLiveQuote") : t("planEstimate")} ${price.toFixed(2)}</div>
           <div class="plan-steps">${stakes}</div>
-          <div class="hint">${t("planAtRisk")}: <b>$${plan.totalAtRisk.toFixed(2)}</b> \u00b7 ${t("planBreakEven")}: <b>${(
+          <div class="hint">${t("planAtRisk")}: <b>$${Number(plan.totalAtRisk || 0).toFixed(2)}</b> \u00b7 ${t("planBreakEven")}: <b>${(
             plan.breakEvenWinRate * 100
           ).toFixed(1)}%</b></div>
+          ${plan.limitedByBudget ? `<div class="hint warn">${t("budgetLimited")}: $${Number(plan.budgetUsd || 0).toFixed(2)} · ${t("planStepsInBudget")}: ${steps.length} · ${t("planAtRisk")}: $${Number(plan.totalAtRisk || 0).toFixed(2)}</div>` : ""}
           ${worst < 0 ? `<div class="hint warn">${t("planNegative")}</div>` : ""}`;
       };
+      state.paintPlan = paintPlan;
       paintPlan(state.snapshot);
       const planSave = (patch, ms) => {
-        clearTimeout(state.planTimer);
-        state.planTimer = setTimeout(async () => {
-          if (!window.vespera) return;
-          const snap = await window.vespera.saveSettings(patch);
-          if (snap) {
-            state.snapshot = snap;
-            paintPlan(snap);
-          }
-        }, ms);
+        queueDebouncedSettings(patch, ms);
+      };
+      const fixedStakesPatch = () => ({ fixedStakes: $("fixedStakes").value });
+      const updateSizingForm = () => {
+        const mode = $("sizingSeg").querySelector("button.on")?.dataset.sizing || "double";
+        const fixed = mode === "fixed";
+        $("base").disabled = fixed;
+        $("steps").disabled = fixed;
+        $("fixedStakes").disabled = !fixed;
+        $("fixedModeHint").hidden = !fixed;
+        const warning = $("sizingWarning");
+        warning.hidden = mode === "double";
+        warning.textContent = mode === "fixed" ? t("fixedWarning") : mode === "recover" ? t("recoverWarning") : "";
       };
       $("sizingSeg").onclick = (e) => {
         const btn = e.target.closest("button[data-sizing]");
         if (!btn) return;
         for (const b of $("sizingSeg").querySelectorAll("button")) b.classList.toggle("on", b === btn);
-        planSave({ sizingMode: btn.dataset.sizing }, 0);
+        updateSizingForm();
+        planSave({ sizingMode: btn.dataset.sizing, ...(btn.dataset.sizing === "fixed" ? fixedStakesPatch() : {}) }, 0);
       };
+      updateSizingForm();
       const moneyOr = (el, fallback) => {
+        if (!String(el.value).trim()) return 0;
         const n = Number(String(el.value).replace(",", "."));
-        return Number.isFinite(n) && n >= 0 ? n : fallback;
+        return Number.isFinite(n) && n >= 0 ? n : NaN;
       };
       $("maxStake").oninput = () => planSave({ maxStakeUsd: moneyOr($("maxStake"), 0) }, 400);
       $("dailyLimit").oninput = () => planSave({ dailyLossLimitUsd: moneyOr($("dailyLimit"), 0) }, 400);
+      $("maxSeriesLoss").oninput = () => planSave({ maxSeriesLossUsd: moneyOr($("maxSeriesLoss"), 0) }, 400);
       $("dryRunToggle").onclick = async () => {
         const btn = $("dryRunToggle");
         const on = !btn.classList.contains("on");
-        const snap = await window.vespera.saveSettings({ dryRun: on });
+        let snap;
+        try {
+          snap = await saveSettingsSerial({ dryRun: on });
+        } catch (err) {
+          settingError(localizedSettingsError(err));
+          return;
+        }
         // the engine refuses while a live bet is open; show what it kept
         const kept = snap && snap.settings ? snap.settings.dryRun !== false : on;
         btn.classList.toggle("on", kept);
@@ -1139,13 +1268,12 @@
         if (snap) renderSnap(snap);
       };
       $("base").oninput = () => {
-        const n = moneyOr($("base"), 0);
-        if (n > 0) planSave({ baseUsd: n.toFixed(2) }, 400);
+        planSave({ baseUsd: $("base").value }, 400);
       };
       $("steps").oninput = () => {
-        const n = Math.round(moneyOr($("steps"), 0));
-        if (n >= 1 && n <= 20) planSave({ maxSteps: n }, 400);
+        planSave({ maxSteps: $("steps").value }, 400);
       };
+      $("fixedStakes").oninput = () => planSave(fixedStakesPatch(), 400);
       $("maxEntry").value = String(Math.round((Number(s.maxEntryPrice) > 0 && Number(s.maxEntryPrice) < 1 ? Number(s.maxEntryPrice) : 1) * 100));
       const paintMaxEntry = () => {
         const v = Number($("maxEntry").value);
@@ -1167,9 +1295,9 @@
         debounceSave({ minOpeningAtr: Number($("opening").value) / 20 });
       };
       const tickSize = Number(s.tickSize) > 0 ? Number(s.tickSize) : 0.01;
-      const crossMax = tickSize >= 0.01 ? 2000 : tickSize >= 0.001 ? 500 : 200;
+      const crossMax = limits.minCrossTicks.max;
       $("crossTicks").max = String(crossMax);
-      $("crossTicks").value = String(Math.max(0, Math.min(crossMax, Number(s.minCrossTicks || 0))));
+      $("crossTicks").value = String(Math.max(0, Number(s.minCrossTicks || 0)));
       const paintCross = () => {
         const n = Number($("crossTicks").value) || 0;
         const usd = n * tickSize;
@@ -1183,7 +1311,7 @@
         paintCross();
         debounceSave({ minCrossTicks: Number($("crossTicks").value) });
       };
-      $("confirms").value = String(Math.max(0, Math.min(10, Number(s.confirmCount || 0))));
+      $("confirms").value = String(Math.max(limits.confirmCount.min, Math.min(limits.confirmCount.max, Number(s.confirmCount || 0))));
       const paintConfirms = () => {
         const n = Number($("confirms").value) || 0;
         $("confirmsVal").textContent = `${n} ${plural(n, t("confirmCountUnit"))}`;
@@ -1197,18 +1325,13 @@
         const on = document.querySelector("#maTypeSeg button.on");
         return on ? on.dataset.ma : (s.maType || "SMA");
       };
-      $("fastPeriod").value = String(Math.max(2, Math.min(80, Number(s.fastPeriod || 20))));
-      $("slowPeriod").value = String(Math.max(20, Math.min(400, Number(s.slowPeriod || 200))));
+      $("fastPeriod").value = String(Number(s.fastPeriod || 20));
+      $("slowPeriod").value = String(Number(s.slowPeriod || 200));
       const paintPeriods = () => {
-        let fast = Number($("fastPeriod").value) || 20;
-        let slow = Number($("slowPeriod").value) || 200;
-        if (slow <= fast) {
-          slow = Math.min(400, fast + 1);
-          $("slowPeriod").value = String(slow);
-        }
-        const maLabel = currentMaType();
-        $("fastPeriodVal").textContent = `${maLabel}${fast}`;
-        $("slowPeriodVal").textContent = `${maLabel}${slow}`;
+        const fast = Number($("fastPeriod").value) || 20;
+        const slow = Number($("slowPeriod").value) || 200;
+        $("fastPeriodVal").textContent = `${t("fastGeneric")} ${fast}`;
+        $("slowPeriodVal").textContent = `${t("slowGeneric")} ${slow}`;
       };
       paintPeriods();
       $("fastPeriod").oninput = () => {
@@ -1256,11 +1379,16 @@
         const on = !notifyBtn.classList.contains("on");
         notifyBtn.classList.toggle("on", on);
         notifyBtn.setAttribute("aria-pressed", String(on));
-        if (window.vespera) await window.vespera.saveSettings({ notificationsEnabled: on });
+        try {
+          if (window.vespera) await saveSettingsSerial({ notificationsEnabled: on });
+        } catch (err) {
+          notifyBtn.classList.toggle("on", !on);
+          notifyBtn.setAttribute("aria-pressed", String(!on));
+          settingError(localizedSettingsError(err));
+        }
       };
       const saveNow = async () => {
         if (state.savingPanel) return;
-        state.savingPanel = true;
         const baseEl = $("base");
         const stepsEl = $("steps");
         const openingEl = $("opening");
@@ -1271,13 +1399,17 @@
         const refreshEl = $("refresh");
         const notifyEl = $("notifyToggle");
         const fullBodyEl = $("fullBodyToggle");
+        const sizingMode = (document.querySelector("#sizingSeg button.on") || {}).dataset?.sizing || s.sizingMode || "double";
         const patch = {
-          maxSteps: Number(stepsEl && stepsEl.value) || 6,
-          baseUsd: baseEl ? baseEl.value : s.baseUsd || "1.00",
-          sizingMode: (document.querySelector("#sizingSeg button.on") || {}).dataset?.sizing || s.sizingMode || "double",
+          sizingMode,
+          ...(sizingMode === "fixed" ? fixedStakesPatch() : {
+            maxSteps: Number(stepsEl && stepsEl.value),
+            baseUsd: baseEl ? moneyOr(baseEl, NaN).toFixed(2) : s.baseUsd || "1.00",
+          }),
           maxStakeUsd: $("maxStake") ? moneyOr($("maxStake"), 0) : Number(s.maxStakeUsd) || 0,
           maxEntryPrice: $("maxEntry") ? Number($("maxEntry").value) / 100 : Number(s.maxEntryPrice) || 1,
           dailyLossLimitUsd: $("dailyLimit") ? moneyOr($("dailyLimit"), 0) : Number(s.dailyLossLimitUsd) || 0,
+          maxSeriesLossUsd: $("maxSeriesLoss") ? moneyOr($("maxSeriesLoss"), 0) : Number(s.maxSeriesLossUsd) || 0,
           minOpeningAtr: openingEl ? Number(openingEl.value) / 20 : 0,
           minCrossTicks: crossEl ? Number(crossEl.value) : 0,
           confirmCount: confirmsEl ? Number(confirmsEl.value) : 0,
@@ -1288,23 +1420,23 @@
           refreshMs: refreshEl ? Number(refreshEl.value) : 100,
           notificationsEnabled: notifyEl ? notifyEl.classList.contains("on") : true,
         };
-        hideTip();
-        closePanel();
+        const pending = state.queuedSettingsPatch;
+        clearTimeout(state.saveTimer);
+        state.saveTimer = 0;
+        state.queuedSettingsPatch = {};
+        const completePatch = { ...pending, ...patch };
         try {
           if (!window.vespera) return;
-          const snap = await window.vespera.saveSettings(patch);
-          try {
-            await window.vespera.confirmLot(patch.baseUsd);
-          } catch {
-            /* lot confirm is secondary */
-          }
-          renderSnap(snap || (await window.vespera.snapshot()));
-        } catch {
-          try {
-            renderSnap(await window.vespera.snapshot());
-          } catch {
-            /* already closed */
-          }
+          const normalized = window.VesperaSettings.normalizeSettings(completePatch, state.snapshot?.settings || s, { strict: true });
+          state.savingPanel = true;
+          const snap = await saveSettingsSerial(normalized);
+          if (!snap || !snap.settings) throw new Error(t("settingsSaveFailed"));
+          state.snapshot = snap;
+          renderSnap(snap);
+          hideTip();
+          closePanel();
+        } catch (err) {
+          settingError(localizedSettingsError(err), err && err.field);
         } finally {
           state.savingPanel = false;
         }
@@ -1331,6 +1463,24 @@
         e.stopPropagation();
         saveNow();
       };
+      $("newSeries").onclick = async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const current = state.snapshot;
+        if (!canStartNewSeries(current) || !window.vespera?.confirmLot) return;
+        if (!window.confirm(t("newSeriesConfirm"))) return;
+        try {
+          const snap = await window.vespera.confirmLot(current.settings.baseUsd, { resetSeries: true });
+          if (!snap || !snap.settings) throw new Error(t("settingsSaveFailed"));
+          renderSnap(snap);
+          openPanel("settings");
+        } catch (err) {
+          settingError(localizedSettingsError(err));
+        }
+      };
+      body.oninput = (e) => {
+        if (e.target && e.target.closest(".field")) clearSettingError();
+      };
     }
 
     if (kind === "liveConfirm") {
@@ -1349,10 +1499,12 @@
         ] || t("walletTypeAuto")))}
         ${row(t("balance"), bal)}
         ${row(t("liveConfirmMarket"), esc(snap.pairLabel || ""))}
-        ${row(t("sizing"), s.sizingMode === "recover" ? t("sizingRecover") : "\u00d72")}
+        ${row(t("sizing"), s.sizingMode === "fixed" ? t("sizingFixed") : s.sizingMode === "recover" ? t("sizingRecover") : t("sizingDouble"))}
+        ${s.sizingMode === "fixed" ? row(t("fixedStakes"), (s.fixedStakes || []).map((value) => `$${Number(value).toFixed(2)}`).join(" · ")) : ""}
         ${row(t("liveConfirmStakes"), plan.steps.map((x) => `$${x.stake.toFixed(2)}`).join(" \u00b7 "))}
         ${row(t("planAtRisk"), `$${plan.totalAtRisk.toFixed(2)} @ ${plan.price.toFixed(2)}`)}
         ${row(t("maxStake"), Number(s.maxStakeUsd) > 0 ? `$${s.maxStakeUsd}` : t("maxStakeOff"))}
+        ${row(t("maxSeriesLoss"), Number(s.maxSeriesLossUsd) > 0 ? `$${s.maxSeriesLossUsd}` : t("maxStakeOff"))}
         ${row(t("dailyLimit"), Number(s.dailyLossLimitUsd) > 0 ? `$${s.dailyLossLimitUsd}` : t("maxStakeOff"))}
         ${Number(s.dailyLossLimitUsd) > 0 ? "" : `<p class="hint warn">${t("liveConfirmNoLimit")}</p>`}
       `;

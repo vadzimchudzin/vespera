@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.19.0 — 2026-10-06
+
+- **Fixed stake ladder.** Up to 20 explicit USD amounts, independent of outcome price. Base and step count follow the ladder. Existing ×2 and dynamic Recover remain distinct; neither ×2 nor Fixed promises recovery.
+- **Series budget.** Stops before placing a stake plus estimated fees above remaining series or daily-loss headroom. Live execution rechecks the refreshed quote before POST; test bets also respect caps and budgets.
+- **Unified settings.** One shared validator for renderer, engine and persistence; documented units and common slider boundaries. Invalid or locked patches reject atomically. Debounced changes are merged and saves serialized.
+- **Safe edits and reset.** Position/order preparation locks trading edits; losses lock sizing edits. Save does not confirm/reset the lot. An explicit confirmed New series action while stopped resets series state without clearing daily losses.
+- **Verification.** Added settings-normalization and settings-engine regressions to cross-platform CI. A managed isolated Electron preview supports real desktop UI checks without account credentials.
+
 ## 0.18.10 — 2026-10-06
 
 - Includes the stability work below with a platform-correct permission test: Windows uses ACLs, while POSIX systems verify `0600`. File-creation mode is checked on every platform. Test CI now runs on Linux, Windows and macOS. The incomplete 0.18.9 build remains a draft and is not the recommended release.

@@ -2,7 +2,7 @@
 
 Glass desktop terminal for BTC 15m Polymarket Up/Down.
 
-**v0.18.10.** SMA/EMA 200/20 on a **closed** candle `S`, bet on **S+1**. Arrow sits on the entry candle. Auto prices the live Polymarket round and sends **CLOB V2** signed orders once the wallet, a signing key and the derived CLOB keys are in the API panel.
+**v0.19.0.** SMA/EMA 200/20 on a **closed** candle `S`, bet on **S+1**. Arrow sits on the entry candle. Auto prices the live Polymarket round and sends **CLOB V2** signed orders once the wallet, a signing key and the derived CLOB keys are in the API panel.
 
 **Payout is not ×2.** Polymarket pays $1 per winning share, so the multiple is `1 / price`. At an ask of 0.72 a $1 stake returns $1.39 while a loss still costs the full $1 — Paper books results on that same number. Crypto rounds also charge a taker fee of `0.07 × p × (1 − p)` per share (≈3.5% of the stake at 0.50), paid in USDC on top of the stake and lost on either outcome. Paper and live P&L both deduct it; Paper without a live quote assumes a price of 0.50. A flat ×2 martingale does **not** recover a loss at those odds; size the series accordingly.
 
@@ -16,11 +16,11 @@ Repo: private [`VadimChudin/vespera`](https://github.com/VadimChudin/vespera)
 - Above 200 → only UP. Below 200 → only DOWN.
 - Entry: prior bar’s **body** fully beyond the fast SMA (default 20, wicks ignored). Then `confirmCount + 1` consecutive full-body candles of the needed color beyond that line. `0` = first poke. Periods of both SMAs are in Settings.
 - Bet is on **the next** candle (`S+1`). Forming candle never signals.
-- Martingale series, max 6 steps (Settings). **×2** doubles the stake; **Recover** sizes each stake from the live price so a win pays back the series plus the base profit. Optional max stake and max entry price. Win resets to base. Losing every step → halt until **Start** and **confirm lot**.
+- Series, default 6 steps (1–20 in Settings). **×2** doubles the stake; **Fixed** follows an explicit dollar ladder independent of entry price; **Recover** targets prior losses plus the base profit and can grow quickly. Neither ×2 nor Fixed guarantees recovery. Max stake, series-loss budget (including fees), daily loss limit and max entry price are available. Win resets the series. Losing every step → halt; explicitly confirm a new series before Start.
 - **Statistics** shows win rate against the break-even rate at the prices you actually got, fees, drawdown, how deep series went and results by day. **Export trades to CSV** writes every settled bet.
 - Chart is always live (Binance WebSocket + REST fallback). SMA lines use **closed** candles only.
 - Trade arrows appear only while Paper/Auto is **started**. Idle = clean chart.
-- Settings **Chart refresh**: 1–1000 ms, applied live. **Min opening**: skip when SMA20 and SMA200 are stuck together. **Min cross**: close must be X **exchange ticks** beyond SMA20 (`0` = any cross).
+- Settings **Chart refresh**: 1–2000 ms, applied live. **Min opening**: minimum fast/slow average distance divided by ATR(14). **Min cross**: close must be X **exchange ticks** beyond the fast average (`0` = no extra distance).
 - Header: instrument + timeframe as iOS pills. Status lamp instead of “Waiting for signal”. Blue **Last candle** stays on the chart.
 
 ## Modes
@@ -35,6 +35,8 @@ Repo: private [`VadimChudin/vespera`](https://github.com/VadimChudin/vespera)
 **Safeguards.** Auto starts in **dry run**: everything but posting the order (price, stake, fee, balance check, real signature), booked apart from real money. Turning it off makes Start ask for confirmation with the stakes and total at risk. An optional daily loss limit stops trading until midnight. A watchdog pauses Auto when Polymarket is unreachable or an order error would repeat (no balance, lot under the minimum, repeated rejections).
 
 **Connection recovery.** Temporary venue outages keep health checks running and resume the previously started session once reachability and the trading-region check recover. Manual Stop, risk limits and unknown order outcomes never auto-resume. Critical trade state is checkpointed separately from rotating logs. See [stability and recovery](docs/STABILITY.md) for diagnostics and unresolved-order handling. This release does not add server/Zero Mode or Telegram yet.
+
+**Settings and risk.** The window, engine and persistence check settings against the same rules. Fixed mode derives its base and step count from the ladder. Trading settings are locked during an active position or order; stake sizing is also locked during a losing series. Save no longer silently resets a halted series. Use the explicit New series action while stopped and without a position; it does not erase daily P&L. See [settings and stake limits](docs/SETTINGS.md).
 
 **Wallet type.** Auto-detect compares the wallet with the signing key: same address → EOA, the key's legacy proxy → Proxy, its legacy Safe → Safe, anything else → **Deposit Wallet** (every account created since May 2026). Override it in the API panel if detection is wrong. Collateral is **pUSD**; polymarket.com wraps USDC into it automatically.
 
