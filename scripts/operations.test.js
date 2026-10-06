@@ -13,7 +13,7 @@ const { parse: monitorArgs } = require("./operations-monitor");
 
 const roots = [];
 function temp() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vespera-operations-"));
+  const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "vespera-operations-"));
   roots.push(dir);
   return dir;
 }

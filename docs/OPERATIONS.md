@@ -36,6 +36,10 @@ actual host without routing around venue restrictions.
 
 ## Stopped-service backup and isolated restore
 
+Use canonical paths without symbolic-link ancestors (macOS may report temporary
+paths through `/var`, a system alias of `/private/var`; use the canonical path).
+This does not relax refusal of operator-controlled symlinks in backup/restore paths.
+
 Stop the service and confirm it exited before taking a copy. The tool includes
 the complete data tree (including ownership, journals, request tombstones,
 Telegram/handoff master keys and all encrypted state) plus the separate API
