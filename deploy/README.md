@@ -1,5 +1,9 @@
 # Vespera server service
 
+For stopped-service checksummed backup, isolated restore, preflight and
+non-takeover health/resource monitoring procedures, see
+[`docs/OPERATIONS.md`](../docs/OPERATIONS.md).
+
 Run the server only on a trusted host with a persistent, private data directory. It binds to loopback by default and requires a bearer token of at least 32 bytes. Enter the matching token once in the desktop password field; never persist or echo it in renderer state, URLs, logs or command lines.
 
 ```sh

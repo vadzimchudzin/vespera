@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Vespera health and resource checks every minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=15s
+Unit=vespera-monitor.service
+
+[Install]
+WantedBy=timers.target
