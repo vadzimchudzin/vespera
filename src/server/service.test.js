@@ -478,4 +478,3 @@ test("start() binds to configured address and constructs a real ExecutionHost fr
   assert.equal(snapshot.state.mode, "paper");
   assert.equal(snapshot.execution.owner, "server");
 });
-
