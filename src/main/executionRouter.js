@@ -60,16 +60,21 @@ class ExecutionRouter {
 
   async configure({ url, token } = {}) {
     return this._serial(async () => {
-      if (this.mode !== "local" || this.connection.value.transition || !this.host.idle()) throw fault("server_config_locked");
       const serverUrl = normalizeServerUrl(url);
+      const reconnect = this.mode === "server" && serverUrl === this.connection.value.serverUrl;
+      if ((!reconnect && this.mode !== "local") || this.connection.value.transition || !this.host.idle()) throw fault("server_config_locked");
       const serverToken = token || this.connection.value.serverToken;
       if (typeof serverToken !== "string" || serverToken.length < 32 || /[\r\n]/.test(serverToken)) throw fault("invalid_server_token");
       const status = await this.clientFactory({ url: serverUrl, token: serverToken }).request("/v1/status");
       if (status.protocol !== 1) throw fault("protocol_mismatch");
-      if (status.owner === "server" || (status.deviceId && status.deviceId !== this.connection.value.deviceId)) throw fault("ownership_conflict");
-      await this.clientFactory({ url: serverUrl, token: serverToken }).request("/v1/register", {
-        deviceId: this.connection.value.deviceId, requestId: crypto.randomUUID(),
-      });
+      if (reconnect) {
+        if (status.owner !== "server" || status.deviceId !== this.connection.value.deviceId) throw fault("ownership_conflict");
+      } else {
+        if (status.owner === "server" || (status.deviceId && status.deviceId !== this.connection.value.deviceId)) throw fault("ownership_conflict");
+        await this.clientFactory({ url: serverUrl, token: serverToken }).request("/v1/register", {
+          deviceId: this.connection.value.deviceId, requestId: crypto.randomUUID(),
+        });
+      }
       this.connection.save({ serverUrl, serverToken });
       this.status = status;
       this.connected = true;
@@ -156,7 +161,7 @@ class ExecutionRouter {
         this.onEvent({ type: "execution", payload: this.execution(), state });
         return { ok: true, execution: this.execution(), state };
       } catch (err) {
-        if (["execution_busy", "settings_locked", "invalid_transfer"].includes(err.code)) {
+        if (["execution_busy", "execution_not_idle", "settings_locked", "invalid_transfer", "invalid_bundle"].includes(err.code)) {
           try {
             const status = await this._status();
             const source = target === "server" ? "local" : "server";

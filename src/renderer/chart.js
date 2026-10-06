@@ -23,6 +23,7 @@
   let fastPeriod = 20;
   let slowPeriod = 200;
   let maType = "SMA";
+  let sourceKey = "";
 
   /** EMA series seeded with the SMA of the first `period` closes. */
   function emaSeries(closes, period) {
@@ -365,6 +366,14 @@
   function render(snap) {
     ensure();
     if (!chart || !snap) return;
+    const nextSource = `${snap.execution?.mode || "local"}:${snap.settings?.symbol || ""}:${snap.settings?.timeframe || ""}`;
+    if (sourceKey !== nextSource) {
+      sourceKey = nextSource;
+      seeded = false;
+      pendingForming = null;
+      if (raf) cancelAnimationFrame(raf);
+      raf = 0;
+    }
     const nextFast = Number(snap.settings && snap.settings.fastPeriod) || 20;
     const nextSlow = Number(snap.settings && snap.settings.slowPeriod) || 200;
     const nextMa = (snap.settings && snap.settings.maType) === "EMA" ? "EMA" : "SMA";
@@ -379,7 +388,9 @@
     applyTheme();
     applyPriceFormat(Number(snap.settings && snap.settings.tickSize));
     const closed = (snap.bars || []).map(toCandle).filter(Boolean);
-    const forming = toCandle(snap.forming);
+    const candidate = toCandle(snap.forming);
+    const latestClosed = closed[closed.length - 1];
+    const forming = candidate && (!latestClosed || candidate.time > latestClosed.time) ? candidate : null;
     const candles = forming ? closed.concat(forming) : closed.slice();
     if (!candles.length) return;
     lastCandlePoint = candles[candles.length - 1];
@@ -402,12 +413,11 @@
       ignoreRangeUntil = Date.now() + 400;
       centerLive();
     } else if (hash !== lastClosedHash) {
-      const newestClosed = closed[closed.length - 1];
-      if (newestClosed) candleSeries.update(newestClosed);
+      // REST may correct a closed candle older than the already-painted live bar.
+      candleSeries.setData(candles);
       paintAverages(closed);
       lastClosedHash = hash;
       lastBarIndex = candles.length - 1;
-      if (forming) candleSeries.update(forming);
       if (followLive) centerLive();
       lastMarkerKey = "";
     } else if (forming) {

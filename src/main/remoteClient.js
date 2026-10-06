@@ -46,12 +46,13 @@ class RemoteClient {
           try { value = JSON.parse(Buffer.concat(chunks).toString("utf8")); }
           catch { return reject(fault("invalid_remote_response")); }
           if (res.statusCode < 200 || res.statusCode >= 300) {
-            const err = fault(value.reason || "remote_unavailable");
+            const err = fault(value.reason || value.error || "remote_unavailable");
             reject(err);
           } else resolve(value);
         });
       });
-      const timer = setTimeout(() => req.destroy(fault("remote_unavailable")), this.timeoutMs);
+      const timeout = route === "/v1/status" ? Math.min(this.timeoutMs, 5000) : this.timeoutMs;
+      const timer = setTimeout(() => req.destroy(fault("remote_unavailable")), timeout);
       req.on("close", () => clearTimeout(timer));
       req.on("error", () => reject(fault("remote_unavailable")));
       if (payload) req.write(payload);

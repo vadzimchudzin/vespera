@@ -102,3 +102,48 @@ const { toCsv, dailyBreakdown } = require("./stats");
 }
 
 console.log("export + renderer tests ok");
+
+// A corrected historical close and a new execution source require a fresh series.
+{
+  let candles = [];
+  let seeds = 0;
+  const series = {
+    setData(rows) {
+      for (let i = 1; i < rows.length; i += 1) assert.ok(rows[i].time > rows[i - 1].time);
+      candles = rows;
+      seeds += 1;
+    },
+    update(row) {
+      if (candles.length && row.time < candles.at(-1).time) throw new Error("Cannot update oldest data");
+      candles.push(row);
+    },
+    applyOptions() {}, setMarkers() {},
+    priceScale() { return { setVisibleRange() {}, applyOptions() {} }; },
+  };
+  const line = { setData() {}, applyOptions() {} };
+  const timeScale = { subscribeVisibleLogicalRangeChange() {}, setVisibleRange() {}, scrollToRealTime() {} };
+  const context = {
+    window: {
+      LightweightCharts: {
+        ColorType: { Solid: "solid" }, CrosshairMode: { Normal: 0 },
+        createChart() { return { addCandlestickSeries: () => series, addLineSeries: () => line, timeScale: () => timeScale, applyOptions() {} }; },
+      },
+      addEventListener() {},
+    },
+    document: { documentElement: { getAttribute: () => "glass-dark" }, getElementById: (id) => id === "chart" ? {} : null, querySelector: () => null },
+    getComputedStyle: () => ({ getPropertyValue: () => "" }),
+    requestAnimationFrame: () => 1, cancelAnimationFrame() {}, Date, setTimeout,
+  };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, "../renderer/chart.js"), "utf8"), context);
+  const bar = (time, close) => ({ time, open: 100, high: 102, low: 99, close });
+  const state = { settings: { fastPeriod: 2, slowPeriod: 5, symbol: "BTCUSDT", timeframe: "15m" }, bars: [bar(100, 100), bar(200, 101)], forming: bar(300, 102), execution: { mode: "local" } };
+  context.window.VesperaChart.render(state);
+  context.window.VesperaChart.render({ ...state, bars: [bar(100, 100), bar(200, 100.5)] });
+  assert.strictEqual(seeds, 2, "REST correction safely reseeds instead of updating an older candle");
+  context.window.VesperaChart.render({ ...state, execution: { mode: "server" } });
+  assert.strictEqual(seeds, 3, "switching cores resets the chart source");
+  context.window.VesperaChart.render({ ...state, execution: { mode: "server" }, forming: bar(200, 102) });
+  context.window.VesperaChart.reset();
+  context.window.VesperaChart.render({ ...state, forming: bar(200, 102) });
+  assert.strictEqual(candles.length, 2, "an already-closed forming candle is excluded");
+}

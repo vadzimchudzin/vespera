@@ -21,6 +21,12 @@ function atomicJson(file, value) {
     fs.closeSync(fd);
   }
   fs.renameSync(temp, file);
+  try {
+    const dir = fs.openSync(path.dirname(file), "r");
+    try { fs.fsyncSync(dir); } finally { fs.closeSync(dir); }
+  } catch (err) {
+    if (process.platform !== "win32") throw err;
+  }
 }
 
 function fault(code) {
@@ -114,12 +120,17 @@ class ExecutionHost {
     const settings = {};
     for (const [key, value] of Object.entries(bundle.settings)) if (PORTABLE_KEYS.has(key)) settings[key] = value;
     if (this.direct) settings.proxyUrl = "";
+    else settings.proxyUrl = this.store.value.proxyUrl || "";
     const name = `book-${crypto.randomUUID()}`;
     const dir = path.join(this.root, name);
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     const store = new SettingsStore(dir);
     store.save(settings);
     fs.writeFileSync(path.join(dir, "journal.jsonl"), bundle.history.map((row) => JSON.stringify(row)).join("\n") + "\n", { mode: 0o600 });
+    for (const file of [store.file, path.join(dir, "journal.jsonl")]) {
+      const fd = fs.openSync(file, "r");
+      try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+    }
     atomicJson(path.join(dir, "journal.jsonl.state.json"), bundle.checkpoint);
     // Validate restored risk and positions before changing the durable pointer.
     const candidate = new ExecutionHost({ userDataDir: dir, direct: this.direct, engineOptions: this.engineOptions });

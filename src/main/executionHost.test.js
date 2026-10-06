@@ -42,6 +42,8 @@ async function run() {
   const reopened = new ExecutionHost({ userDataDir: serverDir, direct: true, engineOptions: options() });
   assert.strictEqual(reopened.engine.risk.step, 2, "epoch pointer preserves transferred state after restart");
   assert.strictEqual(reopened.engine.paper.balance.toFixed(2), "994.82");
+  await local.importBundle(reopened.exportBundle());
+  assert.strictEqual(local.engine.settings.proxyUrl, "socks5://proxy.invalid:1080", "local proxy remains a per-machine connection setting");
   local.engine.paper.openBet = { side: "UP", sizeUsd: "5" };
   assert.throws(() => local.exportBundle(), (err) => err.code === "execution_busy");
   assert.throws(() => local.quiesce(), (err) => err.code === "execution_busy");

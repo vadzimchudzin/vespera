@@ -1,0 +1,25 @@
+[Unit]
+Description=Vespera server execution service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vespera
+Group=vespera
+Environment=VESPERA_HOST=127.0.0.1
+Environment=VESPERA_PORT=8787
+Environment=VESPERA_DATA_DIR=/var/lib/vespera
+Environment=VESPERA_SERVER_TOKEN_FILE=/etc/vespera/server.token
+ExecStart=/usr/bin/node /opt/vespera/src/server/start.js
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/vespera
+
+[Install]
+WantedBy=multi-user.target

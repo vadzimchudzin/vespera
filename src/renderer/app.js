@@ -29,6 +29,8 @@
     settingsSaveQueue: Promise.resolve(),
     savingPanel: false,
     depositTimer: 0,
+    execution: null,
+    executionBusy: false,
   };
 
   function applyI18n() {
@@ -65,6 +67,232 @@
         daily_limit: t("dailyLimitHit"),
       }[status] || status
     );
+  }
+
+  function executionErrorText(error, message) {
+    const code = typeof error === "string" ? error : error?.code || error?.reason;
+    const key = `executionError_${code || ""}`;
+    if (code && t(key) !== key) return t(key);
+    return message || (typeof error === "object" && error?.message) || t("executionOfflineHint");
+  }
+
+  function executionState() {
+    return state.execution || state.snapshot?.execution || null;
+  }
+
+  function executionUnavailable(execution = executionState()) {
+    return Boolean(execution && ((execution.mode === "server" && !execution.connected) || execution.blocked));
+  }
+
+  function executionLabel(execution = executionState()) {
+    if (!execution || execution.mode === "local") return t("executionLocal");
+    return execution.connected ? t("executionServer") : t("executionOffline");
+  }
+
+  function paintExecution(execution = executionState()) {
+    if (!execution) return;
+    state.execution = execution;
+    const badge = $("executionBadge");
+    const badgeText = $("executionBadgeText");
+    const mode = execution.mode === "server" ? (execution.connected ? "server" : "offline") : "local";
+    if (badge) {
+      badge.dataset.mode = mode;
+      badge.title = execution.error ? executionErrorText(execution.error, "") :
+        mode === "server" ? t("executionServerHint") : mode === "offline" ? t("executionOfflineHint") : t("executionLocalHint");
+    }
+    if (badgeText) badgeText.textContent = executionLabel(execution);
+    const staleBanner = $("executionStaleBanner");
+    if (staleBanner) staleBanner.hidden = !(execution.mode === "server" && !execution.connected && Boolean(state.snapshot));
+    const section = $("executionSection");
+    if (section) {
+      const url = $("executionUrl");
+      const token = $("executionToken");
+      const button = $("executionConnect");
+      const retry = $("executionRetry");
+      const toggle = $("zeroModeToggle");
+      const output = $("executionMessage");
+      const serverActive = execution.mode === "server";
+      const locked = serverActive || state.executionBusy || execution.switching;
+      if (url) {
+        if (document.activeElement !== url && execution.url) url.value = execution.url;
+        url.disabled = locked;
+      }
+      if (token) {
+        if (!token.value) token.placeholder = execution.hasToken ? t("serverTokenSaved") : "";
+        token.disabled = state.executionBusy || Boolean(execution.switching) || Boolean(execution.pendingTarget);
+      }
+      if (button) {
+        button.disabled = state.executionBusy || Boolean(execution.switching);
+        button.textContent = t("serverConnectSave");
+      }
+      if (retry) {
+        retry.hidden = !execution.pendingTarget;
+        retry.disabled = state.executionBusy || Boolean(execution.switching);
+      }
+      if (toggle) {
+        toggle.classList.toggle("on", serverActive);
+        toggle.setAttribute("aria-pressed", String(serverActive));
+        toggle.disabled = state.executionBusy || Boolean(execution.switching) || (serverActive && !execution.connected);
+      }
+      const hint = $("executionStatusHint");
+      if (hint) {
+        const offline = execution.mode === "server" && !execution.connected;
+        hint.textContent = execution.error ? executionErrorText(execution.error, "") :
+          offline ? t("executionOfflineHint") : serverActive ? t("executionServerHint") : t("executionLocalHint");
+        hint.classList.toggle("warn", offline || Boolean(execution.error));
+      }
+      const routeHint = $("executionRouteHint");
+      if (routeHint) routeHint.hidden = !serverActive;
+      if (output && (!output.dataset.manual || !execution.connected)) {
+        output.hidden = true;
+        output.textContent = "";
+        delete output.dataset.manual;
+      }
+    }
+    const unavailable = executionUnavailable(execution);
+    const lamp = $("statusLamp");
+    if (lamp && state.snapshot) {
+      lamp.dataset.status = unavailable ? "paused" : state.snapshot.status;
+      if (unavailable) lamp.title = t("executionOfflineHint");
+    }
+    const run = $("btnRun");
+    if (run) {
+      run.disabled = unavailable || state.executionBusy;
+      run.title = unavailable ? t("executionOfflineHint") : "";
+    }
+    document.querySelectorAll("#modeSeg button, #strategyList button").forEach((button) => {
+      button.disabled = unavailable || state.executionBusy;
+    });
+    document.querySelectorAll("#chromePicks button").forEach((button) => {
+      button.disabled = unavailable || state.executionBusy;
+    });
+    updateSettingsLockUi(state.snapshot);
+  }
+
+  function executionResult(reply) {
+    if (reply && reply.execution) state.execution = reply.execution;
+    else if (reply && reply.mode && typeof reply.connected === "boolean") state.execution = reply;
+    if (reply && reply.state) renderSnap(reply.state);
+    else paintExecution();
+    return reply;
+  }
+
+  function validExecutionUrl(value) {
+    try {
+      const parsed = new URL(String(value || "").trim());
+      const loopback = ["127.0.0.1", "[::1]"].includes(parsed.hostname.toLowerCase());
+      return !parsed.username && !parsed.password && !parsed.search && !parsed.hash && ["", "/"].includes(parsed.pathname) &&
+        (parsed.protocol === "https:" || (parsed.protocol === "http:" && loopback));
+    } catch {
+      return false;
+    }
+  }
+
+  function showExecutionMessage(message, isError = false) {
+    const output = $("executionMessage");
+    if (!output) return;
+    output.textContent = message;
+    output.hidden = false;
+    output.dataset.manual = "1";
+    output.classList.toggle("warn", isError);
+  }
+
+  async function configureExecution() {
+    if (executionState()?.mode === "server" && !$("executionToken")?.value) {
+      if (!window.vespera?.getExecution) return;
+      state.executionBusy = true;
+      paintExecution();
+      showExecutionMessage(t("executionChecking"));
+      try {
+        const execution = await window.vespera.getExecution();
+        state.execution = execution;
+        showExecutionMessage(execution.error ? executionErrorText(execution.error) : execution.connected ? t("executionServerHint") : t("executionOfflineHint"), Boolean(execution.error) || !execution.connected);
+      } catch (error) {
+        showExecutionMessage(executionErrorText(error), true);
+      } finally {
+        state.executionBusy = false;
+        paintExecution();
+      }
+      return;
+    }
+    if (!window.vespera?.configureExecution) {
+      showExecutionMessage(t("executionOfflineHint"), true);
+      return;
+    }
+    const url = $("executionUrl").value.trim();
+    const token = $("executionToken").value;
+    if (!validExecutionUrl(url)) {
+      showExecutionMessage(t("executionInvalidUrl"), true);
+      $("executionUrl").focus();
+      return;
+    }
+    state.executionBusy = true;
+    paintExecution();
+    showExecutionMessage(t("executionChecking"));
+    try {
+      const reply = executionResult(await window.vespera.configureExecution({ url, token }));
+      $("executionToken").value = "";
+      if (reply?.ok === false) {
+        showExecutionMessage(executionErrorText(reply.reason, reply.message), true);
+      } else {
+        showExecutionMessage(executionState()?.connected ? t("executionServerHint") : t("executionOfflineHint"), !executionState()?.connected);
+      }
+    } catch (error) {
+      showExecutionMessage(executionErrorText(error?.code, error?.message), true);
+    } finally {
+      $("executionToken").value = "";
+      state.executionBusy = false;
+      paintExecution();
+    }
+  }
+
+  async function switchExecutionMode(mode) {
+    const execution = executionState() || { mode: "local" };
+    if (mode === execution.mode || state.executionBusy) return;
+    if (mode === "server" && !execution.configured) {
+      showExecutionMessage(t("executionInvalidUrl"), true);
+      return;
+    }
+    const confirmation = mode === "server" ? t("executionSwitchServerConfirm") : t("executionSwitchLocalConfirm");
+    if (!window.confirm(confirmation)) return;
+    if (!window.vespera?.setExecutionMode) {
+      showExecutionMessage(t("executionOfflineHint"), true);
+      return;
+    }
+    state.executionBusy = true;
+    paintExecution();
+    showExecutionMessage(t("executionBusy"));
+    try {
+      const reply = executionResult(await window.vespera.setExecutionMode(mode));
+      if (!reply || reply.ok === false) {
+        showExecutionMessage(executionErrorText(reply?.reason, reply?.message), true);
+      } else {
+        showExecutionMessage(mode === "server" ? t("executionServerHint") : t("executionLocalHint"));
+      }
+    } catch (error) {
+      showExecutionMessage(executionErrorText(error?.code, error?.message), true);
+    } finally {
+      state.executionBusy = false;
+      paintExecution();
+    }
+  }
+
+  async function retryExecutionTransfer() {
+    const target = executionState()?.pendingTarget;
+    if (!target || state.executionBusy || !window.vespera?.setExecutionMode) return;
+    state.executionBusy = true;
+    paintExecution();
+    showExecutionMessage(t("executionBusy"));
+    try {
+      const reply = executionResult(await window.vespera.setExecutionMode(target));
+      if (!reply || reply.ok === false) showExecutionMessage(executionErrorText(reply?.reason, reply?.message), true);
+      else showExecutionMessage(target === "server" ? t("executionServerHint") : t("executionLocalHint"));
+    } catch (error) {
+      showExecutionMessage(executionErrorText(error), true);
+    } finally {
+      state.executionBusy = false;
+      paintExecution();
+    }
   }
 
   function money(n) {
@@ -202,7 +430,14 @@
 
   function renderSnap(snap) {
     if (!snap) return;
+    const execution = snap.execution || state.execution;
+    if (execution?.mode === "server" && !execution.connected && state.snapshot) {
+      snap = { ...state.snapshot, execution, executionStale: true };
+    } else if (execution) {
+      snap = { ...snap, execution, executionStale: false };
+    }
     state.snapshot = snap;
+    if (execution) state.execution = execution;
     state.running = snap.running;
     state.mode = snap.mode;
     const lamp = $("statusLamp");
@@ -252,6 +487,7 @@
     renderLog(snap);
     if ($("panelBody")?.querySelector("#planBox")) state.paintPlan?.(snap);
     updateSettingsLockUi(snap);
+    paintExecution(execution);
   }
 
   function renderStrategies(snap) {
@@ -427,6 +663,11 @@
 
   function saveSettingsSerial(patch) {
     const run = state.settingsSaveQueue.catch(() => {}).then(() => {
+      if (executionUnavailable()) {
+        const error = new Error(t("executionOfflineHint"));
+        error.code = executionState()?.error || "remote_unavailable";
+        throw error;
+      }
       if (!window.vespera) return null;
       return window.vespera.saveSettings(patch).then(applySettingsReply);
     });
@@ -504,6 +745,19 @@
     }
     const button = $("newSeries");
     if (button) button.hidden = !canStartNewSeries(snap);
+    const blocked = executionUnavailable();
+    if (typeof document !== "undefined") {
+      document.querySelectorAll("#panelBody input, #panelBody textarea, #panelBody select, #panelBody button, #panelFoot button").forEach((el) => {
+        if (el.closest("#executionSection")) return;
+        if (blocked) {
+          if (el.dataset.executionDisabled == null) el.dataset.executionDisabled = String(el.disabled);
+          el.disabled = true;
+        } else if (el.dataset.executionDisabled != null) {
+          el.disabled = el.dataset.executionDisabled === "true";
+          delete el.dataset.executionDisabled;
+        }
+      });
+    }
   }
 
   function queueDebouncedSettings(patch, ms = 80) {
@@ -643,10 +897,11 @@
         </div>
         <details class="adv" id="apiAdvanced">
           <summary>${t("advanced")}</summary>
-          <div class="field">
+          <div class="field" id="proxyField">
             <label>${t("proxyUrl")}</label>
             <input id="proxyUrl" type="text" placeholder="${t("proxyPlaceholder")}" autocomplete="off" spellcheck="false" />
           </div>
+          <p class="hint" id="serverDirectHint" hidden>${t("executionLocalDirect")}</p>
           <p class="hint">${t("manualKeysHint")}</p>
           <div class="field">
             <label>${t("api")}</label>
@@ -676,6 +931,10 @@
       if (sApi.proxyUrl) {
         $("proxyUrl").value = sApi.proxyUrl;
         $("apiAdvanced").open = true;
+      }
+      if (executionState()?.mode === "server") {
+        $("proxyField").hidden = true;
+        $("serverDirectHint").hidden = false;
       }
       // Custom list: the native <select> popup ignores the dark theme on Windows.
       const walletTypeLabel = {
@@ -1091,8 +1350,29 @@
     if (kind === "settings") {
       title.textContent = t("settings");
       const s = state.snapshot?.settings || {};
+      const execution = executionState() || { mode: "local", connected: true, configured: false };
+      const executionLocked = execution.mode === "server" || Boolean(execution.switching);
       const limits = window.VesperaSettings.LIMITS;
       body.innerHTML = `
+        <section class="execution-section" id="executionSection">
+          <div class="execution-section-heading">${t("execution")}</div>
+          <div class="field">
+            <label for="executionUrl">${t("serverUrl")}</label>
+            <input id="executionUrl" type="url" value="${esc(execution.url || "")}" placeholder="https://server.example" autocomplete="url" spellcheck="false" ${executionLocked ? "disabled" : ""} />
+          </div>
+          <div class="field">
+            <label for="executionToken">${t("serverToken")}</label>
+            <input id="executionToken" type="password" placeholder="${execution.hasToken ? t("serverTokenSaved") : ""}" autocomplete="new-password" ${execution.switching || execution.pendingTarget ? "disabled" : ""} />
+          </div>
+          <div class="execution-actions">
+            <button type="button" class="ghost" id="executionConnect" ${execution.switching ? "disabled" : ""}>${t("serverConnectSave")}</button>
+            <div class="execution-mode-control"><span>${t("zeroMode")}</span><button type="button" class="toggle ${execution.mode === "server" ? "on" : ""}" id="zeroModeToggle" aria-pressed="${execution.mode === "server"}" ${execution.switching || (execution.mode === "server" && !execution.connected) ? "disabled" : ""}><span class="knob"></span></button></div>
+          </div>
+          <button type="button" class="ghost execution-retry" id="executionRetry" ${execution.pendingTarget ? "" : "hidden"} ${execution.switching ? "disabled" : ""}>${t("executionRetry")}</button>
+          <p class="hint" id="executionStatusHint">${execution.error ? esc(executionErrorText(execution.error, "")) : execution.mode === "server" ? (execution.connected ? t("executionServerHint") : t("executionOfflineHint")) : t("executionLocalHint")}</p>
+          <p class="hint" id="executionRouteHint" ${execution.mode === "server" ? "" : "hidden"}>${t("executionRouteHint")}</p>
+          <p class="hint warn execution-message" id="executionMessage" role="status" hidden></p>
+        </section>
         <div class="field toggle-row">
           <span class="field-label">${t("sizing")}${helpBtn("sizingHint")}</span>
           <div class="seg seg-sm" id="sizingSeg">
@@ -1187,6 +1467,10 @@
           </button>
         </div>
       `;
+      $("executionConnect").onclick = configureExecution;
+      $("zeroModeToggle").onclick = () => switchExecutionMode(executionState()?.mode === "server" ? "local" : "server");
+      $("executionRetry").onclick = retryExecutionTransfer;
+      paintExecution(execution);
       if (foot) {
         foot.hidden = false;
         foot.innerHTML = `
@@ -1604,6 +1888,14 @@
       state.theme = settings.theme || "glass-dark";
       applyTheme();
       applyI18n();
+      if (window.vespera.getExecution) {
+        try {
+          state.execution = await window.vespera.getExecution();
+          paintExecution();
+        } catch {
+          state.execution = null;
+        }
+      }
       if (window.vespera.warmChart) {
         try {
           renderSnap(await window.vespera.warmChart());
@@ -1614,6 +1906,11 @@
         renderSnap(await window.vespera.snapshot());
       }
       window.vespera.onEvent((evt) => {
+        if (evt.execution) {
+          state.execution = evt.execution;
+          if (state.snapshot) renderSnap({ ...state.snapshot, execution: evt.execution });
+          else paintExecution(evt.execution);
+        }
         if (evt.type === "tick" && evt.payload && window.VesperaChart) {
           window.VesperaChart.updateForming(evt.payload.forming);
           return;

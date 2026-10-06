@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.20.0 — 2026-10-06
+
+- **Headless server.** A Node service runs the existing engine without Electron, with bearer authentication, one process per data directory, serialized commands and durable request tombstones. Server execution always uses direct venue connections, not the desktop trading proxy.
+- **Zero Mode.** Desktop IPC routes all engine/account functions to the selected executor. A confirmed stopped-book transfer preserves settings, risk, paper balance and recent journal history. Switching does not automatically Start; closing a remote UI does not Stop the server.
+- **Exclusive ownership.** Server/desktop ownership and encrypted retry bundles survive crashes. A missing reply cannot enable a second core. Local recovery requires confirmed server release; there is no automatic offline fallback.
+- **Connection UI.** Server URL/token setup, execution badge, transfer retry and stale-data warning. Unreachable-server controls are disabled without claiming server trading has stopped. The desktop token is encrypted and never returned to the renderer.
+- **Chart handoff.** Reseed candles after a source change or corrected historical close, avoiding older-candle update errors.
+- Added host, router, service-start and real HTTP handoff integration checks. Includes an isolated managed Paper server for real Electron screenshots. Production deployment, TLS, Telegram and a long-running production soak remain separate work.
+
 ## 0.19.0 — 2026-10-06
 
 - **Fixed stake ladder.** Up to 20 explicit USD amounts, independent of outcome price. Base and step count follow the ladder. Existing ×2 and dynamic Recover remain distinct; neither ×2 nor Fixed promises recovery.

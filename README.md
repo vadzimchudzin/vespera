@@ -2,7 +2,7 @@
 
 Glass desktop terminal for BTC 15m Polymarket Up/Down.
 
-**v0.19.0.** SMA/EMA 200/20 on a **closed** candle `S`, bet on **S+1**. Arrow sits on the entry candle. Auto prices the live Polymarket round and sends **CLOB V2** signed orders once the wallet, a signing key and the derived CLOB keys are in the API panel.
+**v0.20.0.** SMA/EMA 200/20 on a **closed** candle `S`, bet on **S+1**. Arrow sits on the entry candle. Auto prices the live Polymarket round and sends **CLOB V2** signed orders once the wallet, a signing key and the derived CLOB keys are in the API panel.
 
 **Payout is not ×2.** Polymarket pays $1 per winning share, so the multiple is `1 / price`. At an ask of 0.72 a $1 stake returns $1.39 while a loss still costs the full $1 — Paper books results on that same number. Crypto rounds also charge a taker fee of `0.07 × p × (1 − p)` per share (≈3.5% of the stake at 0.50), paid in USDC on top of the stake and lost on either outcome. Paper and live P&L both deduct it; Paper without a live quote assumes a price of 0.50. A flat ×2 martingale does **not** recover a loss at those odds; size the series accordingly.
 
@@ -34,7 +34,9 @@ Repo: private [`VadimChudin/vespera`](https://github.com/VadimChudin/vespera)
 
 **Safeguards.** Auto starts in **dry run**: everything but posting the order (price, stake, fee, balance check, real signature), booked apart from real money. Turning it off makes Start ask for confirmation with the stakes and total at risk. An optional daily loss limit stops trading until midnight. A watchdog pauses Auto when Polymarket is unreachable or an order error would repeat (no balance, lot under the minimum, repeated rejections).
 
-**Connection recovery.** Temporary venue outages keep health checks running and resume the previously started session once reachability and the trading-region check recover. Manual Stop, risk limits and unknown order outcomes never auto-resume. Critical trade state is checkpointed separately from rotating logs. See [stability and recovery](docs/STABILITY.md) for diagnostics and unresolved-order handling. This release does not add server/Zero Mode or Telegram yet.
+**Connection recovery.** Temporary venue outages keep health checks running and resume the previously started session once reachability and the trading-region check recover. Manual Stop, risk limits and unknown order outcomes never auto-resume. Critical trade state is checkpointed separately from rotating logs. See [stability and recovery](docs/STABILITY.md) for diagnostics and unresolved-order handling.
+
+**Zero Mode.** Settings → Execution connects to a separately installed authenticated server. Turning Zero Mode on transfers a stopped, position-free book to that server; the desktop becomes a UI client. Closing or restarting the desktop never stops or duplicates server execution. Turning it off requires the server to confirm release. Lost handoff responses stay locked and can be retried with the same durable request. The server uses direct venue connections and ignores trading-proxy settings; the desktop keeps its own optional proxy. Server deployment/TLS must be configured separately; Telegram is not included yet. See [Zero Mode](docs/ZERO_MODE.md) and [deployment](deploy/README.md).
 
 **Settings and risk.** The window, engine and persistence check settings against the same rules. Fixed mode derives its base and step count from the ladder. Trading settings are locked during an active position or order; stake sizing is also locked during a losing series. Save no longer silently resets a halted series. Use the explicit New series action while stopped and without a position; it does not erase daily P&L. See [settings and stake limits](docs/SETTINGS.md).
 

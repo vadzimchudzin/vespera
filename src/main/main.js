@@ -8,7 +8,7 @@ const { ExecutionRouter } = require("./executionRouter");
 let win;
 let router;
 
-if (!app.requestSingleInstanceLock()) app.quit();
+if (!app.requestSingleInstanceLock()) app.exit(0);
 
 function createWindow() {
   win = new BrowserWindow({
@@ -39,7 +39,10 @@ app.whenReady().then(() => {
 app.on("second-instance", () => { if (win) { win.show(); win.focus(); } });
 app.on("window-all-closed", () => {
   // Disposing a UI client never sends Stop to the server.
-  router?.host.dispose();
+  if (router) {
+    router.host.engine.stop();
+    router.host.engine.market.stop?.();
+  }
   if (process.platform !== "darwin") app.quit();
 });
 app.on("before-quit", () => router?.dispose());

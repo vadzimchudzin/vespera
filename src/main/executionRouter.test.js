@@ -55,6 +55,9 @@ async function run() {
   const router = new ExecutionRouter({ userDataDir: root, host: local, clientFactory, pollMs: 100000 });
   await router.configure({ url: "http://127.0.0.1:8787", token: "test-" + "a".repeat(40) });
   assert.strictEqual((await router.switchMode("server")).ok, true);
+  await router.configure({ url: "http://127.0.0.1:8787", token: "rotated-" + "b".repeat(40) });
+  assert.strictEqual(router.mode, "server", "token rotation does not transfer execution");
+  await assert.rejects(router.configure({ url: "https://different.example", token: "rotated-" + "b".repeat(40) }), (err) => err.code === "server_config_locked");
   await router.dispatch("start");
   assert.deepStrictEqual(commands, ["start"]);
   assert.ok(!local.calls.includes("start"), "Zero Mode never starts the desktop core");

@@ -5,6 +5,10 @@ profile_dir="$(mktemp -d /tmp/vespera-preview.XXXXXX)"
 chmod 700 "$profile_dir"
 
 cleanup() {
+  if [[ -n "${server_pid:-}" ]]; then
+    kill "$server_pid" 2>/dev/null || true
+    wait "$server_pid" 2>/dev/null || true
+  fi
   if [[ -n "${status_pid:-}" ]]; then
     kill "$status_pid" 2>/dev/null || true
     wait "$status_pid" 2>/dev/null || true
@@ -12,6 +16,23 @@ cleanup() {
   rm -rf "$profile_dir"
 }
 trap cleanup EXIT INT TERM
+
+mkdir -p .hoplite/runtime
+node - "$profile_dir" <<'NODE'
+const fs = require("fs");
+const crypto = require("crypto");
+const path = require("path");
+const root = process.argv[2];
+const tokenFile = path.join(root, "server.token");
+fs.writeFileSync(tokenFile, crypto.randomBytes(32).toString("hex"), { mode: 0o600 });
+fs.writeFileSync(".hoplite/runtime/zero-preview.json", JSON.stringify({
+  serverUrl: "http://127.0.0.1:8787", tokenFile, serverData: path.join(root, "server"),
+}), { mode: 0o600 });
+NODE
+VESPERA_DATA_DIR="$profile_dir/server" VESPERA_SERVER_TOKEN_FILE="$profile_dir/server.token" \
+  node src/server/start.js &
+server_pid=$!
+printf '%s' "$server_pid" > .hoplite/runtime/zero-server.pid
 
 # The HTTP endpoint is only a truthful status page; the application itself stays Electron.
 node -e '
@@ -37,6 +58,6 @@ status_pid=$!
 xvfb-run --auto-servernum --server-args="-screen 0 1440x900x24" \
   ./node_modules/.bin/electron . \
   --no-sandbox \
-  --user-data-dir="$profile_dir" \
+  --user-data-dir="$profile_dir/desktop" \
   --remote-debugging-port=9222 \
   --remote-debugging-address=127.0.0.1
