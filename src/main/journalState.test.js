@@ -229,8 +229,20 @@ function tempJournal() {
   const { dir, file } = tempJournal();
   let journal = new Journal(file);
   const order = { clientOrderId: "unknown-1", side: "UP", sizeUsd: "1.00" };
-  journal.beginOrder(order);
-  assert.strictEqual(fs.statSync(`${file}.pending.json`).mode & 0o777, 0o600);
+  const openSync = fs.openSync;
+  let requestedMode;
+  fs.openSync = (name, flags, mode) => {
+    if (String(name).startsWith(`${file}.pending.json.`)) requestedMode = mode;
+    return openSync(name, flags, mode);
+  };
+  try {
+    journal.beginOrder(order);
+  } finally {
+    fs.openSync = openSync;
+  }
+  assert.strictEqual(requestedMode, 0o600, "atomic creation requests private permissions on every platform");
+  // Windows uses ACLs rather than POSIX permission bits.
+  if (process.platform !== "win32") assert.strictEqual(fs.statSync(`${file}.pending.json`).mode & 0o777, 0o600);
   journal = new Journal(file);
   assert.deepStrictEqual(journal.pendingOrder(), order);
   assert.throws(() => journal.completeOrder("other-id"), /mismatch/);

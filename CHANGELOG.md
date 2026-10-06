@@ -1,6 +1,10 @@
 # Changelog
 
-## 0.18.9 — 2026-10-06
+## 0.18.10 — 2026-10-06
+
+- Includes the stability work below with a platform-correct permission test: Windows uses ACLs, while POSIX systems verify `0600`. File-creation mode is checked on every platform. Test CI now runs on Linux, Windows and macOS. The incomplete 0.18.9 build remains a draft and is not the recommended release.
+
+## 0.18.9 — 2026-10-06 (unpublished draft)
 
 - **Feed recovery.** Binance WebSocket handshakes time out, connection failures reconnect, stale REST responses cannot overwrite a switched market, and history is bounded to 2,000 candles. Only authoritative closed candles signal; REST recovery does not replay expired entries, and gaps in the required MA window block new entries.
 - **Single-flight execution.** Closed candles process sequentially; simultaneous signal/test entries are blocked. Stop and settings changes cancel entry preparation before submission, including inside the live adapter.

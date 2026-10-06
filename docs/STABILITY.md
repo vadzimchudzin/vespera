@@ -1,4 +1,4 @@
-# Stability and recovery — 0.18.9
+# Stability and recovery — 0.18.10
 
 This is the first reliability stage. Server execution, Zero Mode, Telegram,
 fixed stake ladders, backtests and AI are not part of this release.
