@@ -73,7 +73,9 @@ test("backup and isolated restore preserve owner, tombstones, master keys and ev
   const result = backup(context);
   assert.ok(result.files >= 6);
   assert.equal(fs.existsSync(path.join(context.dataDir, ".service.lock")), false);
-  assert.equal(fs.statSync(context.destination).mode & 0o777, process.platform === "win32" ? 0o777 : 0o700);
+  const backupStat = fs.statSync(context.destination);
+  assert.ok(backupStat.isDirectory());
+  if (process.platform !== "win32") assert.equal(backupStat.mode & 0o777, 0o700);
   assert.doesNotThrow(() => verifyBackup(context.destination));
   const target = path.join(context.root, "isolated-empty");
   const tokenTarget = path.join(context.root, "isolated", "server.token");
