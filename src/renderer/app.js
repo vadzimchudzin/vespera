@@ -29,6 +29,8 @@
     settingsSaveQueue: Promise.resolve(),
     savingPanel: false,
     depositTimer: 0,
+    telegramTimer: 0,
+    telegramDraftDirty: false,
     execution: null,
     executionBusy: false,
   };
@@ -94,6 +96,8 @@
     state.execution = execution;
     const badge = $("executionBadge");
     const badgeText = $("executionBadgeText");
+    const telegramRuntime = $("telegramRuntimeHint");
+    if (telegramRuntime) telegramRuntime.textContent = execution.mode === "server" ? t("telegramRuntimeServer") : t("telegramRuntimeLocal");
     const mode = execution.mode === "server" ? (execution.connected ? "server" : "offline") : "local";
     if (badge) {
       badge.dataset.mode = mode;
@@ -651,6 +655,8 @@
   function closePanel() {
     clearInterval(state.depositTimer);
     state.depositTimer = 0;
+    clearInterval(state.telegramTimer);
+    state.telegramTimer = 0;
     $("panel").hidden = true;
     $("backdrop").hidden = true;
     const foot = $("panelFoot");
@@ -744,11 +750,11 @@
         : t("settingsLocked");
     }
     const button = $("newSeries");
-    if (button) button.hidden = !canStartNewSeries(snap);
+    if (button) button.hidden = !canStartNewSeries(snap) || $("panelBody")?.querySelector("[data-settings-tab].on")?.dataset.settingsTab !== "stakes";
     const blocked = executionUnavailable();
     if (typeof document !== "undefined") {
       document.querySelectorAll("#panelBody input, #panelBody textarea, #panelBody select, #panelBody button, #panelFoot button").forEach((el) => {
-        if (el.closest("#executionSection")) return;
+        if (el.closest("#executionSection") || el.matches("[data-settings-tab]")) return;
         if (blocked) {
           if (el.dataset.executionDisabled == null) el.dataset.executionDisabled = String(el.disabled);
           el.disabled = true;
@@ -857,6 +863,97 @@
     $("backdrop").hidden = !show;
   }
 
+  function captureSettingsDraft(body) {
+    return {
+      group: body.querySelector("[data-settings-tab].on")?.dataset.settingsTab || "interface",
+      controls: [...body.querySelectorAll("input, textarea, select")].filter((el) => el.id).map((el) => ({
+        id: el.id,
+        value: el.value,
+        checked: el.type === "checkbox" ? el.checked : undefined,
+        invalid: el.getAttribute("aria-invalid"),
+      })),
+      buttons: [...body.querySelectorAll("#sizingSeg button, #maTypeSeg button, .settings-group [data-theme]")].map((el) => ({
+        selector: el.matches("#sizingSeg button") ? "sizing" : el.matches("#maTypeSeg button") ? "ma" : "theme",
+        value: el.dataset.sizing || el.dataset.ma || el.dataset.theme,
+        on: el.classList.contains("on"),
+      })),
+      toggles: [...body.querySelectorAll(".settings-group .toggle")].map((el) => ({ id: el.id, on: el.classList.contains("on") })),
+      pair: $("telegramPairCode")?.hidden ? null : {
+        code: $("telegramPairCode")?.querySelector("code")?.textContent || "",
+        expiresAt: $("telegramPairCode")?.lastElementChild?.dataset.expiresAt || "",
+        expiry: $("telegramPairCode")?.lastElementChild?.textContent || "",
+      },
+      error: { text: $("settingsError")?.textContent || "", hidden: $("settingsError")?.hidden !== false },
+    };
+  }
+
+  function restoreSettingsDraft(body, draft) {
+    const activeTab = body.querySelector(`[data-settings-tab="${draft.group}"]`);
+    if (activeTab) activeTab.click();
+    draft.controls.forEach(({ id, value, checked, invalid }) => {
+      const control = $(id);
+      if (!control) return;
+      control.value = value;
+      if (checked !== undefined) control.checked = checked;
+      if (invalid) control.setAttribute("aria-invalid", invalid);
+      else control.removeAttribute("aria-invalid");
+    });
+    draft.buttons.forEach(({ selector, value, on }) => {
+      const attribute = selector === "sizing" ? "sizing" : selector === "ma" ? "ma" : "theme";
+      const container = selector === "sizing" ? $("sizingSeg") : selector === "ma" ? $("maTypeSeg") : $("settingsThemeSeg");
+      container?.querySelectorAll(`button[data-${attribute}]`).forEach((el) => {
+        if (el.dataset[attribute] === value) el.classList.toggle("on", on);
+      });
+    });
+    draft.toggles.forEach(({ id, on }) => {
+      const toggle = $(id);
+      if (!toggle) return;
+      toggle.classList.toggle("on", on);
+      toggle.setAttribute("aria-pressed", String(on));
+    });
+    const mode = $("sizingSeg")?.querySelector("button.on")?.dataset.sizing || "double";
+    if ($("base")) $("base").disabled = mode === "fixed";
+    if ($("steps")) $("steps").disabled = mode === "fixed";
+    if ($("fixedStakes")) $("fixedStakes").disabled = mode !== "fixed";
+    if ($("fixedModeHint")) $("fixedModeHint").hidden = mode !== "fixed";
+    if ($("sizingWarning")) {
+      $("sizingWarning").hidden = mode === "double";
+      $("sizingWarning").textContent = mode === "fixed" ? t("fixedWarning") : mode === "recover" ? t("recoverWarning") : "";
+    }
+    if ($("maxEntryVal")) $("maxEntryVal").textContent = Number($("maxEntry")?.value) >= 100 ? t("off") : `\u2264 ${(Number($("maxEntry")?.value || 100) / 100).toFixed(2)}`;
+    if ($("openingVal")) $("openingVal").textContent = `${(Number($("opening")?.value || 0) / 20).toFixed(2)} ATR`;
+    if ($("confirmsVal")) $("confirmsVal").textContent = `${Number($("confirms")?.value || 0)} ${plural(Number($("confirms")?.value || 0), t("confirmCountUnit"))}`;
+    if ($("fastPeriodVal")) $("fastPeriodVal").textContent = `${t("fastGeneric")} ${$("fastPeriod")?.value || "20"}`;
+    if ($("slowPeriodVal")) $("slowPeriodVal").textContent = `${t("slowGeneric")} ${$("slowPeriod")?.value || "200"}`;
+    if ($("refreshVal")) $("refreshVal").textContent = `${$("refresh")?.value || "100"} ${t("refreshUnit")}`;
+    if ($("settingsError")) {
+      $("settingsError").textContent = draft.error.text;
+      $("settingsError").hidden = draft.error.hidden;
+    }
+    if (draft.pair?.code && $("telegramPairCode")) {
+      const codeContainer = $("telegramPairCode");
+      const label = document.createElement("span");
+      label.className = "hint";
+      label.textContent = t("telegramPairInstructions");
+      const code = document.createElement("code");
+      code.textContent = draft.pair.code;
+      const expiry = document.createElement("span");
+      expiry.className = "hint";
+      expiry.dataset.expiresAt = draft.pair.expiresAt;
+      const expiresAt = Number(draft.pair.expiresAt);
+      expiry.textContent = Number.isFinite(expiresAt) && expiresAt > 0
+        ? t("telegramPairExpires").replace("{time}", new Date(expiresAt).toLocaleTimeString(state.locale))
+        : draft.pair.expiry;
+      codeContainer.replaceChildren(label, code, expiry);
+      codeContainer.hidden = false;
+    }
+    body.querySelectorAll("#settingsLangSeg button").forEach((button) => {
+      button.classList.toggle("on", button.dataset.lang === state.locale);
+    });
+    state.paintSettingsSaveButton?.(draft.group);
+    updateSettingsLockUi(state.snapshot);
+  }
+
   function openPanel(kind) {
     const body = $("panelBody");
     const title = $("panelTitle");
@@ -865,6 +962,8 @@
     $("backdrop").hidden = false;
     clearInterval(state.depositTimer);
     state.depositTimer = 0;
+    clearInterval(state.telegramTimer);
+    state.telegramTimer = 0;
     if (foot) {
       foot.hidden = true;
       foot.innerHTML = "";
@@ -1336,13 +1435,19 @@
       document.querySelectorAll("#langSeg button").forEach((b) => {
         b.classList.toggle("on", b.dataset.lang === state.locale);
         b.onclick = async () => {
+          const draft = captureSettingsDraft(body);
           state.locale = b.dataset.lang;
           applyI18n();
-          document.querySelectorAll("#langSeg button").forEach((x) =>
+          document.querySelectorAll("#settingsLangSeg button, #langSeg button").forEach((x) =>
             x.classList.toggle("on", x.dataset.lang === state.locale)
           );
-          if (window.vespera) await saveSettingsSerial({ locale: state.locale });
-          renderSnap(state.snapshot);
+          try {
+            if (window.vespera) await saveSettingsSerial({ locale: state.locale });
+            openPanel("settings");
+            restoreSettingsDraft(body, draft);
+          } catch (error) {
+            settingError(localizedSettingsError(error));
+          }
         };
       });
     }
@@ -1354,8 +1459,16 @@
       const executionLocked = execution.mode === "server" || Boolean(execution.switching);
       const limits = window.VesperaSettings.LIMITS;
       body.innerHTML = `
-        <section class="execution-section" id="executionSection">
-          <div class="execution-section-heading">${t("execution")}</div>
+        <nav class="settings-tabs" role="tablist" aria-label="${t("settingsGroups")}">
+          ${[["strategy", "settingsStrategy"], ["stakes", "settingsStakes"], ["execution", "execution"], ["polymarket", "polymarket"], ["telegram", "telegram"], ["interface", "interface"]].map(([group, key], index) => `<button type="button" role="tab" id="settingsTab-${group}" aria-controls="settingsGroup-${group}" aria-selected="${index === 0}" tabindex="${index === 0 ? 0 : -1}" data-settings-tab="${group}" class="${index === 0 ? "on" : ""}">${t(key)}</button>`).join("")}
+        </nav>
+        <div id="settingsError" class="hint warn settings-error" role="alert" hidden></div>
+        <p class="hint warn settings-error" id="settingsLockNotice" role="status" hidden></p>
+        <p class="hint settings-save-hint">${t("settingsSaveHint")}</p>
+        <div class="settings-sections">
+        <section class="settings-group" id="settingsGroup-execution" data-settings-group="execution" role="tabpanel" aria-labelledby="settingsTab-execution" hidden>
+          <section class="execution-section" id="executionSection">
+            <div class="execution-section-heading">${t("execution")}</div>
           <div class="field">
             <label for="executionUrl">${t("serverUrl")}</label>
             <input id="executionUrl" type="url" value="${esc(execution.url || "")}" placeholder="https://server.example" autocomplete="url" spellcheck="false" ${executionLocked ? "disabled" : ""} />
@@ -1372,7 +1485,9 @@
           <p class="hint" id="executionStatusHint">${execution.error ? esc(executionErrorText(execution.error, "")) : execution.mode === "server" ? (execution.connected ? t("executionServerHint") : t("executionOfflineHint")) : t("executionLocalHint")}</p>
           <p class="hint" id="executionRouteHint" ${execution.mode === "server" ? "" : "hidden"}>${t("executionRouteHint")}</p>
           <p class="hint warn execution-message" id="executionMessage" role="status" hidden></p>
+          </section>
         </section>
+        <section class="settings-group" id="settingsGroup-stakes" data-settings-group="stakes" role="tabpanel" aria-labelledby="settingsTab-stakes" hidden>
         <div class="field toggle-row">
           <span class="field-label">${t("sizing")}${helpBtn("sizingHint")}</span>
           <div class="seg seg-sm" id="sizingSeg">
@@ -1384,7 +1499,6 @@
         <div class="field"><span class="field-label">${t("fixedStakes")}</span><textarea id="fixedStakes" rows="2">${esc(Array.isArray(s.fixedStakes) ? s.fixedStakes.join(", ") : "1, 2, 4, 8, 16, 32")}</textarea><p class="hint">${t("fixedStakesHint")}</p></div>
         <p class="hint" id="fixedModeHint" hidden>${t("fixedModeHint")}</p>
         <p class="hint warn" id="sizingWarning" hidden></p>
-        <p class="hint warn settings-error" id="settingsLockNotice" role="status" hidden></p>
         <div class="field"><span class="field-label">${t("base")}</span><input id="base" type="number" min="${limits.baseUsd.min}" max="${limits.baseUsd.max}" step="${limits.baseUsd.step}" value="${esc(s.baseUsd || "1.00")}" /></div>
         <div class="field"><span class="field-label">${t("maxSteps")}</span><input id="steps" type="number" min="${limits.maxSteps.min}" max="${limits.maxSteps.max}" step="${limits.maxSteps.step}" value="${esc(s.maxSteps || 6)}" /></div>
         <div class="field"><span class="field-label">${t("maxStake")}${helpBtn("maxStakeHint")}</span><input id="maxStake" type="number" min="${limits.maxStakeUsd.min}" max="${limits.maxStakeUsd.max}" step="${limits.maxStakeUsd.step}" inputmode="decimal" value="${Number(s.maxStakeUsd) > 0 ? s.maxStakeUsd : ""}" placeholder="${t("maxStakeOff")}" /></div>
@@ -1398,13 +1512,16 @@
         <div class="plan-box" id="planBox"></div>
         <div class="field"><span class="field-label">${t("dailyLimit")}${helpBtn("dailyLimitHint")}</span><input id="dailyLimit" type="number" min="${limits.dailyLossLimitUsd.min}" max="${limits.dailyLossLimitUsd.max}" step="${limits.dailyLossLimitUsd.step}" inputmode="decimal" value="${Number(s.dailyLossLimitUsd) > 0 ? s.dailyLossLimitUsd : ""}" placeholder="${t("maxStakeOff")}" /></div>
         <div class="field"><span class="field-label">${t("maxSeriesLoss")}${helpBtn("maxSeriesLossHint")}</span><input id="maxSeriesLoss" type="number" min="${limits.maxSeriesLossUsd.min}" max="${limits.maxSeriesLossUsd.max}" step="${limits.maxSeriesLossUsd.step}" inputmode="decimal" value="${Number(s.maxSeriesLossUsd) > 0 ? s.maxSeriesLossUsd : ""}" placeholder="${t("maxStakeOff")}" /></div>
-        <div id="settingsError" class="hint warn settings-error" role="alert" hidden></div>
+        </section>
+        <section class="settings-group" id="settingsGroup-execution-dryrun" data-settings-group="execution" role="tabpanel" aria-labelledby="settingsTab-execution" hidden>
         <div class="field toggle-row">
           <span class="field-label">${t("dryRun")}${helpBtn("dryRunHint")}</span>
           <button type="button" class="toggle ${s.dryRun !== false ? "on" : ""}" id="dryRunToggle" aria-pressed="${s.dryRun !== false}">
             <span class="knob"></span>
           </button>
         </div>
+        </section>
+        <section class="settings-group" id="settingsGroup-strategy" data-settings-group="strategy" role="tabpanel" aria-labelledby="settingsTab-strategy">
         <div class="field">
           <span class="field-label">${t("minOpening")}${helpBtn("minOpeningHint")}</span>
           <div class="range-row">
@@ -1447,26 +1564,266 @@
             <span class="range-val" id="slowPeriodVal">SMA200</span>
           </div>
         </div>
-        <div class="field">
-          <span class="field-label">${t("refresh")}${helpBtn("refreshHint")}</span>
-          <div class="range-row">
-            <input id="refresh" type="range" min="${limits.refreshMs.min}" max="${limits.refreshMs.max}" step="${limits.refreshMs.step}" />
-            <span class="range-val" id="refreshVal">100 ${t("refreshUnit")}</span>
-          </div>
-        </div>
         <div class="field toggle-row">
           <span class="field-label">${t("fullBodyOnS")}${helpBtn("fullBodyOnSHint")}</span>
           <button type="button" class="toggle ${s.fullBodyOnS ? "on" : ""}" id="fullBodyToggle" aria-pressed="${Boolean(s.fullBodyOnS)}">
             <span class="knob"></span>
           </button>
         </div>
+        </section>
+        <section class="settings-group" id="settingsGroup-interface" data-settings-group="interface" role="tabpanel" aria-labelledby="settingsTab-interface" hidden>
+          <div class="field">
+            <span class="field-label">${t("refresh")}${helpBtn("refreshHint")}</span>
+            <div class="range-row">
+              <input id="refresh" type="range" min="${limits.refreshMs.min}" max="${limits.refreshMs.max}" step="${limits.refreshMs.step}" />
+              <span class="range-val" id="refreshVal">100 ${t("refreshUnit")}</span>
+            </div>
+          </div>
+          <div class="settings-interface-row">
+            <span class="field-label">${t("theme")}</span>
+            <div class="theme-grid" id="settingsThemeSeg">${THEMES.map((id) => `<button type="button" class="theme-card" data-theme="${id}" aria-label="${t(themeKey(id))}"><span class="theme-swatch" data-swatch="${id}"><i></i><i></i><i></i></span><span class="theme-name">${t(themeKey(id))}</span></button>`).join("")}</div>
+          </div>
+          <div class="field">
+            <span class="field-label">${t("language")}</span>
+            <div class="seg" id="settingsLangSeg"><button type="button" data-lang="en" class="${state.locale === "en" ? "on" : ""}">English</button><button type="button" data-lang="ru" class="${state.locale === "ru" ? "on" : ""}">Русский</button></div>
+          </div>
+        </section>
+        <section class="settings-group" id="settingsGroup-polymarket" data-settings-group="polymarket" role="tabpanel" aria-labelledby="settingsTab-polymarket" hidden>
+          <div class="settings-info-card"><img class="api-mark" src="assets/polymarket.png" width="22" height="22" alt="Polymarket" /><div><strong>Polymarket</strong><p class="hint">${t("settingsPolymarketHint")}</p></div></div>
+          <button type="button" class="ghost settings-open-panel" id="settingsOpenPolymarket">${t("settingsPolymarketOpen")}</button>
+        </section>
+        <section class="settings-group" id="settingsGroup-telegram" data-settings-group="telegram" role="tabpanel" aria-labelledby="settingsTab-telegram" hidden>
+          <div class="settings-info-card"><span class="settings-service-icon" aria-hidden="true">✈</span><div><strong>${t("telegram")}</strong><p class="hint" id="telegramRuntimeHint"></p></div></div>
+          <p class="hint" id="telegramStatus" role="status" aria-live="polite">${t("telegramChecking")}</p>
+          <p class="hint" id="telegramConnection"></p>
+          <div class="field toggle-row"><label class="field-label" for="telegramEnabled">${t("telegramEnabled")}</label><input type="checkbox" class="settings-checkbox" id="telegramEnabled" disabled /></div>
+          <div class="field"><label for="telegramToken">${t("telegramToken")}</label><input id="telegramToken" type="password" autocomplete="new-password" spellcheck="false" placeholder="${t("telegramTokenPlaceholder")}" /><p class="hint">${t("telegramTokenHint")}</p></div>
+          <div class="settings-button-row"><button type="button" class="ghost" id="telegramSave" disabled>${t("telegramSave")}</button><button type="button" class="ghost" id="telegramPair" disabled>${t("telegramPair")}</button></div>
+          <div class="settings-pair-code" id="telegramPairCode" hidden></div>
+          <div class="settings-button-row"><button type="button" class="ghost" id="telegramTest" disabled>${t("telegramTest")}</button><button type="button" class="ghost" id="telegramDisconnect" disabled>${t("telegramDisconnect")}</button></div>
+          <p class="hint" id="telegramActionStatus" role="status" aria-live="polite" hidden></p>
+          <p class="hint" id="telegramMembers"></p>
+        </section>
+        <section class="settings-group" id="settingsGroup-interface-notifications" data-settings-group="interface" role="tabpanel" aria-labelledby="settingsTab-interface" hidden>
         <div class="field toggle-row">
           <span class="field-label">${t("notify")}${helpBtn("notifyHint")}</span>
           <button type="button" class="toggle ${s.notificationsEnabled !== false ? "on" : ""}" id="notifyToggle" aria-pressed="${s.notificationsEnabled !== false}">
             <span class="knob"></span>
           </button>
         </div>
+        </section>
+        </div>
       `;
+      const selectSettingsGroup = (group) => {
+        body.querySelectorAll("[data-settings-tab]").forEach((tab) => {
+          const selected = tab.dataset.settingsTab === group;
+          tab.classList.toggle("on", selected);
+          tab.setAttribute("aria-selected", String(selected));
+          tab.tabIndex = selected ? 0 : -1;
+        });
+        body.querySelectorAll("[data-settings-group]").forEach((section) => {
+          section.hidden = section.dataset.settingsGroup !== group;
+        });
+        state.paintSettingsSaveButton?.(group);
+      };
+      body.querySelectorAll("[data-settings-tab]").forEach((tab) => {
+        tab.onclick = () => selectSettingsGroup(tab.dataset.settingsTab);
+        tab.onkeydown = (event) => {
+          if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+          event.preventDefault();
+          const tabs = [...body.querySelectorAll("[data-settings-tab]")];
+          const index = tabs.indexOf(tab);
+          const next = tabs[(index + (event.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length];
+          next.focus();
+          selectSettingsGroup(next.dataset.settingsTab);
+        };
+      });
+      $("settingsOpenPolymarket").onclick = () => openPanel("api");
+      const updateSettingsThemes = () => {
+        document.querySelectorAll(".settings-group [data-theme]").forEach((button) => {
+          button.classList.toggle("on", button.dataset.theme === state.theme);
+        });
+      };
+      updateSettingsThemes();
+      body.querySelectorAll(".settings-group [data-theme]").forEach((button) => {
+        button.onclick = async () => {
+          const previous = state.theme;
+          state.theme = button.dataset.theme;
+          applyTheme();
+          updateSettingsThemes();
+          try {
+            await saveSettingsSerial({ theme: state.theme });
+          } catch (error) {
+            state.theme = previous;
+            applyTheme();
+            updateSettingsThemes();
+            settingError(localizedSettingsError(error));
+          }
+        };
+      });
+      body.querySelectorAll("#settingsLangSeg [data-lang]").forEach((button) => {
+        button.onclick = async () => {
+          if (button.dataset.lang === state.locale) return;
+          const previous = state.locale;
+          const draft = captureSettingsDraft(body);
+          state.locale = button.dataset.lang;
+          applyI18n();
+          body.querySelectorAll("#settingsLangSeg [data-lang]").forEach((item) => {
+            item.classList.toggle("on", item.dataset.lang === state.locale);
+          });
+          try {
+            await saveSettingsSerial({ locale: state.locale });
+            openPanel("settings");
+            restoreSettingsDraft(body, draft);
+          } catch (error) {
+            state.locale = previous;
+            applyI18n();
+            body.querySelectorAll("#settingsLangSeg button").forEach((item) => {
+              item.classList.toggle("on", item.dataset.lang === state.locale);
+            });
+            restoreSettingsDraft(body, draft);
+            settingError(localizedSettingsError(error));
+          }
+        };
+      });
+      const telegram = window.vespera;
+      const telegramControlIds = ["telegramEnabled", "telegramToken", "telegramSave", "telegramPair", "telegramTest", "telegramDisconnect"];
+      let telegramSnapshot = null;
+      let telegramBusy = false;
+      let telegramStatusPending = false;
+      const hasTelegramApi = ["telegramStatus", "telegramConfigure", "telegramPair", "telegramTest", "telegramDisconnect"].every((method) => typeof telegram?.[method] === "function");
+      const telegramConfigured = () => Boolean(telegramSnapshot?.hasToken ?? telegramSnapshot?.enabled);
+      const setTelegramBusy = (busy) => {
+        telegramBusy = busy;
+        const status = $("telegramStatus");
+        telegramControlIds.forEach((id) => {
+          const control = $(id);
+          if (!control) return;
+          control.disabled = !hasTelegramApi || busy || executionUnavailable() || (id === "telegramPair" || id === "telegramTest") && !(telegramSnapshot?.enabled && telegramConfigured()) || id === "telegramDisconnect" && !(telegramSnapshot?.hasToken || telegramSnapshot?.hasToken == null && telegramSnapshot?.enabled);
+        });
+        if (status && !hasTelegramApi) status.textContent = t("telegramUnavailable");
+      };
+      const refreshTelegram = async (keepBusy = false, quiet = false) => {
+        if (!$("telegramStatus")) return;
+        if (telegramBusy && !keepBusy || telegramStatusPending) return;
+        if (!hasTelegramApi) {
+          $("telegramStatus").textContent = t("telegramUnavailable");
+          setTelegramBusy(false);
+          return;
+        }
+        telegramStatusPending = true;
+        if (!quiet) $("telegramStatus").textContent = t("telegramChecking");
+        try {
+          const status = await telegram.telegramStatus();
+          const statusEl = $("telegramStatus");
+          if (!statusEl || $("panel").hidden || !$("telegramStatus")) return;
+          if (!status || typeof status !== "object") throw new Error("status");
+          telegramSnapshot = status;
+          const botName = typeof (status.botName || status.botUsername) === "string" ? (status.botName || status.botUsername) : "";
+          const connected = status.connected === true || status.connected == null && Boolean(status.enabled && botName);
+          statusEl.textContent = connected
+            ? t("telegramStatusConnected").replace("{name}", botName ? `@${botName.replace(/^@/, "")}` : t("telegramBot"))
+            : t(status.enabled ? "telegramStatusOffline" : "telegramStatusDisabled");
+          const connection = $("telegramConnection");
+          if (connection) connection.textContent = status.hasToken || status.hasToken == null && status.enabled ? t("telegramTokenSaved") : t("telegramTokenNotSaved");
+          const enabled = $("telegramEnabled");
+          if (enabled && !state.telegramDraftDirty) enabled.checked = Boolean(status.enabled);
+          const count = (value) => Array.isArray(value) ? value.length : Number.isFinite(Number(value)) ? Math.max(0, Number(value)) : 0;
+          const members = $("telegramMembers");
+          const users = status.users ?? status.approvedUsers;
+          const pending = status.pendingRequests ?? status.requests;
+          const hasAdmin = status.adminId != null || Number(status.rootAdminCount) > 0;
+          if (members) members.textContent = `${t("telegramUsers").replace("{count}", String(count(users)))} · ${t("telegramPending").replace("{count}", String(count(pending)))} · ${t(hasAdmin ? "telegramAdminLinked" : "telegramAdminMissing")}`;
+          setTelegramBusy(keepBusy);
+        } catch {
+          const statusEl = $("telegramStatus");
+          if (!statusEl || $("panel").hidden || !$("telegramStatus")) return;
+          telegramSnapshot = null;
+          statusEl.textContent = t("telegramStatusError");
+          setTelegramBusy(keepBusy);
+        } finally {
+          telegramStatusPending = false;
+        }
+      };
+      const showTelegramAction = (key, error = false) => {
+        const message = $("telegramActionStatus");
+        if (!message) return;
+        message.textContent = t(key);
+        message.classList.toggle("warn", error);
+        message.hidden = false;
+      };
+      const runTelegramAction = async (action, successKey) => {
+        if (!hasTelegramApi || telegramBusy) return;
+        setTelegramBusy(true);
+        const message = $("telegramActionStatus");
+        if (message) message.hidden = true;
+        try {
+          const result = await action();
+          if (result?.ok === false) throw new Error("action");
+          await refreshTelegram(true);
+          showTelegramAction(successKey);
+          return result;
+        } catch {
+          showTelegramAction("telegramActionError", true);
+          await refreshTelegram(true);
+          return null;
+        } finally {
+          setTelegramBusy(false);
+        }
+      };
+      $("telegramSave").onclick = async () => {
+        const token = $("telegramToken");
+        const enabled = $("telegramEnabled");
+        const result = await runTelegramAction(() => telegram.telegramConfigure({ ...(token.value ? { token: token.value } : {}), enabled: enabled.checked }), "telegramSaved");
+        if (result) {
+          token.value = "";
+          state.telegramDraftDirty = false;
+        }
+      };
+      $("telegramToken").oninput = () => { state.telegramDraftDirty = true; };
+      $("telegramEnabled").onchange = () => { state.telegramDraftDirty = true; };
+      $("telegramPair").onclick = async () => {
+        const pairButton = $("telegramPair");
+        const codeContainer = $("telegramPairCode");
+        if (codeContainer) {
+          codeContainer.replaceChildren();
+          codeContainer.hidden = true;
+        }
+        const result = await runTelegramAction(async () => {
+          const reply = await telegram.telegramPair();
+          if (!reply || reply.ok === false || typeof reply.code !== "string" || !reply.code) throw new Error("pair");
+          return reply;
+        }, "telegramPairCreated");
+        const currentCodeContainer = $("telegramPairCode");
+        if (!result || !currentCodeContainer) return;
+        const label = document.createElement("span");
+        label.className = "hint";
+        label.textContent = t("telegramPairInstructions");
+        const code = document.createElement("code");
+        code.textContent = result.code;
+        const expiry = document.createElement("span");
+        expiry.className = "hint";
+        const expiresAt = typeof result.expiresAt === "number"
+          ? (result.expiresAt < 1e12 ? result.expiresAt * 1000 : result.expiresAt)
+          : Date.parse(result.expiresAt);
+        expiry.dataset.expiresAt = Number.isFinite(expiresAt) ? String(expiresAt) : "";
+        expiry.textContent = Number.isFinite(expiresAt)
+          ? t("telegramPairExpires").replace("{time}", new Date(expiresAt).toLocaleTimeString(state.locale))
+          : t("telegramPairCreated");
+        currentCodeContainer.replaceChildren(label, code, expiry);
+        currentCodeContainer.hidden = false;
+        pairButton.blur();
+      };
+      $("telegramTest").onclick = () => runTelegramAction(() => telegram.telegramTest(), "telegramTestSent");
+      $("telegramDisconnect").onclick = () => {
+        if (!window.confirm(t("telegramDisconnectConfirm"))) return;
+        return runTelegramAction(() => telegram.telegramDisconnect(), "telegramDisconnected").then((result) => {
+          if (result) state.telegramDraftDirty = false;
+          return result;
+        });
+      };
+      refreshTelegram();
+      if (hasTelegramApi) state.telegramTimer = setInterval(() => refreshTelegram(false, true), 2000);
       $("executionConnect").onclick = configureExecution;
       $("zeroModeToggle").onclick = () => switchExecutionMode(executionState()?.mode === "server" ? "local" : "server");
       $("executionRetry").onclick = retryExecutionTransfer;
@@ -1474,11 +1831,21 @@
       if (foot) {
         foot.hidden = false;
         foot.innerHTML = `
-          <button type="button" class="ok" id="saveSet">${t("save")}</button>
+          <button type="button" class="ok" id="saveSet">${t("settingsSaveGroup")}</button>
           <button type="button" class="ghost" id="newSeries" hidden>${t("newSeries")}</button>
           <button type="button" class="ghost" id="resetPaper">${t("resetPaper")}</button>
         `;
       }
+      state.paintSettingsSaveButton = (group = body.querySelector("[data-settings-tab].on")?.dataset.settingsTab || "strategy") => {
+        const button = $("saveSet");
+        if (!button) return;
+        button.hidden = group === "polymarket" || group === "telegram";
+        button.textContent = t("settingsSaveGroup");
+        $("resetPaper").hidden = group !== "stakes";
+        $("newSeries").hidden = group !== "stakes" || !canStartNewSeries(state.snapshot);
+        if (foot) foot.hidden = [...foot.querySelectorAll("button")].every((item) => item.hidden);
+      };
+      state.paintSettingsSaveButton();
       updateSettingsLockUi(state.snapshot);
       const paintPlan = (snap) => {
         const box = $("planBox");
@@ -1673,52 +2040,50 @@
       };
       const saveNow = async () => {
         if (state.savingPanel) return;
-        const baseEl = $("base");
-        const stepsEl = $("steps");
-        const openingEl = $("opening");
-        const crossEl = $("crossTicks");
-        const confirmsEl = $("confirms");
-        const fastEl = $("fastPeriod");
-        const slowEl = $("slowPeriod");
-        const refreshEl = $("refresh");
-        const notifyEl = $("notifyToggle");
-        const fullBodyEl = $("fullBodyToggle");
-        const sizingMode = (document.querySelector("#sizingSeg button.on") || {}).dataset?.sizing || s.sizingMode || "double";
-        const patch = {
-          sizingMode,
-          ...(sizingMode === "fixed" ? fixedStakesPatch() : {
-            maxSteps: Number(stepsEl && stepsEl.value),
-            baseUsd: baseEl ? moneyOr(baseEl, NaN).toFixed(2) : s.baseUsd || "1.00",
-          }),
-          maxStakeUsd: $("maxStake") ? moneyOr($("maxStake"), 0) : Number(s.maxStakeUsd) || 0,
-          maxEntryPrice: $("maxEntry") ? Number($("maxEntry").value) / 100 : Number(s.maxEntryPrice) || 1,
-          dailyLossLimitUsd: $("dailyLimit") ? moneyOr($("dailyLimit"), 0) : Number(s.dailyLossLimitUsd) || 0,
-          maxSeriesLossUsd: $("maxSeriesLoss") ? moneyOr($("maxSeriesLoss"), 0) : Number(s.maxSeriesLossUsd) || 0,
-          minOpeningAtr: openingEl ? Number(openingEl.value) / 20 : 0,
-          minCrossTicks: crossEl ? Number(crossEl.value) : 0,
-          confirmCount: confirmsEl ? Number(confirmsEl.value) : 0,
-          fastPeriod: fastEl ? Number(fastEl.value) : 20,
-          slowPeriod: slowEl ? Number(slowEl.value) : 200,
-          fullBodyOnS: fullBodyEl ? fullBodyEl.classList.contains("on") : false,
-          maType: (document.querySelector("#maTypeSeg button.on") || {}).dataset?.ma || s.maType || "SMA",
-          refreshMs: refreshEl ? Number(refreshEl.value) : 100,
-          notificationsEnabled: notifyEl ? notifyEl.classList.contains("on") : true,
+        const group = body.querySelector("[data-settings-tab].on")?.dataset.settingsTab || "strategy";
+        const sizingMode = $("sizingSeg")?.querySelector("button.on")?.dataset.sizing || s.sizingMode || "double";
+        const patchByGroup = {
+          strategy: {
+            minOpeningAtr: Number($("opening").value) / 20,
+            minCrossTicks: Number($("crossTicks").value),
+            confirmCount: Number($("confirms").value),
+            fastPeriod: Number($("fastPeriod").value),
+            slowPeriod: Number($("slowPeriod").value),
+            fullBodyOnS: $("fullBodyToggle").classList.contains("on"),
+            maType: $("maTypeSeg").querySelector("button.on")?.dataset.ma || s.maType || "SMA",
+          },
+          stakes: {
+            sizingMode,
+            ...(sizingMode === "fixed" ? fixedStakesPatch() : {
+              maxSteps: Number($("steps").value),
+              baseUsd: moneyOr($("base"), NaN).toFixed(2),
+            }),
+            maxStakeUsd: moneyOr($("maxStake"), 0),
+            maxEntryPrice: Number($("maxEntry").value) / 100,
+            dailyLossLimitUsd: moneyOr($("dailyLimit"), 0),
+            maxSeriesLossUsd: moneyOr($("maxSeriesLoss"), 0),
+          },
+          execution: { dryRun: $("dryRunToggle").classList.contains("on") },
+          interface: {
+            refreshMs: Number($("refresh").value),
+            notificationsEnabled: $("notifyToggle").classList.contains("on"),
+          },
         };
-        const pending = state.queuedSettingsPatch;
-        clearTimeout(state.saveTimer);
-        state.saveTimer = 0;
-        state.queuedSettingsPatch = {};
-        const completePatch = { ...pending, ...patch };
+        const groupPatch = patchByGroup[group];
+        if (!groupPatch) {
+          settingError(t("settingsSectionOwnSave"));
+          return;
+        }
         try {
           if (!window.vespera) return;
-          const normalized = window.VesperaSettings.normalizeSettings(completePatch, state.snapshot?.settings || s, { strict: true });
           state.savingPanel = true;
+          await state.settingsSaveQueue.catch(() => {});
+          const normalized = window.VesperaSettings.normalizeSettings(groupPatch, state.snapshot?.settings || s, { strict: true });
           const snap = await saveSettingsSerial(normalized);
           if (!snap || !snap.settings) throw new Error(t("settingsSaveFailed"));
           state.snapshot = snap;
           renderSnap(snap);
           hideTip();
-          closePanel();
         } catch (err) {
           settingError(localizedSettingsError(err), err && err.field);
         } finally {

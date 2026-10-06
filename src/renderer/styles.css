@@ -901,6 +901,159 @@ body.mac .chrome {
 .settings-error[hidden] {
   display: none;
 }
+.settings-tabs {
+  position: sticky;
+  top: -2px;
+  z-index: 6;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+  margin: -2px -2px 12px;
+  padding: 5px;
+  border: 1px solid var(--hair);
+  border-radius: 17px;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  backdrop-filter: blur(18px);
+}
+.settings-tabs button {
+  min-width: 0;
+  padding: 8px 5px;
+  overflow: hidden;
+  border-radius: 12px;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 600;
+}
+.settings-tabs button:hover,
+.settings-tabs button.on {
+  color: var(--ink);
+  background: var(--seg-on);
+}
+.settings-tabs button:focus-visible,
+.settings-pair-code code:focus-visible {
+  outline: 2px solid var(--apple);
+  outline-offset: 2px;
+}
+.settings-sections {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.settings-save-hint {
+  margin: 4px 2px 12px;
+  font-size: 11px;
+}
+.settings-sections > .settings-group {
+  min-width: 0;
+  order: 6;
+}
+.settings-sections > .settings-group[data-settings-group="strategy"] { order: 1; }
+.settings-sections > .settings-group[data-settings-group="stakes"] { order: 2; }
+.settings-sections > .settings-group[data-settings-group="execution"] { order: 3; }
+.settings-sections > .settings-group[data-settings-group="polymarket"] { order: 4; }
+.settings-sections > .settings-group[data-settings-group="telegram"] { order: 5; }
+.settings-sections > .settings-group[data-settings-group="interface"] { order: 6; }
+.settings-group[hidden] {
+  display: none !important;
+}
+.settings-info-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin: 6px 0 14px;
+  padding: 14px;
+  border: 1px solid var(--hair);
+  border-radius: 16px;
+  background: var(--fill);
+}
+.settings-info-card strong {
+  display: block;
+  margin-bottom: 4px;
+}
+.settings-info-card .hint {
+  margin: 0;
+}
+.settings-service-icon {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 10px;
+  color: var(--apple);
+  background: color-mix(in srgb, var(--apple) 15%, transparent);
+  font-size: 17px;
+}
+.settings-open-panel {
+  width: 100%;
+}
+.settings-interface-row {
+  margin: 14px 0;
+}
+.settings-interface-row > .field-label {
+  display: block;
+  margin-bottom: 8px;
+}
+.settings-interface-row .theme-grid {
+  gap: 8px;
+}
+.settings-interface-row .theme-card {
+  padding: 6px;
+}
+.settings-interface-row .theme-swatch {
+  height: 52px;
+}
+.settings-interface-row .theme-name {
+  font-size: 11px;
+}
+.field input.settings-checkbox {
+  width: 19px;
+  height: 19px;
+  flex: 0 0 auto;
+  padding: 0;
+  accent-color: var(--apple);
+}
+.settings-button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0;
+}
+.settings-button-row > button {
+  flex: 1 1 140px;
+  padding: 9px 12px;
+}
+.settings-pair-code {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 12px 0;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--apple) 34%, var(--hair));
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--apple) 8%, var(--fill));
+}
+.settings-pair-code[hidden] {
+  display: none !important;
+}
+.settings-pair-code code {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px;
+  overflow-wrap: anywhere;
+  border-radius: 12px;
+  color: var(--ink);
+  background: var(--fill-strong);
+  font-size: 21px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-align: center;
+  user-select: text;
+}
 .field input::placeholder {
   color: var(--muted);
   opacity: 0.8;

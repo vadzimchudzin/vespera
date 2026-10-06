@@ -12,7 +12,9 @@ class ExecutionRouter {
     this.connection = new SettingsStore(path.join(userDataDir, "remote-control"));
     if (!this.connection.value.deviceId) this.connection.save({ deviceId: crypto.randomUUID(), executionMode: "local" });
     this.host = host || new ExecutionHost({ userDataDir, onEvent: (evt) => {
-      if (this.mode === "local") this.onEvent(this._decorateEvent(evt));
+      if (this.mode === "local") {
+        this.onEvent(this._decorateEvent(evt));
+      }
     } });
     this.clientFactory = clientFactory;
     this.mode = this.connection.value.executionMode || "local";
@@ -27,6 +29,16 @@ class ExecutionRouter {
     this.timer = setInterval(() => this.poll().catch(() => {}), pollMs);
     this.timer.unref?.();
     if (this.configured()) this.poll().catch(() => {});
+    this.syncTelegram();
+  }
+
+  syncTelegram() {
+    return this.host.setTelegramContext?.({
+      active: this.mode === "local" && !this.connection.value.transition,
+      command: (method, args) => this.call(method, args),
+      serialize: (work) => this._serial(work),
+      epoch: this.status?.epoch ?? null,
+    })?.catch(() => {});
   }
 
   configured() { return Boolean(this.connection.value.serverUrl && this.connection.value.serverToken); }
@@ -157,6 +169,7 @@ class ExecutionRouter {
         if (target === "server") this.remoteState = (await this.client().request("/v1/snapshot")).state;
         this.connection.save({ executionMode: target, transition: null });
         this.connection.clearSecret("transferBundle");
+        this.syncTelegram();
         const state = this._decorate(target === "server" ? this.remoteState : this.host.engine.snapshot());
         this.onEvent({ type: "execution", payload: this.execution(), state });
         return { ok: true, execution: this.execution(), state };
@@ -169,6 +182,7 @@ class ExecutionRouter {
               this.mode = source;
               this.connection.save({ executionMode: source, transition: null });
               this.connection.clearSecret("transferBundle");
+              this.syncTelegram();
               return { ok: false, reason: err.code, execution: this.execution() };
             }
           } catch { /* uncertain ownership stays locked */ }
@@ -212,7 +226,10 @@ class ExecutionRouter {
   }
 
   dispatch(method, args = []) { return this._serial(() => this.call(method, args)); }
-  dispose() { clearInterval(this.timer); this.host.dispose(); }
+  dispose() {
+    clearInterval(this.timer);
+    this.host.dispose();
+  }
 }
 
 module.exports = { ExecutionRouter };

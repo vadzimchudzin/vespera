@@ -1,4 +1,14 @@
-# Settings and stake limits — 0.19.0
+# Settings and stake limits — 0.21.0
+
+## Navigation
+
+The form has six task-oriented sections: Strategy, Stakes & risk, Execution,
+Polymarket, Telegram and Interface. Navigation preserves the mounted inputs;
+hidden sections do not discard drafts. Credentials and service actions have
+their own controls, separate from trading settings. The risk plan belongs
+next to sizing and limits, not server credentials or visual preferences.
+
+See [Telegram](TELEGRAM.md) for access requests and administrator onboarding.
 
 ## Sizing modes
 

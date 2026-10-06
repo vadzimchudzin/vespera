@@ -123,7 +123,12 @@ class MarketData {
     this.refreshMs = clampRefreshMs(ms);
   }
 
-  async configure({ symbol, timeframe, refreshMs } = {}) {
+  async configure({ symbol, timeframe, refreshMs, emitHistory = true } = {}) {
+    const previous = {
+      symbol: this.symbol, timeframe: this.timeframe, refreshMs: this.refreshMs,
+      bars: this.bars, forming: this.forming,
+      closedBars: new Map(this._wsClosedBars), signalledBars: new Set(this._wsSignalledBars),
+    };
     if (refreshMs != null) this.setRefreshMs(refreshMs);
     const nextSymbol = symbol || this.symbol;
     const nextTf = timeframe || this.timeframe;
@@ -139,7 +144,18 @@ class MarketData {
     this.stop({ keepWanted: keep });
     const generation = this._lifecycleGeneration;
     try {
-      await this.loadHistory(HISTORY_BARS);
+      await this.loadHistory(HISTORY_BARS, { emitHistory });
+    } catch (error) {
+      if (generation === this._lifecycleGeneration) {
+        this.symbol = previous.symbol;
+        this.timeframe = previous.timeframe;
+        this.refreshMs = previous.refreshMs;
+        this.bars = previous.bars;
+        this.forming = previous.forming;
+        this._wsClosedBars = previous.closedBars;
+        this._wsSignalledBars = previous.signalledBars;
+      }
+      throw error;
     } finally {
       if (generation === this._lifecycleGeneration && keep) this.start();
     }

@@ -36,6 +36,22 @@ class FakeWebSocket extends EventEmitter {
 }
 
 async function run() {
+  {
+    const md = market(async () => { throw new Error("offline"); });
+    md.bars = [{ openTs: 0, close: 12 }];
+    md.forming = { openTs: interval, close: 13 };
+    md._wsClosedBars.set(0, md.bars[0]);
+    md._wsSignalledBars.add(0);
+    await assert.rejects(md.configure({ symbol: "ETHUSDT", timeframe: "5m", refreshMs: 2000 }), /offline/);
+    assert.strictEqual(md.symbol, "BTCUSDT");
+    assert.strictEqual(md.timeframe, "15m");
+    assert.strictEqual(md.refreshMs, 100);
+    assert.strictEqual(md.bars[0].close, 12);
+    assert.strictEqual(md.forming.close, 13);
+    assert.strictEqual(md._wsClosedBars.get(0).close, 12);
+    assert.ok(md._wsSignalledBars.has(0));
+    md.stop();
+  }
   // A REST response that finishes after stop cannot repopulate cleared state.
   {
     const pending = deferred();

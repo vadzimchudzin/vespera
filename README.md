@@ -2,7 +2,7 @@
 
 Glass desktop terminal for BTC 15m Polymarket Up/Down.
 
-**v0.20.0.** SMA/EMA 200/20 on a **closed** candle `S`, bet on **S+1**. Arrow sits on the entry candle. Auto prices the live Polymarket round and sends **CLOB V2** signed orders once the wallet, a signing key and the derived CLOB keys are in the API panel.
+**v0.21.0.** SMA/EMA 200/20 on a **closed** candle `S`, bet on **S+1**. Arrow sits on the entry candle. Auto prices the live Polymarket round and sends **CLOB V2** signed orders once the wallet, a signing key and the derived CLOB keys are in the API panel.
 
 **Для следующих агентов:** [подробный отчёт и передача проекта](#отчёт-и-передача-проекта--2026-10-06) · [ROADMAP](ROADMAP.md) · [правила Zero Mode](docs/ZERO_MODE.md). Публикация релиза не означает слияние PR в `main`; перед продолжением сверяйте GitHub.
 
@@ -27,6 +27,16 @@ Repo: private [`VadimChudin/vespera`](https://github.com/VadimChudin/vespera)
 
 ## Modes
 
+**Settings are grouped by task:** Strategy, Stakes & risk, Execution, Polymarket,
+Telegram and Interface. Switching sections preserves the form controls and drafts.
+Trading locks and the common validator still apply; organizing the UI does not
+reset a series or enable real-money trading.
+
+**Telegram control and access:** configure the bot in Settings → Telegram and
+pair the root administrator with a single-use code. Other private-chat users request
+access; only the root administrator may approve, deny or revoke it. Telegram shares
+the existing engine and risk rules. See [Telegram onboarding and limitations](docs/TELEGRAM.md).
+
 | Mode | Name in UI | Orders |
 |---|---|---|
 | Paper | Paper / Пейпер | Virtual Up/Down fills |
@@ -38,7 +48,7 @@ Repo: private [`VadimChudin/vespera`](https://github.com/VadimChudin/vespera)
 
 **Connection recovery.** Temporary venue outages keep health checks running and resume the previously started session once reachability and the trading-region check recover. Manual Stop, risk limits and unknown order outcomes never auto-resume. Critical trade state is checkpointed separately from rotating logs. See [stability and recovery](docs/STABILITY.md) for diagnostics and unresolved-order handling.
 
-**Zero Mode.** Settings → Execution connects to a separately installed authenticated server. Turning Zero Mode on transfers a stopped, position-free book to that server; the desktop becomes a UI client. Closing or restarting the desktop never stops or duplicates server execution. Turning it off requires the server to confirm release. Lost handoff responses stay locked and can be retried with the same durable request. The server uses direct venue connections and ignores trading-proxy settings; the desktop keeps its own optional proxy. Server deployment/TLS must be configured separately; Telegram is not included yet. See [Zero Mode](docs/ZERO_MODE.md) and [deployment](deploy/README.md).
+**Zero Mode.** Settings → Execution connects to a separately installed authenticated server. Turning Zero Mode on transfers a stopped, position-free book to that server; the desktop becomes a UI client. Closing or restarting the desktop never stops or duplicates server execution. Turning it off requires the server to confirm release. Lost handoff responses stay locked and can be retried with the same durable request. The server uses direct venue connections and ignores trading-proxy settings; the desktop keeps its own optional proxy. Server deployment/TLS and the server's Telegram token must be configured separately. See [Zero Mode](docs/ZERO_MODE.md) and [deployment](deploy/README.md).
 
 **Settings and risk.** The window, engine and persistence check settings against the same rules. Fixed mode derives its base and step count from the ladder. Trading settings are locked during an active position or order; stake sizing is also locked during a losing series. Save no longer silently resets a halted series. Use the explicit New series action while stopped and without a position; it does not erase daily P&L. See [settings and stake limits](docs/SETTINGS.md).
 
@@ -117,6 +127,12 @@ See `docs/TZ_Predic_MA200_MA20.md`.
 ---
 
 ## Отчёт и передача проекта — 2026-10-06
+
+**Дополнение 0.21.0:** Telegram-пульт с запросами доступа и админкой,
+а также группировка настроек добавлены после приведённого ниже отчёта о 0.20.0.
+Правила подключения и ограничения — [TELEGRAM](docs/TELEGRAM.md).
+Исторические статусы PR и результаты проверок ниже относятся к моменту
+передачи 0.20.0, а не являются текущим подтверждением CI или live-работы.
 
 ### 1. Краткий итог и статус публикации
 

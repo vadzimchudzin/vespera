@@ -62,6 +62,31 @@ const { toCsv, dailyBreakdown } = require("./stats");
 
 // ── renderer sanity ──────────────────────────────────────────────────────────
 {
+  const source = fs.readFileSync(path.join(__dirname, "../renderer/app.js"), "utf8");
+  const start = source.indexOf("  function restoreSettingsDraft(");
+  const end = source.indexOf("\n  function ", start + 1);
+  assert.ok(start >= 0 && end > start);
+  const buttons = ["double", "fixed", "recover"].map((sizing) => {
+    const button = { dataset: { sizing }, on: false };
+    button.classList = { toggle(_name, value) { button.on = value; } };
+    return button;
+  });
+  const context = {
+    $: (id) => id === "sizingSeg" ? {
+      querySelectorAll: () => buttons,
+      querySelector: () => buttons.find((button) => button.on),
+    } : null,
+    state: {}, updateSettingsLockUi() {},
+  };
+  vm.runInNewContext(source.slice(start, end), context);
+  context.restoreSettingsDraft({ querySelector: () => null, querySelectorAll: () => [] }, {
+    group: "stakes", controls: [], toggles: [], pair: null, error: {},
+    buttons: buttons.map((button) => ({ selector: "sizing", value: button.dataset.sizing, on: button.dataset.sizing === "fixed" })),
+  });
+  assert.deepStrictEqual(buttons.filter((button) => button.on).map((button) => button.dataset.sizing), ["fixed"], "language change preserves exactly one selected sizing mode");
+}
+
+{
   const dir = path.join(__dirname, "..", "renderer");
   for (const file of fs.readdirSync(dir).filter((f) => f.endsWith(".js"))) {
     new vm.Script(fs.readFileSync(path.join(dir, file), "utf8"), { filename: file }); // throws on a syntax error

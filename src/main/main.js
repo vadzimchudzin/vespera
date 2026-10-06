@@ -34,12 +34,18 @@ app.whenReady().then(() => {
     },
   });
   createWindow();
-  app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+  app.on("activate", () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+      router.syncTelegram();
+    }
+  });
 });
 app.on("second-instance", () => { if (win) { win.show(); win.focus(); } });
 app.on("window-all-closed", () => {
   // Disposing a UI client never sends Stop to the server.
   if (router) {
+    router.host.setTelegramContext?.({ active: false })?.catch(() => {});
     router.host.engine.stop();
     router.host.engine.market.stop?.();
   }
@@ -53,6 +59,8 @@ const ROUTES = {
   "engine:ping": "ping", "engine:connect": "connect", "engine:testOrder": "testOrder",
   "engine:deriveKeys": "deriveKeys", "engine:setStrategy": "setStrategy", "engine:resetPaper": "resetPaper",
   "settings:get": "getSettings", "settings:save": "saveSettings",
+  "telegram:status": "telegramStatus", "telegram:configure": "telegramConfigure",
+  "telegram:pair": "telegramPair", "telegram:test": "telegramTest", "telegram:disconnect": "telegramDisconnect",
   "deposit:assets": "depositAssets", "deposit:address": "depositAddress", "deposit:status": "depositStatus",
 };
 for (const [channel, method] of Object.entries(ROUTES)) {

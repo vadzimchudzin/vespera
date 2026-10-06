@@ -4,7 +4,8 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { Engine } = require("./engine");
-const { SettingsStore, DEFAULTS, SECRET_FIELDS } = require("./settingsStore");
+const { SettingsStore, DEFAULTS, SECRET_FIELDS, TelegramConfigStore } = require("./settingsStore");
+const { TelegramBot, validateToken } = require("./telegramBot");
 const { BridgeClient } = require("./brokers/bridge");
 const { setProxy } = require("./brokers/clobClient");
 const { toCsv } = require("./stats");
@@ -43,6 +44,7 @@ class ExecutionHost {
     this.direct = direct;
     this.onEvent = onEvent;
     this.engineOptions = engineOptions;
+    this.telegramStore = new TelegramConfigStore(path.join(userDataDir, "telegram-private"));
     this.pointer = path.join(userDataDir, "execution-state.json");
     let active = userDataDir;
     if (fs.existsSync(this.pointer)) {
@@ -53,6 +55,8 @@ class ExecutionHost {
     }
     this._open(active);
     this.bridge = new BridgeClient();
+    this.telegramContext = { active: false, command: null, serialize: null, epoch: null };
+    this.telegramBot = null;
   }
 
   _open(dir) {
@@ -66,6 +70,7 @@ class ExecutionHost {
       // Engine settings events contain the private settings object.
       const safe = evt.type === "settings" ? { ...evt, payload: null } : evt;
       this.onEvent(safe);
+      try { this.telegramBot?.enqueueEvent(evt); } catch { /* Telegram delivery is isolated from execution */ }
     });
   }
 
@@ -76,6 +81,7 @@ class ExecutionHost {
   }
 
   quiesce() {
+    this.setTelegramContext({ active: false, command: null });
     this.engine.stop();
     if (!this.idle()) throw fault("execution_busy");
     this.engine.market.stop?.();
@@ -83,9 +89,34 @@ class ExecutionHost {
   }
 
   dispose() {
+    this.setTelegramContext({ active: false, command: null });
     this.engine.stop();
     this.engine.market.stop?.();
     this.unsubscribe?.();
+  }
+
+  async setTelegramContext({ active = false, command = null, serialize = null, epoch = null } = {}) {
+    // The service owns its bot lifecycle, including during a refused handoff.
+    if (this.telegramRuntime) return;
+    this.telegramContext = { active: Boolean(active && typeof command === "function"), command: typeof command === "function" ? command : null,
+      serialize: typeof serialize === "function" ? serialize : null, epoch };
+    if (this.telegramContext.active && !this.telegramBot) {
+      this.telegramBot = new TelegramBot({
+        store: this.telegramStore,
+        host: this,
+        getOwner: () => ({ owner: "local", active: this.telegramContext.active, epoch: this.telegramContext.epoch }),
+        command: (method, args) => {
+          const context = this.telegramContext;
+          if (!context.active || typeof context.command !== "function") throw fault("telegram_owner_inactive");
+          return context.command(method, args);
+        },
+        serialize: (work) => this.telegramContext.serialize ? this.telegramContext.serialize(work) : work(),
+        transport: this.engineOptions.telegramTransport || null,
+      });
+    }
+    if (!this.telegramBot) return;
+    if (this.telegramContext.active) await this.telegramBot.sync();
+    else await this.telegramBot.stop();
   }
 
   exportBundle() {
@@ -239,8 +270,102 @@ class ExecutionHost {
       case "depositStatus":
         setProxy(this.direct ? "" : e.settings.proxyUrl);
         return { ok: true, transactions: await this.bridge.status(args[0]) };
+      case "telegramStatus": {
+        try {
+          const config = this.telegramStore.read();
+          const runtime = this.telegramBot?.status() || { enabled: Boolean(config.enabled), connected: false, lastError: config.lastError || null };
+          return { enabled: Boolean(config.enabled), connected: runtime.connected, botName: config.botUsername || null,
+            hasToken: Boolean(config.token), adminId: config.admins[0] || null, users: config.users.slice(),
+            pendingRequests: config.requests.length, failedDeliveries: runtime.deadLetterCount || 0, lastError: runtime.lastError };
+        } catch {
+          return { enabled: false, connected: false, botName: null, hasToken: false, adminId: null, users: [],
+            pendingRequests: 0, failedDeliveries: 0, lastError: "telegram_storage_unavailable" };
+        }
+      }
+      case "telegramConfigure": {
+        const input = args[0];
+        if (typeof input !== "object" || !input || Array.isArray(input) ||
+            (input.enabled !== undefined && typeof input.enabled !== "boolean")) return { ok: false, reason: "telegram_config_invalid" };
+        const old = this.telegramStore.read();
+        const suppliedToken = Object.prototype.hasOwnProperty.call(input, "token");
+        const token = suppliedToken ? input.token : old.token;
+        if (suppliedToken && !validateToken(token)) return { ok: false, reason: "telegram_token_invalid" };
+        const enabled = input.enabled === undefined ? old.enabled : input.enabled;
+        if (enabled && !token) return { ok: false, reason: "telegram_token_required" };
+        let identity;
+        if (suppliedToken) {
+          try { identity = await TelegramBot.testToken(token, this.engineOptions.telegramTransport || null); }
+          catch (error) { return { ok: false, reason: error.code || "telegram_unavailable" }; }
+        }
+        const tokenChanged = Boolean(old.token && token !== old.token);
+        if (tokenChanged && this.telegramBot) await this.telegramBot.stop();
+        this.telegramStore.update((config) => {
+          if (config.token !== token) config.lastUpdateId = null;
+          if (tokenChanged) {
+            config.admins = [];
+            config.users = [];
+            config.requests = [];
+            config.pairing = null;
+            config.confirmations = [];
+            config.outbox = [];
+            config.deadLetters = [];
+            config.lastError = null;
+          }
+          config.token = token;
+          config.enabled = enabled;
+          if (identity) config.botUsername = identity.username;
+        });
+        await this._syncTelegram();
+        return { ok: true, enabled, botName: this.telegramStore.read().botUsername || null };
+      }
+      case "telegramPair": {
+        let code = null;
+        let expiresAt = null;
+        this.telegramStore.update((config) => {
+          if (!config.enabled || !config.token || config.admins.length) return;
+          const crypto = require("crypto");
+          code = crypto.randomBytes(6).toString("hex").toUpperCase();
+          expiresAt = Date.now() + 10 * 60_000;
+          config.pairing = { hash: crypto.createHash("sha256").update(code).digest("hex"), expiresAt };
+        });
+        if (code) return { ok: true, code, expiresAt };
+        const config = this.telegramStore.read();
+        return { ok: false, reason: !config.enabled || !config.token ? "telegram_not_enabled" : "telegram_root_already_paired" };
+      }
+      case "telegramTest": {
+        const config = this.telegramStore.read();
+        if (!config.enabled || !config.token) return { ok: false, reason: "telegram_not_enabled" };
+        if (!config.admins[0]) return { ok: false, reason: "telegram_admin_not_paired" };
+        try {
+          const identity = await TelegramBot.testMessage(config.token, config.admins[0], this.engineOptions.telegramTransport || null);
+          return { ok: true, botName: identity.username };
+        } catch (error) { return { ok: false, reason: error.code || "telegram_unavailable" }; }
+      }
+      case "telegramDisconnect": {
+        if (this.telegramBot) await this.telegramBot.stop();
+        this.telegramStore.update((config) => {
+          config.token = "";
+          config.enabled = false;
+          config.botUsername = "";
+          config.admins = [];
+          config.users = [];
+          config.requests = [];
+          config.pairing = null;
+          config.confirmations = [];
+          config.outbox = [];
+          config.deadLetters = [];
+          config.lastUpdateId = null;
+          config.lastError = null;
+        });
+        return { ok: true, disconnected: true };
+      }
       default: throw fault("unknown_method");
     }
+  }
+
+  async _syncTelegram() {
+    if (!this.telegramContext.active || !this.telegramBot) return;
+    await this.telegramBot.sync();
   }
 }
 

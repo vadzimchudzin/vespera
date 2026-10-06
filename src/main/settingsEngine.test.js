@@ -28,6 +28,16 @@ const signal = { signal: "UP", reason: "test" };
 async function run() {
   {
     const e = make();
+    const previous = { ...e.settings };
+    const risk = e.risk.snapshot();
+    e.market.configure = async () => { throw new Error("history_unavailable"); };
+    await assert.rejects(e.applySettings({ symbol: "ETHUSDT", baseUsd: "9.00", theme: "glass-blue", notificationsEnabled: false }), /history_unavailable/);
+    assert.deepStrictEqual(e.settings, previous, "failed market change rejects all settings");
+    assert.deepStrictEqual(e.risk.snapshot(), risk, "failed market change preserves the stake plan");
+    assert.strictEqual(e.notificationsEnabled, true);
+  }
+  {
+    const e = make();
     await e.applySettings({ sizingMode: "fixed", fixedStakes: "5,10,20" });
     assert.deepStrictEqual(e.snapshot().settings.fixedStakes, [5, 10, 20]);
     assert.strictEqual(e.risk.baseUsd.toFixed(2), "5.00");

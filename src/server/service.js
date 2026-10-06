@@ -5,6 +5,8 @@ const fs = require("fs");
 const http = require("http");
 const path = require("path");
 const { SettingsStore } = require("../main/settingsStore");
+const { TelegramConfigStore } = require("../main/settingsStore");
+const { TelegramBot } = require("../main/telegramBot");
 
 const PROTOCOL = 1;
 const MAX_BODY = 1024 * 1024;
@@ -14,8 +16,9 @@ const METHODS = new Set([
   "snapshot", "warmChart", "start", "stop", "setMode", "confirmLot", "ping", "connect", "testOrder",
   "deriveKeys", "setStrategy", "resetPaper", "getSettings", "saveSettings", "exportCsv", "depositAssets",
   "depositAddress", "depositStatus",
+  "telegramStatus", "telegramConfigure", "telegramPair", "telegramTest", "telegramDisconnect",
 ]);
-const SECRET_KEYS = /^(api.?key|api.?secret|api.?passphrase|private.?key|proxy.?url|server.?token|token|authorization|credentials|bundle)$/i;
+const SECRET_KEYS = /^(api.?key|api.?secret|api.?passphrase|private.?key|proxy.?url|server.?token|telegram.?token|token|authorization|credentials|bundle)$/i;
 
 class ServiceError extends Error {
   constructor(code, status = 400) {
@@ -103,7 +106,7 @@ function clean(value, depth = 0, redactions = []) {
   return result;
 }
 
-function createService({ userDataDir, token, host, hostFactory, now = Date.now } = {}) {
+function createService({ userDataDir, token, host, hostFactory, now = Date.now, telegramTransport = null } = {}) {
   if (!userDataDir) throw new TypeError("userDataDir is required");
   if (typeof token !== "string" || Buffer.byteLength(token) < 32 || /\s/.test(token)) throw new TypeError("token must contain at least 32 bytes and no whitespace");
   privateDir(userDataDir);
@@ -111,6 +114,7 @@ function createService({ userDataDir, token, host, hostFactory, now = Date.now }
   const ledgerDir = path.join(userDataDir, "request-ledger");
   const legacyLedgerFile = path.join(userDataDir, "request-ledger.json");
   const releaseStore = new SettingsStore(path.join(userDataDir, "handoff-private"));
+  const telegramStore = new TelegramConfigStore(path.join(userDataDir, "telegram-private"));
   let releaseLock = acquireLock(userDataDir);
   let owner;
   let legacyLedger = [];
@@ -197,11 +201,16 @@ function createService({ userDataDir, token, host, hostFactory, now = Date.now }
       const value = settings[key];
       if (typeof value === "string" && value && !redactions.includes(value)) redactions.push(value);
     }
+    try {
+      const telegramToken = telegramStore.read().token;
+      if (telegramToken && !redactions.includes(telegramToken)) redactions.push(telegramToken);
+    } catch { /* corrupted Telegram storage must not expose data or stop execution */ }
   };
   const eventRows = [];
   let eventCursor = 0;
   let queue = Promise.resolve();
   let closing = false;
+  let telegramBot = null;
   const serialize = (work) => {
     const result = queue.then(work, work);
     queue = result.catch(() => {});
@@ -221,6 +230,9 @@ function createService({ userDataDir, token, host, hostFactory, now = Date.now }
     eventRows.push(safe);
     if (eventRows.length > MAX_EVENTS) eventRows.splice(0, eventRows.length - MAX_EVENTS);
     const state = event.state;
+    try {
+      if (activeHost?.telegramBot !== telegramBot) telegramBot?.enqueueEvent(event);
+    } catch { /* Telegram delivery is isolated from Engine events */ }
     const status = typeof event.payload === "string" ? event.payload : state && state.status;
     const venueDown = status === "venue_down" || (status === "paused" && state && /^venue_down:/.test(state.pauseReason || ""));
     if (!closing && status && ["stopped", "halt", "paused", "daily_limit"].includes(status) && !venueDown && owner.desiredRunning) {
@@ -248,6 +260,31 @@ function createService({ userDataDir, token, host, hostFactory, now = Date.now }
     throw new TypeError("host is required");
   }
   refreshRedactions();
+  telegramBot = new TelegramBot({
+    store: telegramStore,
+    host: activeHost,
+    getOwner: () => owner,
+    serialize,
+    transport: telegramTransport,
+    now,
+  });
+  activeHost.telegramBot = telegramBot;
+  activeHost.telegramRuntime = telegramBot;
+  activeHost.setTelegramDesiredRunning = (desiredRunning) => {
+    owner.desiredRunning = Boolean(desiredRunning);
+    saveOwner();
+  };
+  telegramBot.sync().catch(() => {});
+  let desktopWasConnected = owner.owner === "server" && owner.lastSeenAt != null && now() - owner.lastSeenAt <= 30_000;
+  if (desktopWasConnected) telegramBot.notifyDesktop(true);
+  const desktopMonitor = setInterval(() => {
+    const connected = owner.owner === "server" && owner.lastSeenAt != null && now() - owner.lastSeenAt <= 30_000;
+    if (connected !== desktopWasConnected) {
+      desktopWasConnected = connected;
+      telegramBot.notifyDesktop(connected);
+    }
+  }, 1000);
+  desktopMonitor.unref?.();
 
   const currentRequest = (id) => lookupRequest(id);
   const beginRequest = (id, operation, deviceId, { fingerprint, resumeActivation = false } = {}) => {
@@ -371,8 +408,13 @@ function createService({ userDataDir, token, host, hostFactory, now = Date.now }
       if (url.pathname === "/v1/heartbeat") {
         const id = deviceId(body);
         if (!owner.deviceId || owner.deviceId !== id) return send(res, 200, { ok: true, connected: false });
+        const wasConnected = owner.owner === "server" && owner.lastSeenAt != null && now() - owner.lastSeenAt <= 30_000;
         owner.lastSeenAt = now();
         saveOwner();
+        if (!wasConnected && owner.owner === "server") {
+          desktopWasConnected = true;
+          telegramBot?.notifyDesktop(true);
+        }
         return send(res, 200, { ok: true, connected: owner.owner === "server" });
       }
       if (url.pathname === "/v1/register") return send(res, 200, await serialize(async () => {
@@ -398,6 +440,15 @@ function createService({ userDataDir, token, host, hostFactory, now = Date.now }
         const args = stripProxy(body.method, body.args || []);
         try {
           const result = await activeHost.call(body.method, args);
+          if (["telegramConfigure", "telegramDisconnect"].includes(body.method)) {
+            await telegramBot.sync();
+          }
+          let safeResult = result;
+          if (body.method === "telegramStatus" && result && typeof result === "object") {
+            const runtime = telegramBot.status();
+            safeResult = { ...result, enabled: runtime.enabled, connected: runtime.connected,
+              failedDeliveries: runtime.deadLetterCount, lastError: runtime.lastError };
+          }
           refreshRedactions();
           if (body.method === "start") {
             owner.desiredRunning = Boolean(result && result.ok);
@@ -407,7 +458,7 @@ function createService({ userDataDir, token, host, hostFactory, now = Date.now }
             saveOwner();
           }
           finishRequest(id);
-          return clean(result, 0, redactions);
+          return clean(safeResult, 0, redactions);
         } catch (error) {
           if (["invalid_settings", "settings_locked"].includes(error && error.code)) {
             finishRequest(id);
@@ -517,7 +568,9 @@ function createService({ userDataDir, token, host, hostFactory, now = Date.now }
 
   const close = async () => {
     closing = true;
+    clearInterval(desktopMonitor);
     if (server.listening) await new Promise((resolve) => server.close(resolve));
+    await telegramBot.stop();
     await queue;
     try {
       if (typeof activeHost.dispose === "function") await activeHost.dispose();

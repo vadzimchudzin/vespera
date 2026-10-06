@@ -454,6 +454,13 @@ class Engine {
       delete patch.timeframe;
     }
     const next = { ...this.settings, ...patch };
+    const symbol = next.symbol || this.settings.symbol || "BTCUSDT";
+    const timeframe = next.timeframe || this.settings.timeframe || "15m";
+    const marketChanged = symbol !== (this.settings.symbol || "BTCUSDT") || timeframe !== (this.settings.timeframe || "15m");
+    // Load before mutating risk or credentials; failed market changes reject the whole patch.
+    if (marketChanged && typeof this.market.configure === "function") {
+      await this.market.configure({ symbol, timeframe, refreshMs: next.refreshMs, emitHistory: false });
+    }
     if (patch.refreshMs != null) {
       next.refreshMs = clampRefreshMs(patch.refreshMs);
       if (typeof this.market.setRefreshMs === "function") {
@@ -532,9 +539,6 @@ class Engine {
       next.baseUsd = Decimal(patch.baseUsd).toFixed(2);
       this.risk.baseUsd = Decimal(next.baseUsd);
     }
-    const symbol = next.symbol || this.settings.symbol || "BTCUSDT";
-    const timeframe = next.timeframe || this.settings.timeframe || "15m";
-    const marketChanged = symbol !== (this.settings.symbol || "BTCUSDT") || timeframe !== (this.settings.timeframe || "15m");
     this.settings = next;
     if (typeof this.live.configure === "function") {
       this.live.configure({
@@ -550,12 +554,6 @@ class Engine {
       });
     }
     if (marketChanged && typeof this.market.configure === "function") {
-      this.tickSize = this._tickFor(symbol);
-      await this.market.configure({
-        symbol,
-        timeframe,
-        refreshMs: next.refreshMs,
-      });
       this.tickSize = this._tickFor(symbol);
       this.markers = [];
       this.lastEval = null;

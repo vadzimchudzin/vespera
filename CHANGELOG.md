@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.21.0 — 2026-10-06
+
+- **Telegram control.** Configure a bot token in Settings, pair the root administrator with an expiring one-time code, and approve or revoke private-chat access requests. Status, balance, strategy, mode, restricted settings, Start/Stop and a confirmed New series use the existing executor, not a separate trading engine. Real-money Start confirms the risk plan once; strategy bets remain automatic.
+- **Delivery and safety.** Encrypted executor-specific token/access state, durable update deduplication and a notification outbox with retry/backoff. Access revocation invalidates confirmations. Telegram cannot clear unknown orders or take over a disconnected executor. In Zero Mode the server bot does not need the desktop window.
+- **Settings organization.** Strategy, Stakes & risk, Execution, Polymarket, Telegram and Interface sections replace the mixed long form. Section-specific saves, independent service controls and preserved drafts keep trading changes separate from connection and visual preferences.
+- **Market-change regression.** If loading a new market fails, the old market/history and the entire settings/risk patch remain unchanged, rather than leaving memory partially updated after a rejected save.
+- Added Telegram transport/access/replay tests and local/server integration checks. Production bot onboarding, final Polymarket settlement reconciliation, deployment and a long-running soak remain separate work. No real-money orders were used for verification.
+
 ## 0.20.0 — 2026-10-06
 
 - **Headless server.** A Node service runs the existing engine without Electron, with bearer authentication, one process per data directory, serialized commands and durable request tombstones. Server execution always uses direct venue connections, not the desktop trading proxy.

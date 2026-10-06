@@ -92,10 +92,15 @@ Keep the old server stopped. Never reset owner state to recover an unknown bet.
   takeover or automatic mid-round migration.
 - Recent journal history and series checkpoint transfer; older archives remain
   on their original machine. Payloads above 16 MiB fail closed.
-- Telegram commands, trade reports, external uptime monitoring, automatic
+- External uptime monitoring, automatic
   unknown-order reconciliation, hosted deployment and a production soak are
   subsequent work, not claimed here.
 
-`npm test` covers 20 test files, including HTTP authentication/ownership,
+Telegram control and trade reports were added in 0.21.0; see
+[Telegram onboarding](TELEGRAM.md). Its credentials are executor-specific,
+not a portable trading-book credential. Configure the bot on the intended
+executor; do not run the same token on two independently configured installations.
+
+`npm test` covers HTTP authentication/ownership,
 request replay, real service startup, proxy stripping, encrypted state,
 closing/restarting a UI, active-position refusal and lost-response recovery.
