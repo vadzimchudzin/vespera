@@ -17,7 +17,7 @@ const { normalizeSettings } = require("../shared/settings");
  * re-encrypted on the next save.
  */
 
-const SECRET_FIELDS = ["apiKey", "apiSecret", "apiPassphrase", "privateKey"];
+const SECRET_FIELDS = ["apiKey", "apiSecret", "apiPassphrase", "privateKey", "serverToken", "transferBundle"];
 const ENC_PREFIX = "enc:v1:";
 const LOCAL_PREFIX = "encl:v1:";
 

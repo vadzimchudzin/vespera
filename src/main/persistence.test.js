@@ -153,10 +153,12 @@ async function run() {
       apiSecret: "SECRET-1",
       apiPassphrase: "PASS-1",
       privateKey: "PRIV-1",
+      serverToken: "SERVER-TOKEN-1",
+      transferBundle: "TRANSFER-PRIVATE-1",
       walletAddress: "0xabc",
     });
     const raw = fs.readFileSync(path.join(dir, "settings.json"), "utf8");
-    for (const secret of ["KEY-1", "SECRET-1", "PASS-1", "PRIV-1"]) {
+    for (const secret of ["KEY-1", "SECRET-1", "PASS-1", "PRIV-1", "SERVER-TOKEN-1", "TRANSFER-PRIVATE-1"]) {
       assert(!raw.includes(secret), `${secret} must not appear in settings.json`);
     }
     for (const key of SECRET_FIELDS) {
@@ -167,6 +169,7 @@ async function run() {
     assert(reopened.value.apiSecret === "SECRET-1", "apiSecret decrypts back");
     assert(reopened.value.apiPassphrase === "PASS-1", "apiPassphrase decrypts back");
     assert(reopened.value.privateKey === "PRIV-1", "privateKey decrypts back");
+    assert(reopened.value.serverToken === "SERVER-TOKEN-1", "server access token decrypts back");
 
     // pressing OK again with empty fields must not erase anything
     reopened.save({ apiKey: "", apiSecret: "", apiPassphrase: "", privateKey: "", walletAddress: "0xabc" });

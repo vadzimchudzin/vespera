@@ -89,6 +89,7 @@ const { toCsv, dailyBreakdown } = require("./stats");
   const context = {
     $: (id) => fields[id] || null,
     canStartNewSeries: () => false,
+    executionUnavailable: () => false,
     snap: { settings: { sizingMode: "fixed", baseUsd: "5.00", maxSteps: 3 } },
   };
   vm.runInNewContext(`${app.slice(start, end)}\nupdateSettingsLockUi(snap);`, context);
