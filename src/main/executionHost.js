@@ -10,6 +10,7 @@ const { BridgeClient } = require("./brokers/bridge");
 const { setProxy } = require("./brokers/clobClient");
 const { toCsv } = require("./stats");
 const { SetupStore, settingsFromEngine, validateSetupSettings } = require("./setupStore");
+const { ResearchRunner } = require("./researchRunner");
 const { syncDirectory } = require("./secretStore");
 const QRCode = require("qrcode");
 
@@ -56,6 +57,13 @@ class ExecutionHost {
       if (!fs.existsSync(active)) throw fault("missing_execution_state");
     }
     this._open(active);
+    this.research = new ResearchRunner({
+      root: path.join(userDataDir, "research"),
+      setupStore: this.setupStore,
+      engine: this.engine,
+      onEvent: (event) => this.onEvent(event),
+      marketFactory: engineOptions.researchMarketFactory,
+    });
     this.bridge = new BridgeClient();
     this.telegramContext = { active: false, command: null, serialize: null, epoch: null };
     this.telegramBot = null;
@@ -73,6 +81,10 @@ class ExecutionHost {
     }
     this.engine = new Engine({ userDataDir: dir, settings: this.store.value, ...this.engineOptions });
     this.engine.setupStore = this.setupStore;
+    if (this.research) {
+      this.research.engine = this.engine;
+      this.research.setupStore = this.setupStore;
+    }
     this.unsubscribe = this.engine.on((evt) => {
       // Engine settings events contain the private settings object.
       const safe = evt.type === "settings" ? { ...evt, payload: null } : evt;
@@ -107,12 +119,14 @@ class ExecutionHost {
   idle() {
     const e = this.engine;
     return !this._activationRecoveryPending && !e.running && !e._opening && !e._starting && !e.paper.openBet && !e.liveBet &&
-      !e.journal.pendingOrder() && !e._testPositionActive();
+      !e.journal.pendingOrder() && !e._testPositionActive() && this.research.idle();
   }
 
   quiesce() {
+    if (!this.research.idle()) throw fault("execution_busy");
     this.setTelegramContext({ active: false, command: null });
     this.engine.stop();
+    this.research.setResearchContext({ active: false });
     if (!this.idle()) throw fault("execution_busy");
     this.engine.market.stop?.();
     return true;
@@ -120,8 +134,13 @@ class ExecutionHost {
 
   dispose() {
     this.setTelegramContext({ active: false, command: null });
+    this.research.dispose();
     this.engine.dispose();
     this.unsubscribe?.();
+  }
+
+  setResearchContext(context = {}) {
+    return this.research.setResearchContext(context);
   }
 
   async setTelegramContext({ active = false, command = null, serialize = null, epoch = null } = {}) {
@@ -228,6 +247,12 @@ class ExecutionHost {
     }
     switch (method) {
       case "snapshot": return e.snapshot();
+      case "researchStatus": return this.research.researchStatus();
+      case "runBacktest": return this.research.runBacktest(args[0] || {});
+      case "startPaperRuns": return this.research.startPaperRuns(args[0] || {});
+      case "stopPaperRun": return this.research.stopPaperRun(args[0] || {});
+      case "researchReport": return this.research.researchReport(args[0] || {});
+      case "exportResearch": return this.research.exportResearch(args[0] || {});
       case "warmChart": return e.warmChart();
       case "start": return this._activationRecoveryPending
         ? { ok: false, reason: "setup_activation_recovery_pending", state: e.snapshot() }

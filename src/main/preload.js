@@ -3,6 +3,12 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("vespera", {
+  researchStatus: () => ipcRenderer.invoke("research:status"),
+  runBacktest: (input) => ipcRenderer.invoke("research:backtest", input),
+  startPaperRuns: (input) => ipcRenderer.invoke("research:start", input),
+  stopPaperRun: (input) => ipcRenderer.invoke("research:stop", input),
+  researchReport: (input) => ipcRenderer.invoke("research:report", input),
+  exportResearch: (input) => ipcRenderer.invoke("research:export", input),
   listSetups: () => ipcRenderer.invoke("setups:list"),
   saveSetup: (input) => ipcRenderer.invoke("setups:save", input),
   applySetup: (input) => ipcRenderer.invoke("setups:apply", input),

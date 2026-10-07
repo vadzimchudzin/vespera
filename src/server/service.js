@@ -13,6 +13,7 @@ const MAX_BODY = 1024 * 1024;
 const MAX_BUNDLE = 16 * 1024 * 1024;
 const MAX_EVENTS = 1000;
 const METHODS = new Set([
+  "researchStatus", "runBacktest", "startPaperRuns", "stopPaperRun", "researchReport", "exportResearch",
   "listSetups", "saveSetup", "applySetup", "copySetup", "importSetup", "exportSetup",
   "inspectPendingOrder", "resolvePendingOrder", "reconcileFinalSettlement",
   "snapshot", "warmChart", "start", "stop", "setMode", "confirmLot", "ping", "connect", "testOrder",
@@ -164,6 +165,7 @@ function createService({ userDataDir, token, host, hostFactory, now = Date.now, 
   const commitOwner = (next) => {
     atomicJson(ownershipFile, next);
     owner = next;
+    Promise.resolve(activeHost?.setResearchContext?.({ active: next.owner === "server" })).catch(() => {});
   };
   const requestFile = (id) => path.join(ledgerDir, `${crypto.createHash("sha256").update(id).digest("hex")}.json`);
   const lookupRequest = (id) => {
@@ -556,6 +558,7 @@ function createService({ userDataDir, token, host, hostFactory, now = Date.now, 
   server.requestTimeout = 30_000;
   server.headersTimeout = 10_000;
   server.on("listening", () => {
+    Promise.resolve(activeHost.setResearchContext?.({ active: owner.owner === "server" })).catch(() => {});
     if (owner.owner !== "server") return;
     warmServerChart();
     if (!owner.desiredRunning) return;

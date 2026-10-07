@@ -30,6 +30,11 @@ class ExecutionRouter {
     this.timer.unref?.();
     if (this.configured()) this.poll().catch(() => {});
     this.syncTelegram();
+    this.syncResearch();
+  }
+
+  syncResearch() {
+    return Promise.resolve(this.host.setResearchContext?.({ active: this.mode === "local" && !this.connection.value.transition })).catch(() => {});
   }
 
   syncTelegram() {
@@ -170,6 +175,7 @@ class ExecutionRouter {
         this.connection.save({ executionMode: target, transition: null });
         this.connection.clearSecret("transferBundle");
         this.syncTelegram();
+        this.syncResearch();
         const state = this._decorate(target === "server" ? this.remoteState : this.host.engine.snapshot());
         this.onEvent({ type: "execution", payload: this.execution(), state });
         return { ok: true, execution: this.execution(), state };
@@ -183,6 +189,7 @@ class ExecutionRouter {
               this.connection.save({ executionMode: source, transition: null });
               this.connection.clearSecret("transferBundle");
               this.syncTelegram();
+              this.syncResearch();
               return { ok: false, reason: err.code, execution: this.execution() };
             }
           } catch { /* uncertain ownership stays locked */ }

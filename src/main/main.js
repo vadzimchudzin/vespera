@@ -38,6 +38,7 @@ app.whenReady().then(() => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();
       router.syncTelegram();
+      router.syncResearch();
     }
   });
 });
@@ -46,6 +47,7 @@ app.on("window-all-closed", () => {
   // Disposing a UI client never sends Stop to the server.
   if (router) {
     router.host.setTelegramContext?.({ active: false })?.catch(() => {});
+    Promise.resolve(router.host.setResearchContext?.({ active: false })).catch(() => {});
     router.host.engine.stop();
     router.host.engine.market.stop?.();
   }
@@ -54,6 +56,8 @@ app.on("window-all-closed", () => {
 app.on("before-quit", () => router?.dispose());
 
 const ROUTES = {
+  "research:status": "researchStatus", "research:backtest": "runBacktest",
+  "research:start": "startPaperRuns", "research:stop": "stopPaperRun", "research:report": "researchReport",
   "setups:list": "listSetups", "setups:save": "saveSetup",
   "setups:apply": "applySetup", "setups:copy": "copySetup",
   "risk:inspectOrder": "inspectPendingOrder", "risk:resolveOrder": "resolvePendingOrder",
@@ -70,6 +74,14 @@ const ROUTES = {
 for (const [channel, method] of Object.entries(ROUTES)) {
   ipcMain.handle(channel, (_e, ...args) => router.dispatch(method, args));
 }
+ipcMain.handle("research:export", async (_e, input) => {
+  const result = await router.dispatch("exportResearch", [input || {}]);
+  if (!result?.ok || !result.count) return result;
+  const pick = await dialog.showSaveDialog(win, { defaultPath: path.join(app.getPath("documents"), "vespera-paper-research.csv"), filters: [{ name: "CSV", extensions: ["csv"] }] });
+  if (pick.canceled || !pick.filePath) return { ok: false, reason: "cancelled" };
+  fs.writeFileSync(pick.filePath, result.csv, { encoding: "utf8", mode: 0o600 });
+  return { ok: true, count: result.count };
+});
 ipcMain.handle("setups:import", async () => {
   const pick = await dialog.showOpenDialog(win, { properties: ["openFile"], filters: [{ name: "Vespera setup JSON", extensions: ["json"] }] });
   if (pick.canceled || !pick.filePaths[0]) return { ok: false, reason: "cancelled" };
