@@ -3,6 +3,12 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("vespera", {
+  listSetups: () => ipcRenderer.invoke("setups:list"),
+  saveSetup: (input) => ipcRenderer.invoke("setups:save", input),
+  applySetup: (input) => ipcRenderer.invoke("setups:apply", input),
+  copySetup: (input) => ipcRenderer.invoke("setups:copy", input),
+  importSetup: () => ipcRenderer.invoke("setups:import"),
+  exportSetup: (input) => ipcRenderer.invoke("setups:export", input),
   inspectPendingOrder: () => ipcRenderer.invoke("risk:inspectOrder"),
   resolvePendingOrder: (input) => ipcRenderer.invoke("risk:resolveOrder", input),
   reconcileFinalSettlement: () => ipcRenderer.invoke("risk:finalSettlement"),

@@ -285,7 +285,8 @@ async function payoutCase({ payout, side, settleClose, expectPnl, label }) {
   // ── timeframe guard ────────────────────────────────────────────────────────
 
   assert.ok(isSupportedTimeframe("5m") && isSupportedTimeframe("15m"));
-  assert.ok(!isSupportedTimeframe("1m") && !isSupportedTimeframe("1h"));
+  assert.ok(!isSupportedTimeframe("1m") && !isSupportedTimeframe("30m"));
+  assert.ok(isSupportedTimeframe("1h") && isSupportedTimeframe("4h"));
   const unsupported = await resolveUpDown(
     { eventBySlug: async () => assert.fail("must not call the network for 1m") },
     { symbol: "BTCUSDT", timeframe: "1m", tsMs: Date.now() }

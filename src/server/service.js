@@ -13,6 +13,7 @@ const MAX_BODY = 1024 * 1024;
 const MAX_BUNDLE = 16 * 1024 * 1024;
 const MAX_EVENTS = 1000;
 const METHODS = new Set([
+  "listSetups", "saveSetup", "applySetup", "copySetup", "importSetup", "exportSetup",
   "inspectPendingOrder", "resolvePendingOrder", "reconcileFinalSettlement",
   "snapshot", "warmChart", "start", "stop", "setMode", "confirmLot", "ping", "connect", "testOrder",
   "deriveKeys", "setStrategy", "resetPaper", "getSettings", "saveSettings", "exportCsv", "depositAssets",

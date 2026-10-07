@@ -54,6 +54,8 @@ app.on("window-all-closed", () => {
 app.on("before-quit", () => router?.dispose());
 
 const ROUTES = {
+  "setups:list": "listSetups", "setups:save": "saveSetup",
+  "setups:apply": "applySetup", "setups:copy": "copySetup",
   "risk:inspectOrder": "inspectPendingOrder", "risk:resolveOrder": "resolvePendingOrder",
   "risk:finalSettlement": "reconcileFinalSettlement",
   "engine:snapshot": "snapshot", "engine:warmChart": "warmChart", "engine:start": "start",
@@ -68,6 +70,34 @@ const ROUTES = {
 for (const [channel, method] of Object.entries(ROUTES)) {
   ipcMain.handle(channel, (_e, ...args) => router.dispatch(method, args));
 }
+ipcMain.handle("setups:import", async () => {
+  const pick = await dialog.showOpenDialog(win, { properties: ["openFile"], filters: [{ name: "Vespera setup JSON", extensions: ["json"] }] });
+  if (pick.canceled || !pick.filePaths[0]) return { ok: false, reason: "cancelled" };
+  const fd = fs.openSync(pick.filePaths[0], "r");
+  try {
+    const size = fs.fstatSync(fd).size;
+    if (size > 256 * 1024) return { ok: false, reason: "setup_import_too_large" };
+    const buffer = Buffer.alloc(256 * 1024 + 1);
+    let bytes = 0;
+    while (bytes < buffer.length) {
+      const count = fs.readSync(fd, buffer, bytes, buffer.length - bytes, null);
+      if (!count) break;
+      bytes += count;
+    }
+    if (bytes > 256 * 1024) return { ok: false, reason: "setup_import_too_large" };
+    const json = buffer.subarray(0, bytes).toString("utf8");
+    return await router.dispatch("importSetup", [{ json }]);
+  } finally { fs.closeSync(fd); }
+});
+ipcMain.handle("setups:export", async (_e, input) => {
+  const result = await router.dispatch("exportSetup", [input || {}]);
+  if (!result?.ok) return result;
+  const safeName = String(result.name || "vespera-setup").replace(/[^\p{L}\p{N}._-]+/gu, "-").slice(0, 80);
+  const pick = await dialog.showSaveDialog(win, { defaultPath: path.join(app.getPath("documents"), `${safeName}.json`), filters: [{ name: "Vespera setup JSON", extensions: ["json"] }] });
+  if (pick.canceled || !pick.filePath) return { ok: false, reason: "cancelled" };
+  fs.writeFileSync(pick.filePath, result.json, { encoding: "utf8", mode: 0o600 });
+  return { ok: true };
+});
 ipcMain.handle("execution:get", async () => { await router.poll(); return router.execution(); });
 ipcMain.handle("execution:configure", async (_e, patch) => {
   try { return await router.configure(patch); }
