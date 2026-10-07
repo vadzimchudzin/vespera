@@ -2,7 +2,7 @@
 
 Glass desktop terminal for BTC 15m Polymarket Up/Down.
 
-**v0.24.0.** SMA/EMA 200/20 on a **closed** candle `S`, bet on **S+1**. Arrow sits on the entry candle. Auto prices the live Polymarket round and sends **CLOB V2** signed orders once the wallet, a signing key and the derived CLOB keys are in the API panel.
+**v0.25.0 source.** SMA/EMA 200/20 on a **closed** candle `S`, bet on **S+1**. Arrow sits on the entry candle. Auto prices the live Polymarket round and sends **CLOB V2** signed orders once the wallet, a signing key and the derived CLOB keys are in the API panel.
 
 **Для следующих агентов:** [подробный отчёт и передача проекта](#отчёт-и-передача-проекта--2026-10-06) · [ROADMAP](ROADMAP.md) · [правила Zero Mode](docs/ZERO_MODE.md). Публикация релиза не означает слияние PR в `main`; перед продолжением сверяйте GitHub.
 
@@ -23,6 +23,13 @@ external alerts and a 24–72-hour soak still require the real server.
 Repo: private [`VadimChudin/vespera`](https://github.com/VadimChudin/vespera)
 
 ## What it does
+
+**AI advisor.** Optional OpenRouter/local recommendations create new indicator
+setup candidates only after approval. The model cannot change sizing/risk limits,
+apply a setup, start real trading, obtain signing credentials or release safety
+locks. Requests have budget/time/token caps and structured-response validation;
+validate a candidate in the approximate Paper lab before considering it.
+See [AI configuration and limitations](docs/AI.md).
 
 **Research lab.** Backtest an exact saved setup and compare up to ten independent
 forward Paper books, sharing feeds by market/timeframe. Balance, series and results

@@ -232,7 +232,10 @@ class ExecutionRouter {
     return result?.settings ? this._decorate(result) : result;
   }
 
-  dispatch(method, args = []) { return this._serial(() => this.call(method, args)); }
+  dispatch(method, args = []) {
+    if (["aiModels", "aiRecommend", "aiLocalPull"].includes(method)) return this.call(method, args);
+    return this._serial(() => this.call(method, args));
+  }
   dispose() {
     clearInterval(this.timer);
     this.host.dispose();

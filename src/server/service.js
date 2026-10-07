@@ -13,6 +13,7 @@ const MAX_BODY = 1024 * 1024;
 const MAX_BUNDLE = 16 * 1024 * 1024;
 const MAX_EVENTS = 1000;
 const METHODS = new Set([
+  "aiStatus", "aiConfigure", "aiModels", "aiRecommend", "aiCreateSetup", "aiBacktest", "aiLocalPull",
   "researchStatus", "runBacktest", "startPaperRuns", "stopPaperRun", "researchReport", "exportResearch",
   "listSetups", "saveSetup", "applySetup", "copySetup", "importSetup", "exportSetup",
   "inspectPendingOrder", "resolvePendingOrder", "reconcileFinalSettlement",
@@ -439,7 +440,7 @@ function createService({ userDataDir, token, host, hostFactory, now = Date.now, 
         finishRequest(id);
         return { ok: true, owner: "local", deviceId: device, epoch: owner.epoch };
       }));
-      if (url.pathname === "/v1/command") return send(res, 200, await serialize(async () => {
+      if (url.pathname === "/v1/command") return send(res, 200, await (["aiModels", "aiRecommend", "aiLocalPull"].includes(body.method) ? (work) => work() : serialize)(async () => {
         const id = requestId(body);
         const device = deviceId(body);
         if (owner.deviceId !== device) throw new ServiceError("owner_device_mismatch", 409);

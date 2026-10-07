@@ -56,6 +56,8 @@ app.on("window-all-closed", () => {
 app.on("before-quit", () => router?.dispose());
 
 const ROUTES = {
+  "ai:status": "aiStatus", "ai:configure": "aiConfigure", "ai:models": "aiModels",
+  "ai:recommend": "aiRecommend", "ai:candidate": "aiCreateSetup", "ai:backtest": "aiBacktest", "ai:pull": "aiLocalPull",
   "research:status": "researchStatus", "research:backtest": "runBacktest",
   "research:start": "startPaperRuns", "research:stop": "stopPaperRun", "research:report": "researchReport",
   "setups:list": "listSetups", "setups:save": "saveSetup",

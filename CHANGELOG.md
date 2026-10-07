@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.25.0 — source changes, 2026-10-07
+
+- **Advisory AI:** optional OpenRouter and loopback local-model integration, disabled by default. A separate encrypted API key, request/day budgets, timeout/token caps, structured JSON validation and indicator-only patches keep recommendations away from account keys, sizing and execution controls.
+- **Candidate workflow:** review a proposal and explicitly create a new saved setup identity; no automatic application or Start. Backtest/Paper validation uses the research lab and retains the approximate-result warning.
+- **Local model:** optional curated pull through an existing local Ollama daemon with confirmation, hardware/size/license/digest metadata checks. A daemon digest is not independent model-blob verification; real model inference remains unverified without a runtime/key.
+- Model network IO is isolated from the trading command queue so a slow recommendation cannot block Stop. No profit improvement or production AI quality is claimed.
+
 ## 0.24.0 — 2026-10-07
 
 - **Research lab:** closed-candle historical replay using the same setup evaluator, Paper economics and risk rules; pinned versions and dataset fingerprints. Approximate Binance outcomes and a 0.50 entry assumption are disclosed, not presented as historical venue returns.

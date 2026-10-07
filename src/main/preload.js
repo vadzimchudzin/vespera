@@ -3,6 +3,13 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("vespera", {
+  aiStatus: () => ipcRenderer.invoke("ai:status"),
+  aiConfigure: (input) => ipcRenderer.invoke("ai:configure", input),
+  aiModels: () => ipcRenderer.invoke("ai:models"),
+  aiRecommend: (input) => ipcRenderer.invoke("ai:recommend", input),
+  aiCreateSetup: (input) => ipcRenderer.invoke("ai:candidate", input),
+  aiBacktest: (input) => ipcRenderer.invoke("ai:backtest", input),
+  aiLocalPull: (input) => ipcRenderer.invoke("ai:pull", input),
   researchStatus: () => ipcRenderer.invoke("research:status"),
   runBacktest: (input) => ipcRenderer.invoke("research:backtest", input),
   startPaperRuns: (input) => ipcRenderer.invoke("research:start", input),

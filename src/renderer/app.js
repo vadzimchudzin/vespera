@@ -51,6 +51,13 @@
     researchSortDirection: "desc",
     researchBusy: "",
     researchReport: null,
+    aiTimer: 0,
+    aiRequestId: 0,
+    aiPolling: false,
+    aiBusy: false,
+    aiRecommendationsKey: "",
+    aiLocalStatus: null,
+    aiDirtyFields: new Set(),
   };
   window.addEventListener("beforeunload", () => {
     clearInterval(state.researchTimer);
@@ -700,6 +707,9 @@
     clearInterval(state.researchTimer);
     state.researchTimer = 0;
     state.researchRequestId += 1;
+    clearInterval(state.aiTimer);
+    state.aiTimer = 0;
+    state.aiRequestId += 1;
     $("panel").hidden = true;
     state.setupRequestId += 1;
     $("backdrop").hidden = true;
@@ -730,6 +740,373 @@
     return Number.isFinite(number)
       ? new Intl.NumberFormat(state.locale, { style: "currency", currency: "USD" }).format(number)
       : "—";
+  }
+
+  function aiActionMessage(reply, fallback = t("aiFailed")) {
+    const reason = reply?.lastreason || reply?.reason || reply?.error;
+    if (typeof reason !== "string" || !reason) return fallback;
+    const localized = t(`aiError_${reason}`);
+    return localized === `aiError_${reason}` ? reason : localized;
+  }
+
+  function aiSetMessage(message, isError = false) {
+    const output = $("aiStatusMessage");
+    if (!output) return;
+    output.textContent = message || "";
+    output.classList.toggle("warn", Boolean(isError));
+  }
+
+  function aiSetBusy(busy) {
+    state.aiBusy = Boolean(busy);
+    const unavailable = state.aiBusy || Boolean(state.aiLocalStatus?.busy);
+    document.querySelectorAll(".ai-card input, .ai-card select").forEach((control) => {
+      control.disabled = unavailable;
+    });
+    document.querySelectorAll(".ai-actions button").forEach((button) => {
+      button.disabled = unavailable || button.dataset.aiUnavailable === "true";
+    });
+    ["aiSaveButton", "aiLoadModelsButton", "aiRequestButton"].forEach((id) => {
+      const button = $(id);
+      if (button) button.disabled = unavailable;
+    });
+    const pullButton = $("aiLocalPullButton");
+    if (pullButton) pullButton.disabled = unavailable || executionState()?.mode === "server" || state.aiLocalStatus?.localHardware?.eligible === false;
+    const status = $("aiBackendStatus");
+    if (status && state.aiLocalStatus?.busy) status.textContent = t("aiBusy");
+  }
+
+  function hydrateAiField(id, value, checkbox = false) {
+    const control = $(id);
+    if (!control || state.aiDirtyFields.has(id)) return;
+    if (checkbox) control.checked = value === true;
+    else control.value = value;
+  }
+
+  function formatAiHardware(info) {
+    if (!info) return t("aiLocalPullMissing");
+    const gib = 1024 ** 3;
+    const formatGiB = (bytes) => Number.isFinite(Number(bytes)) && Number(bytes) >= 0
+      ? `${(Number(bytes) / gib).toFixed(1)} GiB` : "—";
+    const diskBytes = Number(info.availableDiskBytes);
+    const disk = Number.isFinite(diskBytes) && diskBytes >= 1024 ** 4
+      ? t("aiDiskAtLeast") : formatGiB(info.availableDiskBytes);
+    return `${t("aiRam")}: ${formatGiB(info.memoryBytes)} · ${t("aiDiskReported")}: ${disk} · ${t("aiLocalNotConfirmed")}`;
+  }
+
+  function aiAppendField(parent, labelText, valueText, pre = false) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "ai-detail";
+    const label = document.createElement("strong");
+    label.textContent = labelText;
+    const value = document.createElement(pre ? "pre" : "p");
+    value.textContent = valueText || "—";
+    wrapper.append(label, value);
+    parent.appendChild(wrapper);
+  }
+
+  function renderAiRecommendations(recommendations) {
+    const host = $("aiRecommendations");
+    if (!host) return;
+    const rows = Array.isArray(recommendations) ? recommendations : [];
+    const key = JSON.stringify(rows);
+    if (key === state.aiRecommendationsKey) return;
+    state.aiRecommendationsKey = key;
+    host.replaceChildren();
+    if (!rows.length) {
+      const empty = document.createElement("p");
+      empty.className = "hint";
+      empty.textContent = t("aiNoRecommendations");
+      host.appendChild(empty);
+      return;
+    }
+    rows.forEach((recommendation) => {
+      const card = document.createElement("article");
+      card.className = "ai-recommendation";
+      const heading = document.createElement("div");
+      heading.className = "ai-recommendation-heading";
+      const title = document.createElement("strong");
+      title.textContent = `${t("aiRecommendation")} · ${recommendation.status || "—"}`;
+      const time = document.createElement("span");
+      const createdAt = recommendation.createdAt ? new Date(recommendation.createdAt) : null;
+      time.textContent = createdAt && Number.isFinite(createdAt.getTime()) ? createdAt.toLocaleString(state.locale) : "";
+      heading.append(title, time);
+      card.appendChild(heading);
+      const setupRef = recommendation.setupRef;
+      if (setupRef) aiAppendField(card, t("aiBasedOnVersion"), `${setupRef.id} · v${setupRef.version}`);
+      aiAppendField(card, t("aiExplanation"), recommendation.explanation);
+      const patch = recommendation.patch == null ? "—" : typeof recommendation.patch === "string"
+        ? recommendation.patch : JSON.stringify(recommendation.patch, null, 2);
+      aiAppendField(card, t("aiPatch"), String(patch).slice(0, 12000), true);
+      if (recommendation.error) aiAppendField(card, t("aiStatus"), String(recommendation.error));
+      const actions = document.createElement("div");
+      actions.className = "ai-actions";
+      const create = document.createElement("button");
+      create.className = "ghost";
+      create.type = "button";
+      create.textContent = t("aiCreateCandidate");
+      create.dataset.aiUnavailable = String(Boolean(recommendation.candidateSetup) || !recommendation.patch);
+      create.disabled = state.aiBusy || create.dataset.aiUnavailable === "true" || Boolean(state.aiLocalStatus?.busy);
+      create.addEventListener("click", () => createAiCandidate(recommendation));
+      actions.appendChild(create);
+      if (recommendation.candidateSetup) {
+        const backtest = document.createElement("button");
+        backtest.className = "ok";
+        backtest.type = "button";
+        backtest.textContent = t("aiBacktest");
+        backtest.dataset.aiUnavailable = "false";
+        backtest.disabled = state.aiBusy || Boolean(state.aiLocalStatus?.busy);
+        backtest.addEventListener("click", () => backtestAiCandidate(recommendation));
+        actions.appendChild(backtest);
+      }
+      card.appendChild(actions);
+      host.appendChild(card);
+    });
+  }
+
+  function renderAiStatus(status) {
+    state.aiLocalStatus = status || null;
+    const backend = $("aiBackendStatus");
+    const spend = $("aiSpendStatus");
+    const keyInput = $("aiApiKey");
+    const hardware = $("aiHardwareStatus");
+    const config = status?.config || {};
+    if (backend) backend.textContent = status?.busy ? t("aiBusy") : status?.ok === false
+      ? aiActionMessage(status, t("aiUnavailable")) : `${t("aiStatus")}: ${config.enabled ? t("aiActive") : t("aiInactive")}`;
+    if (spend) spend.textContent = `${t("aiSpent")}: $${Number(status?.spentTodayUsd || 0).toFixed(2)}`;
+    if (keyInput) keyInput.placeholder = status?.hasKey ? t("aiKeySaved") : "";
+    if (hardware) {
+      const info = status?.localHardware;
+      const installed = info && [info.daemonAvailable, info.ollamaAvailable, info.installed, info.available].some((value) => value === true);
+      hardware.textContent = info ? `${t("aiHardware")}: ${formatAiHardware(info)}` : t("aiLocalPullMissing");
+      hardware.classList.toggle("warn", !installed);
+    }
+    const executionHint = $("aiExecutionHint");
+    if (executionHint) executionHint.hidden = executionState()?.mode !== "server";
+    renderAiRecommendations(status?.recommendations);
+    aiSetBusy(state.aiBusy);
+  }
+
+  async function refreshAiStatus(requestId = state.aiRequestId) {
+    if (requestId !== state.aiRequestId || $("panelBody")?.dataset.panelKind !== "ai") return;
+    if (typeof window.vespera?.aiStatus !== "function") {
+      aiSetMessage(t("aiUnavailable"), true);
+      return;
+    }
+    if (state.aiPolling) return;
+    state.aiPolling = true;
+    try {
+      const status = await window.vespera.aiStatus();
+      if (requestId !== state.aiRequestId || $("panelBody")?.dataset.panelKind !== "ai") return;
+      if (status?.ok === false) aiSetMessage(aiActionMessage(status, t("aiUnavailable")), true);
+      renderAiStatus(status);
+    } catch {
+      if (requestId === state.aiRequestId) aiSetMessage(t("aiUnavailable"), true);
+    } finally {
+      state.aiPolling = false;
+    }
+  }
+
+  function populateAiSetups(setups, selectedValue = "") {
+    const select = $("aiSetupVersion");
+    if (!select) return;
+    select.replaceChildren();
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = t("researchSelectSetup");
+    select.appendChild(placeholder);
+    (setups || []).forEach((setup) => (setup.versions || []).forEach((version) => {
+      const option = document.createElement("option");
+      option.value = `${setup.id}\u0000${version.version}`;
+      option.textContent = `${version.name || setup.name || t("setupActive")} · v${version.version}`;
+      select.appendChild(option);
+    }));
+    if (selectedValue) select.value = selectedValue;
+  }
+
+  function updateAiProviderFields() {
+    const local = $("aiProvider")?.value === "local";
+    if ($("aiKeyField")) $("aiKeyField").hidden = local;
+    if ($("aiLocalFields")) $("aiLocalFields").hidden = !local;
+  }
+
+  async function initializeAiPanel() {
+    const body = $("panelBody");
+    const requestId = ++state.aiRequestId;
+    state.aiRecommendationsKey = "";
+    state.aiDirtyFields = new Set();
+    ["aiProvider", "aiModel", "aiEnabled", "aiDailyBudget", "aiRequestBudget", "aiMaxTokens", "aiTimeout", "aiLocalUrl"].forEach((id) => {
+      const control = $(id);
+      if (!control) return;
+      ["input", "change"].forEach((eventName) => control.addEventListener(eventName, () => state.aiDirtyFields.add(id)));
+    });
+    $("aiProvider").onchange = () => {
+      const modelSelect = $("aiModelSelect");
+      modelSelect.replaceChildren();
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = t("aiChooseModel");
+      modelSelect.appendChild(option);
+      updateAiProviderFields();
+    };
+    $("aiModelSelect").onchange = () => { if ($("aiModelSelect").value) $("aiModel").value = $("aiModelSelect").value; };
+    if (typeof window.vespera?.listSetups === "function") {
+      try {
+        const library = await window.vespera.listSetups();
+        if (requestId !== state.aiRequestId || body.dataset.panelKind !== "ai") return;
+        const setups = Array.isArray(library?.setups) ? library.setups : [];
+        const active = library?.activeSetup;
+        const activeRow = setups.find((setup) => String(setup.id) === String(active?.id));
+        const version = activeRow?.versions?.find((item) => String(item.version) === String(active?.version)) || activeRow?.versions?.slice(-1)[0];
+        populateAiSetups(setups, version ? `${activeRow.id}\u0000${version.version}` : "");
+      } catch {
+        populateAiSetups([]);
+      }
+    } else populateAiSetups([]);
+    const statusPromise = typeof window.vespera?.aiStatus === "function" ? window.vespera.aiStatus().catch(() => null) : Promise.resolve(null);
+    const status = await statusPromise;
+    if (requestId !== state.aiRequestId || body.dataset.panelKind !== "ai") return;
+    const config = status?.config || {};
+    hydrateAiField("aiProvider", config.provider === "local" ? "local" : "openrouter");
+    hydrateAiField("aiModel", config.model || "");
+    hydrateAiField("aiEnabled", config.enabled === true, true);
+    hydrateAiField("aiDailyBudget", Number.isFinite(Number(config.dailyBudgetUsd)) ? config.dailyBudgetUsd : 1);
+    hydrateAiField("aiRequestBudget", Number.isFinite(Number(config.maxRequestUsd)) ? config.maxRequestUsd : 0.25);
+    hydrateAiField("aiMaxTokens", Number.isFinite(Number(config.maxTokens)) ? config.maxTokens : 512);
+    hydrateAiField("aiTimeout", Number.isFinite(Number(config.timeoutMs)) ? Math.max(1, Math.round(config.timeoutMs / 1000)) : 30);
+    hydrateAiField("aiLocalUrl", config.localUrl || "http://127.0.0.1:11434");
+    updateAiProviderFields();
+    renderAiStatus(status);
+    $("aiSaveButton").onclick = async () => {
+      if (state.aiBusy) return;
+      const dailyBudgetUsd = Number($("aiDailyBudget").value);
+      const maxRequestUsd = Number($("aiRequestBudget").value);
+      const maxTokens = Number($("aiMaxTokens").value);
+      const timeoutSeconds = Number($("aiTimeout").value);
+      if (![dailyBudgetUsd, maxRequestUsd].every((value) => Number.isFinite(value) && value >= 0) ||
+        !Number.isInteger(maxTokens) || maxTokens < 1 || !Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0) {
+        aiSetMessage(t("aiFailed"), true);
+        return;
+      }
+      const input = {
+        provider: $("aiProvider").value,
+        model: $("aiModel").value.trim(),
+        enabled: $("aiEnabled").checked,
+        dailyBudgetUsd,
+        maxRequestUsd,
+        maxTokens,
+        timeoutMs: Math.round(timeoutSeconds * 1000),
+        localUrl: $("aiLocalUrl").value.trim() || "http://127.0.0.1:11434",
+      };
+      const key = $("aiApiKey").value;
+      if (key) input.key = key;
+      $("aiApiKey").value = "";
+      aiSetBusy(true);
+      try {
+        if (typeof window.vespera?.aiConfigure !== "function") throw new Error(t("aiUnavailable"));
+        const result = await window.vespera.aiConfigure(input);
+        if (!result || result.ok === false) { aiSetMessage(aiActionMessage(result), true); return; }
+        state.aiDirtyFields.clear();
+        aiSetMessage(aiActionMessage(result, t("aiSettingsSaved")));
+        await refreshAiStatus(requestId);
+      } catch { aiSetMessage(t("aiFailed"), true); }
+      finally { aiSetBusy(false); }
+    };
+    $("aiLoadModelsButton").onclick = async () => {
+      if (state.aiBusy) return;
+      if ($("aiProvider").value !== state.aiLocalStatus?.config?.provider) {
+        aiSetMessage(t("aiSaveBeforeModels"), true);
+        return;
+      }
+      aiSetBusy(true);
+      try {
+        if (typeof window.vespera?.aiModels !== "function") throw new Error(t("aiUnavailable"));
+        const result = await window.vespera.aiModels();
+        if (!result || result.ok === false) { aiSetMessage(aiActionMessage(result), true); return; }
+        const select = $("aiModelSelect");
+        const currentModel = $("aiModel").value.trim();
+        select.replaceChildren();
+        const placeholder = document.createElement("option");
+        placeholder.value = "";
+        placeholder.textContent = t("aiChooseModel");
+        select.appendChild(placeholder);
+        (result.models || []).forEach((model) => {
+          const option = document.createElement("option");
+          option.value = model.id || model.name || "";
+          if (!option.value) return;
+          option.textContent = model.id && model.name && model.name !== model.id ? `${model.name} · ${model.id}` : option.value;
+          select.appendChild(option);
+        });
+        if (!result.models?.length) throw new Error(t("aiNoModels"));
+        select.value = [...select.options].some((option) => option.value === currentModel) ? currentModel : "";
+        aiSetMessage("");
+      } catch { aiSetMessage(t("aiFailed"), true); }
+      finally { aiSetBusy(false); }
+    };
+    $("aiRequestButton").onclick = async () => {
+      if (state.aiBusy) return;
+      const [id, version] = String($("aiSetupVersion").value || "").split("\u0000");
+      if (!id || !version) return aiSetMessage(t("researchSelectSetup"), true);
+      aiSetBusy(true);
+      try {
+        if (typeof window.vespera?.aiRecommend !== "function") throw new Error(t("aiUnavailable"));
+        const result = await window.vespera.aiRecommend({ id, version: Number(version) });
+        if (!result || result.ok === false) { aiSetMessage(aiActionMessage(result), true); return; }
+        aiSetMessage(t("aiRequest"));
+        state.aiRecommendationsKey = "";
+        await refreshAiStatus(requestId);
+      } catch { aiSetMessage(t("aiFailed"), true); }
+      finally { aiSetBusy(false); }
+    };
+    $("aiLocalPullButton").onclick = async () => {
+      if (state.aiBusy || !window.confirm(t("aiLocalPullConfirm"))) return;
+      aiSetBusy(true);
+      try {
+        if (typeof window.vespera?.aiLocalPull !== "function") throw new Error(t("aiUnavailable"));
+        const result = await window.vespera.aiLocalPull({ model: "qwen2.5:1.5b", confirm: true });
+        if (!result || result.ok === false) { aiSetMessage(aiActionMessage(result), true); return; }
+        $("aiProvider").value = "local";
+        $("aiModel").value = result.model || "qwen2.5:1.5b";
+        state.aiDirtyFields.add("aiProvider");
+        state.aiDirtyFields.add("aiModel");
+        updateAiProviderFields();
+        aiSetMessage(aiActionMessage(result, t("aiLocalPull")));
+        await refreshAiStatus(requestId);
+      } catch { aiSetMessage(t("aiFailed"), true); }
+      finally { aiSetBusy(false); }
+    };
+    await refreshAiStatus(requestId);
+    if (requestId === state.aiRequestId) state.aiTimer = setInterval(() => refreshAiStatus(requestId), 2000);
+  }
+
+  async function createAiCandidate(recommendation) {
+    if (state.aiBusy || !window.confirm(t("aiCreateConfirm"))) return;
+    const name = $("aiCandidateName").value.trim();
+    if (!name) return aiSetMessage(t("aiCandidateName"), true);
+    aiSetBusy(true);
+    try {
+      if (typeof window.vespera?.aiCreateSetup !== "function") throw new Error(t("aiUnavailable"));
+      const result = await window.vespera.aiCreateSetup({ recommendationId: recommendation.id, name, confirm: true });
+      if (!result || result.ok === false) { aiSetMessage(aiActionMessage(result), true); return; }
+      aiSetMessage(t("aiCandidateCreated"));
+      state.aiRecommendationsKey = "";
+      await refreshAiStatus();
+    } catch { aiSetMessage(t("aiFailed"), true); }
+    finally { aiSetBusy(false); }
+  }
+
+  async function backtestAiCandidate(recommendation) {
+    if (state.aiBusy) return;
+    const startingBalance = Number($("aiStartingBalance").value);
+    if (!Number.isFinite(startingBalance) || startingBalance <= 0) return aiSetMessage(t("researchInvalidBalance"), true);
+    aiSetBusy(true);
+    try {
+      if (typeof window.vespera?.aiBacktest !== "function") throw new Error(t("aiUnavailable"));
+      const result = await window.vespera.aiBacktest({ recommendationId: recommendation.id, startingBalance });
+      if (!result || result.ok === false) { aiSetMessage(aiActionMessage(result), true); return; }
+      aiSetMessage(t("aiBacktestDone"));
+      await refreshAiStatus();
+    } catch { aiSetMessage(t("aiFailed"), true); }
+    finally { aiSetBusy(false); }
   }
 
   function researchSetupsHtml(select, multiple) {
@@ -1609,6 +1986,7 @@
     const foot = $("panelFoot");
     $("panel").hidden = false;
     $("panel").classList.toggle("research-panel", kind === "research");
+    $("panel").classList.toggle("ai-panel", kind === "ai");
     $("backdrop").hidden = false;
     clearInterval(state.depositTimer);
     state.depositTimer = 0;
@@ -1616,11 +1994,59 @@
     state.telegramTimer = 0;
     clearInterval(state.researchTimer);
     state.researchTimer = 0;
+    clearInterval(state.aiTimer);
+    state.aiTimer = 0;
     if (foot) {
       foot.hidden = true;
       foot.innerHTML = "";
     }
     closeMenus();
+
+    if (kind === "ai") {
+      title.textContent = t("aiTitle");
+      body.innerHTML = `
+        <div class="research-warning" role="note"><strong>${t("aiScope")}</strong><span>${t("aiSafety")}</span></div>
+        <section class="research-card ai-card">
+          <div class="research-section-heading"><h3>${t("aiProvider")}</h3><span class="research-stream-count" id="aiSpendStatus"></span></div>
+          <div class="field"><label for="aiProvider">${t("aiProvider")}</label><select id="aiProvider"><option value="openrouter">${t("aiOpenRouter")}</option><option value="local">${t("aiOllama")}</option></select></div>
+          <div class="field" id="aiKeyField"><label for="aiApiKey">${t("aiApiKey")}</label><input id="aiApiKey" type="password" autocomplete="new-password" spellcheck="false" /></div>
+          <div class="field"><label for="aiModel">${t("aiModel")}</label><input id="aiModel" type="text" autocomplete="off" spellcheck="false" /><div class="ai-model-row"><select id="aiModelSelect" aria-label="${t("aiModel")}"><option value="">${t("aiNoModels")}</option></select><button class="ghost" id="aiLoadModelsButton" type="button">${t("aiLoadModels")}</button></div><span class="hint">${t("aiModelsHint")}</span></div>
+          <label class="ai-enabled"><input id="aiEnabled" type="checkbox" /><span>${t("aiEnabled")}</span></label>
+          <div class="research-grid">
+            <div class="field"><label for="aiDailyBudget">${t("aiDailyBudget")}</label><input id="aiDailyBudget" type="number" min="0" max="1000" step="0.01" /></div>
+            <div class="field"><label for="aiRequestBudget">${t("aiRequestBudget")}</label><input id="aiRequestBudget" type="number" min="0" max="10" step="0.01" /></div>
+            <div class="field"><label for="aiMaxTokens">${t("aiMaxTokens")}</label><input id="aiMaxTokens" type="number" min="1" max="4096" step="1" /></div>
+            <div class="field"><label for="aiTimeout">${t("aiTimeout")}</label><input id="aiTimeout" type="number" min="1" max="120" step="1" /></div>
+          </div>
+          <div id="aiLocalFields" hidden>
+            <div class="field"><label for="aiLocalUrl">${t("aiLocalUrl")}</label><input id="aiLocalUrl" type="url" /></div>
+            <p class="hint">${t("aiLocalNotes")}</p>
+            <p class="hint warn" id="aiExecutionHint" hidden>${t("aiExecutionLocalOnly")}</p>
+            <p class="hint" id="aiHardwareStatus" role="status"></p>
+            <p class="hint">${t("aiLicense")}</p>
+            <button class="ghost" id="aiLocalPullButton" type="button">${t("aiLocalPull")}</button>
+          </div>
+          <button class="ok" id="aiSaveButton" type="button">${t("aiSave")}</button>
+          <div class="hint" id="aiBackendStatus" role="status" aria-live="polite"></div>
+          <div class="hint" id="aiStatusMessage" role="status" aria-live="polite"></div>
+        </section>
+        <section class="research-card ai-card">
+          <h3>${t("aiRequest")}</h3>
+          <div class="field"><label for="aiSetupVersion">${t("aiSetupVersion")}</label><select id="aiSetupVersion"></select></div>
+          <button class="ok" id="aiRequestButton" type="button">${t("aiRequest")}</button>
+        </section>
+        <section class="research-card ai-card">
+          <h3>${t("aiTitle")}</h3>
+          <div class="field"><label for="aiCandidateName">${t("aiCandidateName")}</label><input id="aiCandidateName" type="text" maxlength="80" value="${t("aiCandidateDefault")}" /></div>
+          <div class="field"><label for="aiStartingBalance">${t("aiStartingBalance")}</label><input id="aiStartingBalance" type="number" min="0.01" step="0.01" value="1000" /></div>
+          <p class="hint warn">${t("aiDatasetWarning")}</p>
+          <button class="ghost" id="aiOpenResearch" type="button">${t("aiOpenResearch")}</button>
+          <div id="aiRecommendations"><p class="hint">${t("aiNoRecommendations")}</p></div>
+        </section>
+      `;
+      initializeAiPanel();
+      return;
+    }
 
     if (kind === "research") {
       title.textContent = t("researchTitle");

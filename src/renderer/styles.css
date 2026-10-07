@@ -2142,6 +2142,97 @@ details.adv[open] > summary {
 .research-report-grid article strong {
   font-size: 12px;
 }
+#panel.ai-panel {
+  width: min(760px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  padding: 18px 20px;
+}
+#panel.ai-panel #panelBody {
+  max-height: calc(100vh - 104px);
+}
+#panel.ai-panel [hidden] {
+  display: none !important;
+}
+.ai-card h3 {
+  margin-top: 0;
+}
+.ai-model-row,
+.ai-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ai-model-row select {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+  padding: 8px 10px;
+  color: var(--ink);
+  background: var(--select-bg);
+}
+.ai-enabled {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 10px 0;
+  color: var(--ink);
+  font-size: 13px;
+}
+.ai-enabled input {
+  accent-color: var(--apple);
+}
+.ai-recommendation {
+  padding: 12px;
+  margin: 10px 0;
+  border: 1px solid var(--hair);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--panel) 60%, transparent);
+}
+.ai-recommendation-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--ink);
+  font-size: 12px;
+}
+.ai-recommendation-heading span {
+  color: var(--muted);
+}
+.ai-detail {
+  margin: 10px 0;
+  overflow-wrap: anywhere;
+}
+.ai-detail strong {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.ai-detail p,
+.ai-detail pre {
+  margin: 0;
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.ai-detail pre {
+  max-height: 220px;
+  overflow: auto;
+  padding: 8px;
+  border-radius: 8px;
+  background: var(--fill);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.ai-actions {
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+#aiHardwareStatus {
+  overflow-wrap: anywhere;
+}
 @media (max-width: 700px) {
   #panel.research-panel {
     width: calc(100vw - 20px);
@@ -2153,5 +2244,13 @@ details.adv[open] > summary {
   }
   .research-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  #panel.ai-panel {
+    width: calc(100vw - 20px);
+    max-height: calc(100vh - 20px);
+    padding: 14px;
+  }
+  #panel.ai-panel #panelBody {
+    max-height: calc(100vh - 88px);
   }
 }

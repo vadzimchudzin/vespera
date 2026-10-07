@@ -12,6 +12,7 @@ const { toCsv } = require("./stats");
 const { SetupStore, settingsFromEngine, validateSetupSettings } = require("./setupStore");
 const { ResearchRunner } = require("./researchRunner");
 const { syncDirectory } = require("./secretStore");
+const { AIAdvisor } = require("./aiAdvisor");
 const QRCode = require("qrcode");
 
 function atomicJson(file, value) {
@@ -64,6 +65,13 @@ class ExecutionHost {
       onEvent: (event) => this.onEvent(event),
       marketFactory: engineOptions.researchMarketFactory,
     });
+    this.aiAdvisor = new AIAdvisor({
+      root: userDataDir,
+      setupStore: this.setupStore,
+      research: this.research,
+      request: engineOptions.aiRequest,
+      direct: this.direct,
+    });
     this.bridge = new BridgeClient();
     this.telegramContext = { active: false, command: null, serialize: null, epoch: null };
     this.telegramBot = null;
@@ -85,6 +93,10 @@ class ExecutionHost {
       this.research.engine = this.engine;
       this.research.setupStore = this.setupStore;
       this.research.disposed = false;
+    }
+    if (this.aiAdvisor) {
+      this.aiAdvisor.setupStore = this.setupStore;
+      this.aiAdvisor.research = this.research;
     }
     this.unsubscribe = this.engine.on((evt) => {
       // Engine settings events contain the private settings object.
@@ -254,6 +266,13 @@ class ExecutionHost {
       case "stopPaperRun": return this.research.stopPaperRun(args[0] || {});
       case "researchReport": return this.research.researchReport(args[0] || {});
       case "exportResearch": return this.research.exportResearch(args[0] || {});
+      case "aiStatus": return this.aiAdvisor.status();
+      case "aiConfigure": return this.aiAdvisor.configure(args[0] || {});
+      case "aiModels": return this.aiAdvisor.models().catch((error) => ({ ok: false, reason: /^ai_[a-z0-9_]+$/.test(error?.code || "") ? error.code : "ai_provider_unavailable" }));
+      case "aiRecommend": return this.aiAdvisor.recommend(args[0] || {});
+      case "aiCreateSetup": return this.aiAdvisor.createSetup(args[0] || {});
+      case "aiBacktest": return this.aiAdvisor.backtest(args[0] || {});
+      case "aiLocalPull": return this.aiAdvisor.localPull(args[0] || {}).catch((error) => ({ ok: false, reason: /^ai_[a-z0-9_]+$/.test(error?.code || "") ? error.code : "ai_provider_unavailable" }));
       case "warmChart": return e.warmChart();
       case "start": return this._activationRecoveryPending
         ? { ok: false, reason: "setup_activation_recovery_pending", state: e.snapshot() }
