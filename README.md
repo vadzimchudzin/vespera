@@ -2,7 +2,7 @@
 
 Glass desktop terminal for BTC 15m Polymarket Up/Down.
 
-**v0.22.0 source.** SMA/EMA 200/20 on a **closed** candle `S`, bet on **S+1**. Arrow sits on the entry candle. Auto prices the live Polymarket round and sends **CLOB V2** signed orders once the wallet, a signing key and the derived CLOB keys are in the API panel.
+**v0.23.0 source.** SMA/EMA 200/20 on a **closed** candle `S`, bet on **S+1**. Arrow sits on the entry candle. Auto prices the live Polymarket round and sends **CLOB V2** signed orders once the wallet, a signing key and the derived CLOB keys are in the API panel.
 
 **Для следующих агентов:** [подробный отчёт и передача проекта](#отчёт-и-передача-проекта--2026-10-06) · [ROADMAP](ROADMAP.md) · [правила Zero Mode](docs/ZERO_MODE.md). Публикация релиза не означает слияние PR в `main`; перед продолжением сверяйте GitHub.
 
@@ -23,6 +23,13 @@ external alerts and a 24–72-hour soak still require the real server.
 Repo: private [`VadimChudin/vespera`](https://github.com/VadimChudin/vespera)
 
 ## What it does
+
+**Saved setups.** Settings → Strategy saves named immutable versions, copies and
+imports/exports definitions without secrets. Trades keep their original setup
+version and configuration fingerprint; manual edits are marked modified rather
+than silently attributed to an unchanged saved version. Applying a version is a
+stopped, position-free operation and never starts trading or changes dry run.
+See [setups and timeframe rules](docs/SETUPS.md).
 
 - Slow MA (trend) + fast MA (trigger) on **closed** Binance candles, **SMA or EMA** (Settings → Average). Default `BTCUSDT` 15m; pick any listed pair / timeframe.
 - Above 200 → only UP. Below 200 → only DOWN.
@@ -50,7 +57,7 @@ the existing engine and risk rules. See [Telegram onboarding and limitations](do
 | Mode | Name in UI | Orders |
 |---|---|---|
 | Paper | Paper / Пейпер | Virtual Up/Down fills |
-| Auto | Auto / Авто | Prices the live round on `clob.polymarket.com`, signs CLOB V2 EIP-712 orders and posts them as FAK (fill-and-kill) with 2 cents of price room. Needs wallet, private key and the derived CLOB keys. Polymarket lists Up/Down rounds only for **BTC, ETH, SOL, XRP, DOGE, BNB, HYPE** on **5m and 15m**; Auto shows only those, Paper shows every pair and marks these with **P**. Minimum order is 5 shares; the wallet must hold stake + taker fee. |
+| Auto | Auto / Авто | Prices the live round on `clob.polymarket.com`, signs CLOB V2 EIP-712 orders and posts them as FAK (fill-and-kill) with 2 cents of price room. Needs wallet, private key and the derived CLOB keys. Verified mappings: **BTC, ETH, SOL, XRP, DOGE, BNB, HYPE** on **5m/15m**, and **BTC, ETH, SOL, XRP** on **1h/4h**. Longer rounds must match the exact UTC interval, tokens and resolution rules; no missing round falls back to 15m. Paper keeps Binance chart intervals. Minimum order is 5 shares; the wallet must hold stake + taker fee. |
 
 **Connect** in the API panel checks the account; it does not place trades.
 
@@ -137,6 +144,12 @@ See `docs/TZ_Predic_MA200_MA20.md`.
 ---
 
 ## Отчёт и передача проекта — 2026-10-06
+
+**Дополнение 0.23.0 source, 2026-10-07:** именованные версии сетапов,
+копирование/import/export без секретов, атрибуция сделок/CSV/Telegram,
+перенос библиотеки в Zero Mode. Подтверждены публичные рынки BTC/ETH/SOL/XRP
+1h и 4h; код проверяет отдельные правила ET/UTC и источник расчёта.
+Сигнальный TF и экспирация пока должны совпадать. Правила — [SETUPS](docs/SETUPS.md).
 
 **Дополнение 0.22.0 source:** подготовлен эксплуатационный набор для этапа 5;
 добавлены сверка fills, операторский экран, ожидание окончательного результата

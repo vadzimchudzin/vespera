@@ -643,6 +643,10 @@ class TelegramBot {
     if (event.type === "status" && ["paused", "halt", "daily_limit", "stopped"].includes(typeof event.payload === "string" ? event.payload : payload.status)) {
       text = `Execution status: ${typeof event.payload === "string" ? event.payload : payload.status || "changed"}${payload.pauseReason ? ` · ${payload.pauseReason}` : ""}`;
     }
+    if (text && payload.setup && ["order", "settled"].includes(event.type)) {
+      const setup = payload.setup;
+      text += `\nSetup: ${String(setup.name || "Custom").slice(0, 80)}${setup.version != null ? ` · v${setup.version}` : ""}${setup.modified ? " · modified" : ""} · ${String(setup.fingerprint || "").slice(0, 12)}`;
+    }
     if (text) for (const recipient of recipients) this._reply(recipient, text);
   }
 

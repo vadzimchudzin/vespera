@@ -10,10 +10,11 @@ const { SIZING_MODES, perDollar } = require("./risk");
 const { computeStats, todayPnl, dailyBreakdown } = require("./stats");
 const { Decimal } = require("./money");
 const { outcomeOf } = require("./paperBroker");
-const { SUPPORTED_TF, isSupportedSymbol, fitToPolymarket } = require("./brokers/polymarketMarkets");
+const { isSupportedSymbol, isSupportedMarket, getSupportedTimeframes, fitToPolymarket } = require("./brokers/polymarketMarkets");
 const { fastPeriodOf, slowPeriodOf, confirmCountOf, fullBodyOnSOf, maTypeOf } = require("./strategy");
 const { normalizeSettings, RISK_FIELDS } = require("../shared/settings");
 const { DEFAULTS } = require("./settingsStore");
+const { settingsFromEngine, fingerprint } = require("./setupStore");
 
 const STATUSES = [
   "stopped",
@@ -132,6 +133,57 @@ class Engine {
     return getStrategy(this.strategyId);
   }
 
+  activeSetupSnapshot() {
+    const store = this.setupStore;
+    const ref = store?.value?.activeSetup;
+    let settings;
+    try { settings = settingsFromEngine(this); }
+    catch {
+      settings = Object.fromEntries(require("./setupStore").SETUP_FIELDS.map((key) => [key, this.settings[key]]));
+      settings.strategyId = this.strategyId;
+    }
+    const signalTimeframe = this.settings.timeframe || "15m";
+    const marketTimeframe = signalTimeframe;
+    const currentFingerprint = fingerprint(settings, signalTimeframe, marketTimeframe);
+    const version = ref ? store.getVersion(ref.id, ref.version) : null;
+    if (!version) return null;
+    const modified = currentFingerprint !== version.fingerprint;
+    return {
+      id: version.id,
+      version: version.version,
+      name: version.name,
+      fingerprint: modified ? currentFingerprint : version.fingerprint,
+      modified,
+      settings,
+      signalTimeframe,
+      marketTimeframe,
+    };
+  }
+
+  setupAttribution() {
+    const active = this.activeSetupSnapshot();
+    if (active) return structuredClone(active);
+    let settings;
+    try { settings = settingsFromEngine(this); }
+    catch {
+      const { SETUP_FIELDS } = require("./setupStore");
+      settings = Object.fromEntries(SETUP_FIELDS.map((key) => [key, this.settings[key]]));
+      settings.strategyId = this.strategyId;
+    }
+    const signalTimeframe = this.settings.timeframe || "15m";
+    const marketTimeframe = signalTimeframe;
+    return {
+      id: null,
+      version: null,
+      name: "Custom",
+      fingerprint: fingerprint(settings, signalTimeframe, marketTimeframe),
+      modified: true,
+      settings,
+      signalTimeframe,
+      marketTimeframe,
+    };
+  }
+
   setStrategy(id) {
     const next = getStrategy(id);
     if (!next || next.enabled === false) {
@@ -215,6 +267,7 @@ class Engine {
     if (!confirm) return { ok: false, reason: "test_confirm", ...plan };
     if (generation !== this._executionGeneration) return { ok: false, reason: "execution_changed" };
     const clientOrderId = `test-${Date.now()}-${wanted}`;
+    const setup = this.setupAttribution();
     const interval = INTERVAL_MS[this.settings.timeframe || "15m"] || 900_000;
     const roundCloseTs = (Math.floor(Date.now() / interval) + 1) * interval - 1;
     let accepted = false;
@@ -223,7 +276,7 @@ class Engine {
       if (!dryRun) this.journal.beginOrder({
         mode: "auto", dryRun: false, clientOrderId, side: wanted, sizeUsd,
         round, roundOpenTs: round.openTs, roundCloseTs, strike: quote.strike ?? null,
-        test: true, feeRate: quote.feeRate ?? null, feeExponent: quote.feeExponent ?? null,
+        test: true, setup, feeRate: quote.feeRate ?? null, feeExponent: quote.feeExponent ?? null,
       });
       const order = await this.live.marketBuy({
         side: wanted,
@@ -254,6 +307,7 @@ class Engine {
         orderStatus: order.orderStatus || null,
         tokenId: order.tokenId || quote.tokenId || null,
         slug: order.slug || quote.slug,
+        setup,
       };
       this.journal.write({ type: "test_order", ...row });
       this.lastTestOrder = row;
@@ -264,7 +318,7 @@ class Engine {
       if (!err.ambiguous && !accepted) this.journal.completeOrder(clientOrderId);
       else this._pauseUnknownOrder();
       const message = String((err && err.message) || err);
-      this.journal.write({ type: "test_order_error", side: wanted, code: (err && err.code) || null, message });
+      this.journal.write({ type: "test_order_error", side: wanted, setup, code: (err && err.code) || null, message });
       this.emit("log", { level: "error", message: `test_order_error: ${message}` });
       return { ok: false, reason: (err && err.code) || "order_error", message, ...plan };
     }
@@ -364,6 +418,7 @@ class Engine {
           roundOpenTs: e.roundOpenTs,
           roundCloseTs: e.roundCloseTs,
           placedAt: e.placedAt || Date.now(),
+          setup: e.setup || null,
           status: "open",
         };
         break;
@@ -390,6 +445,7 @@ class Engine {
           roundOpenTs: e.roundOpenTs,
           roundCloseTs: e.roundCloseTs,
           placedAt: e.placedAt || Date.now(),
+          setup: e.setup || null,
           status: "open",
         };
         break;
@@ -473,12 +529,11 @@ class Engine {
     }
     if (changed.some((key) => tradingFields.has(key))) this._executionGeneration += 1;
     if (this.mode === "auto") {
-      if (patch.symbol != null && !isSupportedSymbol(patch.symbol)) {
-        this.emit("log", { level: "warn", message: `market_unsupported_in_auto: ${patch.symbol}` });
+      const requestedSymbol = patch.symbol ?? this.settings.symbol ?? "BTCUSDT";
+      const requestedTimeframe = patch.timeframe ?? this.settings.timeframe ?? "15m";
+      if (!isSupportedMarket(requestedSymbol, requestedTimeframe)) {
+        this.emit("log", { level: "warn", message: `market_unsupported_in_auto: ${requestedSymbol} ${requestedTimeframe}` });
         delete patch.symbol;
-      }
-      if (patch.timeframe != null && !SUPPORTED_TF.includes(String(patch.timeframe))) {
-        this.emit("log", { level: "warn", message: `market_unsupported_in_auto: ${patch.timeframe}` });
         delete patch.timeframe;
       }
     }
@@ -1749,6 +1804,7 @@ class Engine {
         roundOpenTs: durable.roundOpenTs,
         roundCloseTs: durable.roundCloseTs,
         placedAt: durable.placedAt,
+        setup: durable.setup || null,
         status: "open",
       };
     }
@@ -1819,6 +1875,7 @@ class Engine {
       this.emit("log", { level: "warn", message: `stake_capped: needed $${needed}, cap $${this.risk.maxStakeUsd} — a win will not recover the series` });
     }
     const clientOrderId = `${new Date(bar.openTs).toISOString().slice(0, 10)}-${this.settings.timeframe || "15m"}-${bar.openTs}-${ev.signal}-${this.risk.step}`;
+    const setup = this.setupAttribution();
     const marker = {
       time: Math.floor(round.openTs / 1000),
       side: ev.signal,
@@ -1862,6 +1919,7 @@ class Engine {
         if (!dryRun) this.journal.beginOrder({
           mode: "auto", dryRun: false, clientOrderId, side: ev.signal, sizeUsd: size,
           round, strike: round.strike, roundOpenTs: round.openTs, roundCloseTs: round.closeTs,
+          setup,
           feeRate: quote && quote.feeRate, feeExponent: quote && quote.feeExponent,
         });
         const order = await this.live.marketBuy({
@@ -1902,15 +1960,17 @@ class Engine {
           roundCloseTs: round.closeTs,
           placedAt,
           status: "open",
+          setup,
         };
         this.markers.push(marker);
         this.journal.write({
           type: "order_sent", ...order, mode: "auto", dryRun, clientOrderId,
           strike: round.strike, roundOpenTs: round.openTs, roundCloseTs: round.closeTs, placedAt,
+          setup,
         });
         this.journal.completeOrder(clientOrderId);
         this.status = "waiting_settlement";
-        this.emit("order", { ...order, live: !dryRun });
+        this.emit("order", { ...order, setup, live: !dryRun });
         this.notify(
           "order",
           `${dryRun ? "Dry run" : "Live"} ${ev.signal}`,
@@ -1943,6 +2003,8 @@ class Engine {
         feeExponent: quote ? quote.feeExponent : null,
         quoteSource: quote ? "polymarket" : "assumed_0.50",
       });
+      this.paper.openBet.setup = setup;
+      const attributedOrder = { ...order, setup };
       if (quote && Number(quote.minOrderSize) > 0 && Number(order.shares) < Number(quote.minOrderSize)) {
         // Paper still books it, but the same lot would be refused live.
         const minUsd = (Number(quote.minOrderSize) * Number(order.entryPrice)).toFixed(2);
@@ -1953,15 +2015,15 @@ class Engine {
         });
       }
       this.markers.push(marker);
-      this.journal.write({ type: "order_sent", ...order });
+      this.journal.write({ type: "order_sent", ...attributedOrder });
       this.status = "waiting_settlement";
-      this.emit("order", order);
+      this.emit("order", attributedOrder);
       this.notify(
         "order",
         `Paper ${ev.signal}`,
         `$${size} + fee $${order.feeUsd} · strike ${Number(bar.close).toFixed(2)}`
       );
-      return order;
+      return attributedOrder;
     } catch (err) {
       this.journal.write({ type: "order_error", message: String(err.message || err) });
       this.status = "watching";
@@ -2036,7 +2098,7 @@ class Engine {
         polymarket: isSupportedSymbol(s.id),
       })),
       timeframes: TIMEFRAMES,
-      polymarketTimeframes: SUPPORTED_TF.slice(),
+      polymarketTimeframes: getSupportedTimeframes(this.settings.symbol || "BTCUSDT"),
       settings: {
         symbol: this.settings.symbol || "BTCUSDT",
         timeframe: this.settings.timeframe || "15m",
@@ -2076,6 +2138,7 @@ class Engine {
         paperBalance: this.settings.paperBalance || "1000.00",
         tickSize: this.tickSize,
       },
+      activeSetup: this.activeSetupSnapshot(),
       pairLabel: `${symbolLabel(this.settings.symbol || "BTCUSDT")} · ${this.settings.timeframe || "15m"}`,
       lastPrice: lastClose,
       risk: this.risk.snapshot(this._planPrice(), this._planSchedule()),

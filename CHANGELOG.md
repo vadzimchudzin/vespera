@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.23.0 — source changes, 2026-10-07
+
+- **Saved setups:** named append-only versions of strategy, market, timeframe, indicators and sizing/limits; exact-version application while stopped, independent copies and bounded JSON import/export with a strict secret-free schema. Mode, dry run, credentials and balances are not setup fields.
+- **Trade provenance:** immutable preparation-time setup snapshot and fingerprint retained through open positions, pending intents, settlement and restart; modified/custom settings do not impersonate an unchanged saved version. CSV, per-version statistics and Telegram reports carry version identity.
+- **Zero Mode:** the library and exact selection transfer with the book; compatible appended histories merge and conflicting immutable histories fail closed.
+- **Verified longer markets:** 1h and 4h mappings for BTC/ETH/SOL/XRP, with public Gamma evidence. Hourly slugs use ET/DST labels and Binance open/close rules; 4h uses UTC-floored slugs and Chainlink TWAP streams. Exact UTC range, tokens, source and comparison rules are checked before accepting a market. Other assets retain short-round mappings; no unsupported interval silently falls back.
+- Added storage/import, setup attribution, real HTTP handoff/restart, native JSON dialog and timeframe/DST regressions. No real-money orders, production deployment or binary release claimed by these source changes.
+
 ## 0.22.0 — source changes, 2026-10-06
 
 - **Operations readiness:** preflight, private checksummed offline backup, isolated restore, local health/resource monitor and systemd/TLS templates. Restored copies are fenced from server startup; symlink ancestors and active service locks are refused. Production deployment and a long soak are not claimed.

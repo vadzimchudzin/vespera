@@ -212,6 +212,8 @@ async function run() {
   menuStore.write({ ...menuStore.read(), token: TOKEN, enabled: true, admins: ["111"], users: ["222"] });
   const menuHost = fakeHost();
   const menuBot = bot(menuStore, menuHost);
+  menuBot.enqueueEvent({ type: "settled", payload: { side: "UP", status: "win", pnl: "1.25", feeUsd: "0.10", setup: { name: "Verified setup", version: 2, modified: false, fingerprint: "a".repeat(64) } } });
+  assert.match(menuStore.read().outbox.at(-1).text, /Setup: Verified setup · v2/);
   await menuBot.processUpdate(privateMessage(1, "111", "/strategy"));
   assert.equal(menuStore.read().outbox.at(-1).keyboard[0][0].callback_data, "strategy:sma200_20");
   await menuBot.processUpdate(callback(2, "111", "strategy:sma200_20"));

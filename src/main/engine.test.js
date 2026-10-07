@@ -599,7 +599,11 @@ async function run() {
     await engine.applySettings({ symbol: "ETHUSDT", timeframe: "5m" });
     assert(engine.settings.symbol === "ETHUSDT" && engine.settings.timeframe === "5m", "supported picks go through");
     const snap = engine.snapshot();
-    assert(snap.polymarketTimeframes.join() === "5m,15m", "UI learns the Polymarket timeframes");
+    assert(snap.polymarketTimeframes.join() === "5m,15m,1h,4h", "UI learns verified timeframes for ETH");
+    await engine.applySettings({ symbol: "DOGEUSDT", timeframe: "15m" });
+    assert(engine.snapshot().polymarketTimeframes.join() === "5m,15m", "unverified hourly pairs retain short-round choices");
+    await engine.applySettings({ timeframe: "1h" });
+    assert(engine.settings.timeframe === "15m", "DOGE cannot silently use BTC hourly capability");
     assert(snap.symbols.find((x) => x.id === "BTCUSDT").polymarket === true, "BTC flagged");
     assert(snap.symbols.find((x) => x.id === "PEPEUSDT").polymarket === false, "PEPE not flagged");
     await engine.setMode("paper");

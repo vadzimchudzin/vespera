@@ -9,6 +9,8 @@ const { TelegramBot, validateToken } = require("./telegramBot");
 const { BridgeClient } = require("./brokers/bridge");
 const { setProxy } = require("./brokers/clobClient");
 const { toCsv } = require("./stats");
+const { SetupStore, settingsFromEngine, validateSetupSettings } = require("./setupStore");
+const { syncDirectory } = require("./secretStore");
 const QRCode = require("qrcode");
 
 function atomicJson(file, value) {
@@ -61,11 +63,16 @@ class ExecutionHost {
 
   _open(dir) {
     this.store = new SettingsStore(dir);
+    this.setupStore = new SetupStore(dir);
+    this.activationIntent = path.join(dir, "setup-activation.json");
+    this._recoverSetupActivation();
+    this._activationRecoveryPending = false;
     if (this.direct) {
       this.store.save({ proxyUrl: "" });
       setProxy("");
     }
     this.engine = new Engine({ userDataDir: dir, settings: this.store.value, ...this.engineOptions });
+    this.engine.setupStore = this.setupStore;
     this.unsubscribe = this.engine.on((evt) => {
       // Engine settings events contain the private settings object.
       const safe = evt.type === "settings" ? { ...evt, payload: null } : evt;
@@ -74,9 +81,32 @@ class ExecutionHost {
     });
   }
 
+  _recoverSetupActivation() {
+    if (!fs.existsSync(this.activationIntent)) return;
+    let intent;
+    try { intent = JSON.parse(fs.readFileSync(this.activationIntent, "utf8")); }
+    catch { throw fault("setup_activation_corrupt"); }
+    if (!intent || typeof intent !== "object" || Array.isArray(intent) ||
+        Object.keys(intent).sort().join(",") !== "id,version,versionTag" ||
+        intent.versionTag !== 1 || typeof intent.id !== "string" || !Number.isInteger(intent.version) || intent.version < 1) {
+      throw fault("setup_activation_corrupt");
+    }
+    const version = this.setupStore.getVersion(intent.id, intent.version);
+    if (!version) throw fault("setup_activation_target_missing");
+    this.store.save(version.settings);
+    this.setupStore.setActive({ id: version.id, version: version.version });
+    fs.unlinkSync(this.activationIntent);
+    syncDirectory(path.dirname(this.activationIntent));
+  }
+
+  _clearActivationIntent() {
+    fs.unlinkSync(this.activationIntent);
+    syncDirectory(path.dirname(this.activationIntent));
+  }
+
   idle() {
     const e = this.engine;
-    return !e.running && !e._opening && !e._starting && !e.paper.openBet && !e.liveBet &&
+    return !this._activationRecoveryPending && !e.running && !e._opening && !e._starting && !e.paper.openBet && !e.liveBet &&
       !e.journal.pendingOrder() && !e._testPositionActive();
   }
 
@@ -138,6 +168,7 @@ class ExecutionHost {
       settings,
       history: journal.readAll().slice(-5000).map(cleanRow),
       checkpoint,
+      setups: structuredClone(this.setupStore.value),
     };
   }
 
@@ -156,6 +187,9 @@ class ExecutionHost {
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     const store = new SettingsStore(dir);
     store.save(settings);
+    const setupStore = new SetupStore(dir);
+    setupStore._write(this.setupStore.value);
+    setupStore.importLibrary(bundle.setups || { version: 1, setups: [], activeSetup: null });
     fs.writeFileSync(path.join(dir, "journal.jsonl"), bundle.history.map((row) => JSON.stringify(row)).join("\n") + "\n", { mode: 0o600 });
     for (const file of [store.file, path.join(dir, "journal.jsonl")]) {
       const fd = fs.openSync(file, "r+");
@@ -189,10 +223,15 @@ class ExecutionHost {
 
   async call(method, args = []) {
     const e = this.engine;
+    if (this._activationRecoveryPending && !["snapshot", "warmChart", "getSettings", "listSetups", "exportSetup", "stop", "inspectPendingOrder", "reconcileFinalSettlement"].includes(method)) {
+      return { ok: false, reason: "setup_activation_recovery_pending", state: e.snapshot() };
+    }
     switch (method) {
       case "snapshot": return e.snapshot();
       case "warmChart": return e.warmChart();
-      case "start": return e.start(args[0] || {});
+      case "start": return this._activationRecoveryPending
+        ? { ok: false, reason: "setup_activation_recovery_pending", state: e.snapshot() }
+        : e.start(args[0] || {});
       case "stop": e.stop(); return e.snapshot();
       case "inspectPendingOrder": {
         const result = await e.inspectPendingOrder();
@@ -225,6 +264,62 @@ class ExecutionHost {
           throw err;
         }
       }
+      case "listSetups": return { ok: true, setups: this.setupStore.listSetups(), activeSetup: e.activeSetupSnapshot() };
+      case "saveSetup": {
+        const input = args[0] || {};
+        const version = this.setupStore.saveSetup({ name: input.name, id: input.id, settings: settingsFromEngine(e),
+          signalTimeframe: e.settings.timeframe, marketTimeframe: e.settings.timeframe, activate: true });
+        return { ok: true, setup: version, activeSetup: e.activeSetupSnapshot() };
+      }
+      case "copySetup": return { ok: true, setup: this.setupStore.copySetup(args[0] || {}) };
+      case "exportSetup": return this.setupStore.exportSetup(args[0] || {});
+      case "importSetup": return { ok: true, setup: this.setupStore.importSetup(args[0] || {}) };
+      case "applySetup": {
+        const { id, version } = args[0] || {};
+        const setup = this.setupStore.getVersion(id, version);
+        if (!setup) return { ok: false, reason: "setup_not_found", state: e.snapshot() };
+        if (e.running || e._opening || e._starting || e.openBet() || e.paper.openBet || e.liveBet ||
+            e._testPositionActive() || e.journal.pendingOrder() || e.finalPending) {
+          return { ok: false, reason: "execution_busy", state: e.snapshot() };
+        }
+        if (e.risk.consecutiveLosses > 0 || e.risk.seriesLossUsd > 0 || e.risk.halted || !e.risk.lotConfirmed) {
+          return { ok: false, reason: "series_active", state: e.snapshot() };
+        }
+        try { validateSetupSettings(setup.settings, { mode: e.mode }); }
+        catch (error) { return { ok: false, reason: error.code || "invalid_setup", state: e.snapshot() }; }
+        if (setup.settings.symbol !== e.settings.symbol && !e.symbols.some((row) => row.id === setup.settings.symbol)) {
+          return { ok: false, reason: "unknown_symbol", state: e.snapshot() };
+        }
+        const oldSettings = { ...e.settings, fixedStakes: e.settings.fixedStakes?.slice() };
+        const oldActive = this.setupStore.value.activeSetup;
+        atomicJson(this.activationIntent, { versionTag: 1, id: setup.id, version: setup.version });
+        try {
+          const strategyResult = e.setStrategy(setup.settings.strategyId);
+          if (!strategyResult.ok) throw fault("unknown_strategy");
+          await e.applySettings(setup.settings);
+          this._saveAccepted(setup.settings);
+          this.setupStore.setActive({ id, version: Number(version) });
+          this._clearActivationIntent();
+          this._activationRecoveryPending = false;
+          return { ok: true, activeSetup: e.activeSetupSnapshot(), state: e.snapshot() };
+        } catch (error) {
+          let rollbackFailed = false;
+          try { e.setStrategy(oldSettings.strategyId); } catch { rollbackFailed = true; }
+          try { await e.applySettings(oldSettings); } catch { rollbackFailed = true; }
+          try { this._saveAccepted(oldSettings); } catch { rollbackFailed = true; }
+          try { this.setupStore.setActive(oldActive); } catch { rollbackFailed = true; }
+          if (!rollbackFailed) {
+            try { this._clearActivationIntent(); } catch { rollbackFailed = true; }
+          }
+          if (rollbackFailed) {
+            this._activationRecoveryPending = true;
+            e.stop();
+            e.status = "paused";
+            return { ok: false, reason: "setup_activation_recovery_pending", state: e.snapshot() };
+          }
+          return { ok: false, reason: error.code || "setup_apply_failed", state: e.snapshot() };
+        }
+      }
       case "ping":
       case "connect":
       case "deriveKeys": {
@@ -247,7 +342,9 @@ class ExecutionHost {
         if (res.ok) this.store.save({ apiKey: res.apiKey, apiSecret: res.apiSecret, apiPassphrase: res.apiPassphrase });
         return { ok: res.ok, reason: res.reason || null, status: res.status || null, signerAddress: res.signerAddress || null, walletType: res.walletType || null };
       }
-      case "testOrder": return e.testOrder(args[0] || {});
+      case "testOrder": return this._activationRecoveryPending
+        ? { ok: false, reason: "setup_activation_recovery_pending" }
+        : e.testOrder(args[0] || {});
       case "setStrategy": {
         if (e._opening || e.openBet() || e.journal.pendingOrder()) throw fault("settings_locked");
         const result = e.setStrategy(args[0]);

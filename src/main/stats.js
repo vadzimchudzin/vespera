@@ -95,6 +95,26 @@ function computeStats(entries, { book = "paper", maxSteps = 6 } = {}) {
 
   const count = rows.length;
   const avgPrice = priced ? priceSum / priced : null;
+  const setupGroups = new Map();
+  for (const row of rows) {
+    const setup = row.setup;
+    const key = setup ? `${setup.id || "custom"}:${setup.version ?? "custom"}:${setup.fingerprint || ""}` : "unattributed";
+    const group = setupGroups.get(key) || {
+      id: setup?.id ?? null,
+      version: setup?.version ?? null,
+      name: setup?.name || "Unattributed",
+      fingerprint: setup?.fingerprint || null,
+      count: 0,
+      wins: 0,
+      pnl: 0,
+      fees: 0,
+    };
+    group.count += 1;
+    if (row.status === "win") group.wins += 1;
+    group.pnl += Number(row.pnl) || 0;
+    group.fees += Number(row.feeUsd) || 0;
+    setupGroups.set(key, group);
+  }
   return {
     book,
     count,
@@ -112,6 +132,12 @@ function computeStats(entries, { book = "paper", maxSteps = 6 } = {}) {
     seriesWon: seriesDone,
     seriesHalted,
     stepHits,
+    setupVersions: [...setupGroups.values()].map((group) => ({
+      ...group,
+      pnl: Number(group.pnl.toFixed(2)),
+      fees: Number(group.fees.toFixed(2)),
+      winRate: group.count ? group.wins / group.count : null,
+    })),
   };
 }
 
@@ -150,6 +176,10 @@ const CSV_COLUMNS = [
   ["pnl_usd", (e) => e.pnl ?? ""],
   ["balance_after", (e) => e.balanceAfter ?? ""],
   ["round", (e) => e.slug || ""],
+  ["setup_id", (e) => e.setup?.id || ""],
+  ["setup_version", (e) => e.setup?.version ?? ""],
+  ["setup_name", (e) => e.setup?.name || ""],
+  ["setup_fingerprint", (e) => e.setup?.fingerprint || ""],
   ["settlement_status", (e) => e.settlementStatus || (bookOf(e) === "live" ? "legacy" : "")],
   ["settlement_source", (e) => e.settlementSource || (bookOf(e) === "live" ? "legacy_binance" : "")],
   ["order_id", (e) => e.orderId || ""],

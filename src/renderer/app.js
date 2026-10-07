@@ -33,6 +33,11 @@
     telegramDraftDirty: false,
     execution: null,
     executionBusy: false,
+    setupLibrary: null,
+    selectedSetupId: "",
+    selectedSetupVersionId: "",
+    setupBusy: false,
+    setupRequestId: 0,
   };
 
   function applyI18n() {
@@ -309,6 +314,14 @@
     return t(`reason_${reason}`) !== `reason_${reason}` ? t(`reason_${reason}`) : String(reason).replace(/_/g, " ");
   }
 
+  function setupAttributionText(setup) {
+    if (!setup) return "";
+    const name = setup.name || (setup.id ? t("setupActive") : t("setupModified"));
+    const version = setup.id && setup.version != null ? ` v${setup.version}` : "";
+    const modified = setup.modified && setup.id ? ` · ${t("setupLogModified")}` : "";
+    return `${name}${version}${modified}`;
+  }
+
   function logLine(row) {
     const when = (row.ts || "").slice(11, 19);
     const type = row.type;
@@ -374,6 +387,10 @@
     } else if (type === "stake_capped") {
       title = t("logCapped");
       detail = `$${row.needed} \u2192 $${row.cap}`;
+    }
+    if (type === "order_sent" || type === "settled") {
+      const setup = setupAttributionText(row.setup);
+      if (setup) detail = [detail, setup].filter(Boolean).join(" · ");
     }
     if (type === "order_sent" && row.dryRun) title = t("logDryOrder");
     const kind = type === "settled" ? (row.status === "win" ? "win" : "loss") : type;
@@ -491,6 +508,11 @@
     renderLog(snap);
     if ($("panelBody")?.querySelector("#planBox")) state.paintPlan?.(snap);
     updateSettingsLockUi(snap);
+    if ($("setupActiveLabel")) {
+      renderActiveSetupLabel();
+      renderSetupTimeframeMeta();
+      updateSetupSafety();
+    }
     paintExecution(execution);
   }
 
@@ -658,6 +680,7 @@
     clearInterval(state.telegramTimer);
     state.telegramTimer = 0;
     $("panel").hidden = true;
+    state.setupRequestId += 1;
     $("backdrop").hidden = true;
     const foot = $("panelFoot");
     if (foot) {
@@ -766,29 +789,319 @@
     }
   }
 
+  async function flushQueuedSettings() {
+    clearTimeout(state.saveTimer);
+    state.saveTimer = 0;
+    const queued = state.queuedSettingsPatch;
+    state.queuedSettingsPatch = {};
+    if (!Object.keys(queued).length) return state.settingsSaveQueue;
+    try {
+      const current = state.snapshot?.settings || {};
+      const normalized = window.VesperaSettings.normalizeSettings(queued, current, { strict: true });
+      const snap = await saveSettingsSerial(normalized);
+      if (!snap || !snap.settings) return snap;
+      state.snapshot = snap;
+      updateSettingsLockUi(snap);
+      if (window.VesperaChart?.setRefreshMs) window.VesperaChart.setRefreshMs(snap.settings.refreshMs);
+      if (queued.minCrossTicks != null || queued.minOpeningAtr != null || queued.confirmCount != null || queued.fullBodyOnS != null || queued.fastPeriod != null || queued.slowPeriod != null || queued.maType != null) {
+        renderSnap(snap);
+      }
+      const panel = $("panelBody");
+      if (panel && !$("panel").hidden) state.paintPlan?.(snap);
+      return snap;
+    } catch (err) {
+      if (!$("panel").hidden) settingError(localizedSettingsError(err), err && err.field);
+      throw err;
+    }
+  }
+
+  function setupReasonText(reason, fallbackKey = "setupFailed") {
+    if (!reason) return t(fallbackKey);
+    const code = typeof reason === "string" ? reason : reason.code || reason.reason;
+    const key = `setupError_${code || ""}`;
+    return code && t(key) !== key ? t(key) : `${t(fallbackKey)}${code ? `: ${code}` : ""}`;
+  }
+
+  function setupSelectedVersion() {
+    const setup = state.setupLibrary?.setups?.find((item) => String(item.id) === state.selectedSetupId);
+    const version = setup?.versions?.find((item) => String(item.version) === state.selectedSetupVersionId);
+    return setup && version ? { setup, version } : null;
+  }
+
+  function activeSetupForUi() {
+    if (state.snapshot && Object.hasOwn(state.snapshot, "activeSetup")) return state.snapshot.activeSetup;
+    return state.setupLibrary?.activeSetup || null;
+  }
+
+  function renderActiveSetupLabel() {
+    const label = $("setupActiveLabel");
+    if (!label) return;
+    const active = activeSetupForUi();
+    label.textContent = active
+      ? `${t("setupActive")}: ${active.name || ""} · v${active.version}${active.modified ? ` · ${t("setupModified")}` : ""}`
+      : t("setupModified");
+  }
+
+  function renderSetupTimeframeMeta() {
+    const meta = $("setupTimeframeMeta");
+    if (!meta) return;
+    const selected = setupSelectedVersion();
+    const settings = selected?.version.settings || state.snapshot?.settings || {};
+    const signalTimeframe = selected?.version.signalTimeframe || settings.timeframe || "—";
+    const marketTimeframe = selected?.version.marketTimeframe || settings.marketTimeframe || "—";
+    const details = [
+      `${t("setupSignalTimeframe")}: ${signalTimeframe}`,
+      `${t("setupMarketTimeframe")}: ${marketTimeframe}`,
+    ];
+    if (signalTimeframe !== "—" && signalTimeframe === marketTimeframe) details.push(t("setupSameTimeframe"));
+    const snap = state.snapshot;
+    if (snap?.mode === "auto" && ["1h", "4h"].includes(signalTimeframe)) {
+      const setupSymbol = settings.symbol;
+      const currentSymbol = snap.settings?.symbol;
+      const pair = snap.symbols?.find((symbol) => symbol.id === setupSymbol)?.label || setupSymbol || "";
+      const supported = Array.isArray(snap.polymarketTimeframes) && setupSymbol && setupSymbol === currentSymbol
+        ? snap.polymarketTimeframes
+        : null;
+      if (supported) {
+        const key = supported.includes(signalTimeframe) ? "setupAutoPairSupported" : "setupAutoPairUnsupported";
+        details.push(t(key).replace("{pair}", pair).replace("{timeframes}", supported.join(", ")).replace("{timeframe}", signalTimeframe));
+      } else {
+        details.push(t("setupAutoPairOnly"));
+      }
+    }
+    meta.textContent = details.join(" · ");
+  }
+
+  function setupApplyBlocked() {
+    if (!state.snapshot) return true;
+    const snap = state.snapshot;
+    return Boolean(
+      snap.running || snap.orderPending || snap.testPositionActive || snap.finalPending || snap.liveBet ||
+      snap.paper?.openBet || snap.settingsLocked || Number(snap.risk?.consecutiveLosses) > 0
+    );
+  }
+
+  function updateSetupSafety() {
+    const blocked = setupApplyBlocked();
+    const button = $("setupApplyButton");
+    const notice = $("setupSafetyNotice");
+    if (button) button.disabled = blocked || state.setupBusy || !setupSelectedVersion();
+    if (notice) {
+      notice.hidden = !blocked;
+      notice.textContent = t("setupApplyLocked");
+    }
+    return !blocked;
+  }
+
+  function renderSetupLibrary() {
+    const select = $("setupVersionSelect");
+    if (!select) return;
+    const setups = state.setupLibrary?.setups || [];
+    const rows = setups.flatMap((setup) => (setup.versions || []).map((version) => ({ setup, version })));
+    if (!rows.some(({ setup, version }) => String(setup.id) === state.selectedSetupId && String(version.version) === state.selectedSetupVersionId)) {
+      const active = activeSetupForUi();
+      const activeRow = rows.find(({ setup, version }) => String(setup.id) === String(active?.id) && String(version.version) === String(active?.version));
+      const latestRow = rows.find(({ setup }) => String(setup.id) === String(active?.id)) || rows[0];
+      const row = activeRow || latestRow;
+      state.selectedSetupId = row ? String(row.setup.id) : "";
+      state.selectedSetupVersionId = row ? String(row.version.version) : "";
+    }
+
+    select.replaceChildren();
+    if (!rows.length) {
+      const empty = document.createElement("option");
+      empty.value = "";
+      empty.textContent = t("setupNone");
+      select.appendChild(empty);
+    } else {
+      rows.forEach(({ setup, version }) => {
+        const option = document.createElement("option");
+        option.value = `${setup.id}\u0000${version.version}`;
+        option.textContent = `${version.name || setup.name} · v${version.version}`;
+        option.selected = String(setup.id) === state.selectedSetupId && String(version.version) === state.selectedSetupVersionId;
+        select.appendChild(option);
+      });
+    }
+
+    const selected = setupSelectedVersion();
+    const name = $("setupNameInput");
+    if (name && selected && document.activeElement !== name) name.value = selected.version.name || selected.setup.name || "";
+    renderActiveSetupLabel();
+    renderSetupTimeframeMeta();
+    const hasSelection = Boolean(selected);
+    ["setupCopyButton", "setupExportButton"].forEach((id) => {
+      const button = $(id);
+      if (button) button.disabled = state.setupBusy || !hasSelection;
+    });
+    updateSetupSafety();
+    bodySetupControlsDisabled(state.setupBusy);
+  }
+
+  function bodySetupControlsDisabled(disabled) {
+    document.querySelectorAll("#settingsSetupCard [data-setup-control], #settingsSetupCard [data-setup-action]").forEach((el) => {
+      if (el.dataset.setupAction === "apply") return;
+      const needsSelection = ["copy", "export"].includes(el.dataset.setupAction);
+      el.disabled = disabled || (needsSelection && !setupSelectedVersion());
+    });
+    updateSetupSafety();
+  }
+
+  function setSetupStatus(message, isError = false) {
+    const status = $("setupStatusMessage");
+    if (!status) return;
+    status.textContent = message;
+    status.classList.toggle("warn", isError);
+    status.hidden = !message;
+  }
+
+  async function refreshSetupLibrary() {
+    if (!$("settingsSetupCard") || $("panel").hidden) return;
+    const requestId = ++state.setupRequestId;
+    const isCurrent = () => requestId === state.setupRequestId && !$("panel").hidden && $("settingsGroup-strategy")?.hidden === false;
+    const select = $("setupVersionSelect");
+    if (select && !state.setupLibrary) {
+      select.replaceChildren();
+      const loading = document.createElement("option");
+      loading.textContent = t("setupLoading");
+      select.appendChild(loading);
+    }
+    setSetupStatus("");
+    try {
+      if (typeof window.vespera?.listSetups !== "function") throw { code: "api_unavailable" };
+      const result = await window.vespera.listSetups();
+      if (!isCurrent()) return;
+      if (!result || result.ok === false) throw { code: result?.reason || "list_failed" };
+      state.setupLibrary = result;
+      if (state.snapshot) state.snapshot = { ...state.snapshot, activeSetup: result.activeSetup || null };
+      renderSetupLibrary();
+    } catch (error) {
+      if (!isCurrent()) return;
+      state.setupLibrary = null;
+      renderSetupLibrary();
+      const message = error?.code === "api_unavailable"
+        ? t("setupUnavailable")
+        : setupReasonText(error?.reason || error?.code, "setupUnavailable");
+      setSetupStatus(message, true);
+      const button = $("setupApplyButton");
+      if (button) button.disabled = true;
+    }
+  }
+
+  async function runSetupAction(action) {
+    if (state.setupBusy) return;
+    const requestId = state.setupRequestId;
+    const panelIsCurrent = () => requestId === state.setupRequestId && !$("panel").hidden && Boolean($("settingsSetupCard"));
+    const selected = setupSelectedVersion();
+    const name = $("setupNameInput")?.value.trim() || "";
+    if (["save", "new", "copy"].includes(action) && !name) {
+      setSetupStatus(t("setupNameRequired"), true);
+      $("setupNameInput")?.focus();
+      return;
+    }
+    if (action === "apply" && !updateSetupSafety()) {
+      setSetupStatus(t("setupApplyLocked"), true);
+      return;
+    }
+    if (["apply", "copy", "export"].includes(action) && !selected) return;
+
+    const method = {
+      save: "saveSetup", new: "saveSetup", apply: "applySetup", copy: "copySetup", import: "importSetup", export: "exportSetup",
+    }[action];
+    if (typeof window.vespera?.[method] !== "function") {
+      setSetupStatus(t("setupUnavailable"), true);
+      return;
+    }
+
+    state.setupBusy = true;
+    setSetupStatus("");
+    bodySetupControlsDisabled(true);
+    const strategyControls = ["save", "new"].includes(action)
+      ? [...document.querySelectorAll("#settingsGroup-strategy input, #settingsGroup-strategy textarea, #settingsGroup-strategy select, #settingsGroup-strategy button")]
+        .filter((control) => !control.closest("#settingsSetupCard"))
+        .map((control) => ({ control, disabled: control.disabled }))
+      : [];
+    strategyControls.forEach(({ control }) => { control.disabled = true; });
+    try {
+      let result;
+      if (action === "save" || action === "new") {
+        await flushQueuedSettings();
+        await state.settingsSaveQueue;
+        result = await window.vespera.saveSetup({ name, ...(action === "save" && selected ? { id: selected.setup.id } : {}) });
+      } else if (action === "apply") {
+        result = await window.vespera.applySetup({ id: selected.setup.id, version: selected.version.version });
+      } else if (action === "copy") {
+        result = await window.vespera.copySetup({ id: selected.setup.id, version: selected.version.version, name });
+      } else if (action === "import") {
+        result = await window.vespera.importSetup();
+      } else {
+        result = await window.vespera.exportSetup({ id: selected.setup.id, version: selected.version.version });
+      }
+      if (!result || result.ok === false) {
+        if (result?.state?.settings) {
+          state.snapshot = result.state;
+          renderSnap(result.state);
+        }
+        throw { reason: result?.reason || "action_failed" };
+      }
+
+      const returnedSetup = result.setup || result;
+      let preferredId = returnedSetup.id;
+      const preferredVersion = returnedSetup.version?.version || returnedSetup.version || returnedSetup.versionNumber;
+      const activeTab = $("panelBody")?.querySelector("[data-settings-tab].on")?.dataset.settingsTab || "strategy";
+      if (result.activeSetup && state.snapshot) {
+        state.snapshot = { ...state.snapshot, activeSetup: result.activeSetup };
+        renderActiveSetupLabel();
+      }
+      if (action === "apply" && result.state?.settings) {
+        state.snapshot = result.state;
+        renderSnap(result.state);
+      }
+      if (panelIsCurrent()) {
+        if (action === "export") setSetupStatus(t("setupExported"));
+        else if (action === "apply") setSetupStatus(t("setupApplied"));
+        else if (action === "import") setSetupStatus(t("setupImported"));
+        else if (action === "copy") setSetupStatus(t("setupCopied"));
+        else setSetupStatus(t("setupDone"));
+      }
+
+      if (!["export", "apply"].includes(action) && panelIsCurrent()) {
+        const previousIds = new Set((state.setupLibrary?.setups || []).map((setup) => String(setup.id)));
+        if (action === "save") preferredId = preferredId || selected?.setup.id;
+        if (action === "apply") preferredId = selected.setup.id;
+        await refreshSetupLibrary();
+        if (["save", "new"].includes(action) && preferredId) {
+          const setup = state.setupLibrary?.setups?.find((item) => String(item.id) === String(preferredId));
+          state.selectedSetupId = setup ? String(setup.id) : state.selectedSetupId;
+          const latest = setup?.versions?.find((version) => String(version.version) === String(preferredVersion || setup.latestVersion)) || setup?.versions?.at(-1);
+          if (latest) state.selectedSetupVersionId = String(latest.version);
+      } else if (action === "copy" || action === "import") {
+          const newlyAdded = state.setupLibrary?.setups?.find((setup) => !previousIds.has(String(setup.id)) && (!preferredId || String(setup.id) === String(preferredId))) ||
+            state.setupLibrary?.setups?.find((setup) => String(setup.id) === String(preferredId));
+          if (newlyAdded) {
+            state.selectedSetupId = String(newlyAdded.id);
+            const latest = newlyAdded.versions?.find((version) => String(version.version) === String(preferredVersion || newlyAdded.latestVersion)) || newlyAdded.versions?.at(-1);
+            if (latest) state.selectedSetupVersionId = String(latest.version);
+          }
+        }
+        renderSetupLibrary();
+      }
+      if (action === "apply" && panelIsCurrent()) {
+        openPanel("settings");
+        $("panelBody")?.querySelector(`[data-settings-tab="${activeTab}"]`)?.click();
+      }
+    } catch (error) {
+      if (panelIsCurrent()) setSetupStatus(setupReasonText(error?.reason || error?.code, "setupFailed"), true);
+    } finally {
+      state.setupBusy = false;
+      strategyControls.forEach(({ control, disabled }) => { control.disabled = disabled; });
+      bodySetupControlsDisabled(false);
+    }
+  }
+
   function queueDebouncedSettings(patch, ms = 80) {
     state.queuedSettingsPatch = { ...state.queuedSettingsPatch, ...patch };
     clearTimeout(state.saveTimer);
-    state.saveTimer = setTimeout(async () => {
-      const queued = state.queuedSettingsPatch;
-      state.queuedSettingsPatch = {};
-      try {
-        const current = state.snapshot?.settings || {};
-        const normalized = window.VesperaSettings.normalizeSettings(queued, current, { strict: true });
-        const snap = await saveSettingsSerial(normalized);
-        if (!snap || !snap.settings) return;
-        state.snapshot = snap;
-        updateSettingsLockUi(snap);
-        if (window.VesperaChart?.setRefreshMs) window.VesperaChart.setRefreshMs(snap.settings.refreshMs);
-        if (queued.minCrossTicks != null || queued.minOpeningAtr != null || queued.confirmCount != null || queued.fullBodyOnS != null || queued.fastPeriod != null || queued.slowPeriod != null || queued.maType != null) {
-          renderSnap(snap);
-        }
-        const panel = $("panelBody");
-        if (panel && !$("panel").hidden) state.paintPlan?.(snap);
-      } catch (err) {
-        if (!$("panel").hidden) settingError(localizedSettingsError(err), err && err.field);
-      }
-    }, ms);
+    state.saveTimer = setTimeout(() => flushQueuedSettings().catch(() => {}), ms);
   }
 
   function debounceSave(patch, ms = 80) {
@@ -955,6 +1268,7 @@
   }
 
   function openPanel(kind) {
+    state.setupRequestId += 1;
     const body = $("panelBody");
     const title = $("panelTitle");
     const foot = $("panelFoot");
@@ -1571,6 +1885,22 @@
         </div>
         </section>
         <section class="settings-group" id="settingsGroup-strategy" data-settings-group="strategy" role="tabpanel" aria-labelledby="settingsTab-strategy">
+        <section class="settings-setup-card" id="settingsSetupCard" aria-labelledby="setupsTitle">
+          <div class="settings-setup-heading"><div><strong id="setupsTitle">${t("setupsTitle")}</strong><p class="hint">${t("setupsHint")}</p></div><span class="settings-setup-active" id="setupActiveLabel"></span></div>
+          <div class="field"><label for="setupVersionSelect">${t("setupSelect")}</label><select id="setupVersionSelect" data-setup-control><option value="">${t("setupLoading")}</option></select></div>
+          <div class="field"><label for="setupNameInput">${t("setupName")}</label><input id="setupNameInput" type="text" maxlength="80" placeholder="${t("setupNamePlaceholder")}" autocomplete="off" data-setup-control /></div>
+          <div class="settings-setup-meta" id="setupTimeframeMeta"></div>
+          <p class="hint warn settings-setup-message" id="setupSafetyNotice" role="status" hidden></p>
+          <p class="hint settings-setup-message" id="setupStatusMessage" role="status" hidden></p>
+          <div class="settings-button-row settings-setup-actions">
+            <button type="button" class="ghost" id="setupSaveButton" data-setup-action="save">${t("setupSave")}</button>
+            <button type="button" class="ghost" id="setupSaveNewButton" data-setup-action="new">${t("setupSaveNew")}</button>
+            <button type="button" class="ghost" id="setupApplyButton" data-setup-action="apply">${t("setupApply")}</button>
+            <button type="button" class="ghost" id="setupCopyButton" data-setup-action="copy">${t("setupCopy")}</button>
+            <button type="button" class="ghost" id="setupImportButton" data-setup-action="import">${t("setupImport")}</button>
+            <button type="button" class="ghost" id="setupExportButton" data-setup-action="export">${t("setupExport")}</button>
+          </div>
+        </section>
         <div class="field">
           <span class="field-label">${t("minOpening")}${helpBtn("minOpeningHint")}</span>
           <div class="range-row">
@@ -1674,6 +2004,7 @@
           section.hidden = section.dataset.settingsGroup !== group;
         });
         state.paintSettingsSaveButton?.(group);
+        if (group === "strategy") refreshSetupLibrary();
       };
       body.querySelectorAll("[data-settings-tab]").forEach((tab) => {
         tab.onclick = () => selectSettingsGroup(tab.dataset.settingsTab);
@@ -1687,6 +2018,19 @@
           selectSettingsGroup(next.dataset.settingsTab);
         };
       });
+      $("setupVersionSelect").onchange = (event) => {
+        const [setupId, versionId] = String(event.target.value).split("\u0000");
+        state.selectedSetupId = setupId || "";
+        state.selectedSetupVersionId = versionId || "";
+        renderSetupLibrary();
+      };
+      $("setupSaveButton").onclick = () => runSetupAction("save");
+      $("setupSaveNewButton").onclick = () => runSetupAction("new");
+      $("setupApplyButton").onclick = () => runSetupAction("apply");
+      $("setupCopyButton").onclick = () => runSetupAction("copy");
+      $("setupImportButton").onclick = () => runSetupAction("import");
+      $("setupExportButton").onclick = () => runSetupAction("export");
+      refreshSetupLibrary();
       $("settingsOpenPolymarket").onclick = () => openPanel("api");
       const updateSettingsThemes = () => {
         document.querySelectorAll(".settings-group [data-theme]").forEach((button) => {
@@ -2238,6 +2582,11 @@
       const steps = (st.stepHits || [])
         .map((n, i) => `<span class="plan-step${i + 1 === r.maxSteps && n ? " neg" : ""}">${i + 1}: ${n}</span>`)
         .join("");
+      const setupBreakdown = (st.setupVersions || []).map((setup) => {
+        const name = setup.name || t("setupModified");
+        const version = setup.id && setup.version != null ? ` v${setup.version}` : "";
+        return `<div class="setup-stats-row"><strong>${esc(name + version)}</strong><span>${Number(setup.count) || 0} · ${pct(setup.winRate)} · ${usd(Number(setup.pnl) || 0)}</span></div>`;
+      }).join("");
       body.innerHTML = `
         <p class="hint">${t(snap.book === "live" ? "statsHintLive" : snap.book === "dry" ? "statsHintDry" : "statsHintPaper")}</p>
         ${row(t("series"), `${r.step}/${r.maxSteps} \u00b7 $${r.size}${Number(r.seriesLossUsd) > 0 ? ` \u00b7 ${t("statsSeriesLoss")} $${r.seriesLossUsd}` : ""}`)}
@@ -2255,6 +2604,7 @@
         ${row(t("statsHalted"), String(st.seriesHalted || 0), st.seriesHalted ? "neg" : "")}
         <div class="field-label" style="margin-top:12px">${t("statsSteps")}</div>
         <div class="plan-steps">${steps}</div>
+        ${setupBreakdown ? `<div class="field-label" style="margin-top:14px">${t("statsSetupVersions")}</div><div class="setup-stats-list">${setupBreakdown}</div>` : ""}
         ${st.count && st.count < 50 ? `<p class="hint">${t("statsFew")}</p>` : ""}
         <div class="field-label" style="margin-top:14px">${t("statsByDay")}</div>
         ${
@@ -2288,7 +2638,7 @@
           .map((row) => {
             const line = logLine(row);
             return `<div class="hint journal-line"><span class="log-time">${line.when}</span> ${line.title}${
-              line.detail ? " · " + line.detail : ""
+              line.detail ? " · " + esc(line.detail) : ""
             }</div>`;
           })
           .join("") || `<p class="hint">${t("logEmpty")}</p>`);
