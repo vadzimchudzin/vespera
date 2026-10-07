@@ -2,7 +2,7 @@
 
 Glass desktop terminal for BTC 15m Polymarket Up/Down.
 
-**v0.23.0 source.** SMA/EMA 200/20 on a **closed** candle `S`, bet on **S+1**. Arrow sits on the entry candle. Auto prices the live Polymarket round and sends **CLOB V2** signed orders once the wallet, a signing key and the derived CLOB keys are in the API panel.
+**v0.24.0.** SMA/EMA 200/20 on a **closed** candle `S`, bet on **S+1**. Arrow sits on the entry candle. Auto prices the live Polymarket round and sends **CLOB V2** signed orders once the wallet, a signing key and the derived CLOB keys are in the API panel.
 
 **Для следующих агентов:** [подробный отчёт и передача проекта](#отчёт-и-передача-проекта--2026-10-06) · [ROADMAP](ROADMAP.md) · [правила Zero Mode](docs/ZERO_MODE.md). Публикация релиза не означает слияние PR в `main`; перед продолжением сверяйте GitHub.
 
@@ -23,6 +23,13 @@ external alerts and a 24–72-hour soak still require the real server.
 Repo: private [`VadimChudin/vespera`](https://github.com/VadimChudin/vespera)
 
 ## What it does
+
+**Research lab.** Backtest an exact saved setup and compare up to ten independent
+forward Paper books, sharing feeds by market/timeframe. Balance, series and results
+are separate from account trades. Stored datasets/fingerprints identify the replay;
+the current Binance/0.50 model is explicitly approximate, not historical Polymarket
+returns. Reports expose fees, drawdown and sample size alongside P&L.
+See [Research](docs/RESEARCH.md).
 
 **Saved setups.** Settings → Strategy saves named immutable versions, copies and
 imports/exports definitions without secrets. Trades keep their original setup

@@ -84,6 +84,7 @@ class ExecutionHost {
     if (this.research) {
       this.research.engine = this.engine;
       this.research.setupStore = this.setupStore;
+      this.research.disposed = false;
     }
     this.unsubscribe = this.engine.on((evt) => {
       // Engine settings events contain the private settings object.

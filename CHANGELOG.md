@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.24.0 — 2026-10-07
+
+- **Research lab:** closed-candle historical replay using the same setup evaluator, Paper economics and risk rules; pinned versions and dataset fingerprints. Approximate Binance outcomes and a 0.50 entry assumption are disclosed, not presented as historical venue returns.
+- **Parallel Paper:** up to ten separate books, balances, positions and series using shared market streams by symbol/timeframe; persisted virtual state, stopped/active ownership controls and comparisons by day/week/month.
+- **Reports:** fees, net result, drawdown, win rate, sample size, setup version and CSV export. Research cannot access the live broker or signing credentials, and never changes the trading account's series.
+
 ## 0.23.0 — source changes, 2026-10-07
 
 - **Saved setups:** named append-only versions of strategy, market, timeframe, indicators and sizing/limits; exact-version application while stopped, independent copies and bounded JSON import/export with a strict secret-free schema. Mode, dry run, credentials and balances are not setup fields.

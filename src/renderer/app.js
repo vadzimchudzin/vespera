@@ -38,7 +38,25 @@
     selectedSetupVersionId: "",
     setupBusy: false,
     setupRequestId: 0,
+    researchTimer: 0,
+    researchRequestId: 0,
+    researchPolling: false,
+    researchReportRequestId: 0,
+    researchRuns: [],
+    researchSetups: [],
+    researchSelectedPaper: [],
+    researchPeriod: "day",
+    researchPeriodInitialized: false,
+    researchSort: "netPnl",
+    researchSortDirection: "desc",
+    researchBusy: "",
+    researchReport: null,
   };
+  window.addEventListener("beforeunload", () => {
+    clearInterval(state.researchTimer);
+    state.researchRequestId += 1;
+    state.researchReportRequestId += 1;
+  }, { once: true });
 
   function applyI18n() {
     document.querySelectorAll("[data-i18n]").forEach((el) => {
@@ -679,6 +697,9 @@
     state.depositTimer = 0;
     clearInterval(state.telegramTimer);
     state.telegramTimer = 0;
+    clearInterval(state.researchTimer);
+    state.researchTimer = 0;
+    state.researchRequestId += 1;
     $("panel").hidden = true;
     state.setupRequestId += 1;
     $("backdrop").hidden = true;
@@ -688,6 +709,319 @@
       foot.innerHTML = "";
     }
     closeMenus();
+  }
+
+  function researchMessage(message, isError = false) {
+    const output = $("researchStatusMessage");
+    if (!output) return;
+    output.textContent = message || "";
+    output.classList.toggle("warn", Boolean(isError));
+  }
+
+  function researchNumber(value, digits = 2) {
+    const number = Number(value);
+    return Number.isFinite(number)
+      ? new Intl.NumberFormat(state.locale, { minimumFractionDigits: digits, maximumFractionDigits: digits }).format(number)
+      : "—";
+  }
+
+  function researchUsd(value) {
+    const number = Number(value);
+    return Number.isFinite(number)
+      ? new Intl.NumberFormat(state.locale, { style: "currency", currency: "USD" }).format(number)
+      : "—";
+  }
+
+  function researchSetupsHtml(select, multiple) {
+    if (!select) return;
+    const previous = multiple ? new Set(state.researchSelectedPaper) : new Set([select.value]);
+    const rows = state.researchSetups.flatMap((setup) => (setup.versions || []).map((version) => ({ setup, version })));
+    select.replaceChildren();
+    if (!rows.length) {
+      const option = document.createElement("option");
+      option.textContent = t("researchNoSetups");
+      option.disabled = true;
+      select.appendChild(option);
+      select.selectedIndex = 0;
+      return;
+    }
+    rows.forEach(({ setup, version }) => {
+      const option = document.createElement("option");
+      option.value = `${setup.id}\u0000${version.version}`;
+      option.textContent = `${version.name || setup.name || t("setupActive")} · v${version.version}`;
+      option.selected = previous.has(option.value);
+      select.appendChild(option);
+    });
+    if (!multiple && !select.value) select.selectedIndex = 0;
+  }
+
+  function researchStat(run, names) {
+    const stats = run?.stats || {};
+    for (const name of names) {
+      const value = run?.[name] ?? stats[name];
+      if (value != null && Number.isFinite(Number(value))) return Number(value);
+    }
+    return null;
+  }
+
+  function researchMetric(run, metric) {
+    if (metric === "netPnl") return researchStat(run, ["netPnl", "netPnL", "pnl", "profit"]);
+    if (metric === "drawdown") return researchStat(run, ["maxDrawdown", "drawdown", "maxDrawdownPct"]);
+    if (metric === "fees") return researchStat(run, ["fees", "totalFees"]);
+    if (metric === "winRate") return researchStat(run, ["winRate"]);
+    if (metric === "trades") {
+      const trades = run?.trades ?? run?.stats?.trades ?? run?.stats?.tradeCount;
+      return Array.isArray(trades) ? trades.length : Number.isFinite(Number(trades)) ? Number(trades) : null;
+    }
+    return null;
+  }
+
+  function renderResearchRuns() {
+    const host = $("researchRuns");
+    if (!host) return;
+    const runs = [...state.researchRuns].sort((a, b) => {
+      const left = researchMetric(a, state.researchSort);
+      const right = researchMetric(b, state.researchSort);
+      if (left == null && right == null) return String(a.name || a.id).localeCompare(String(b.name || b.id));
+      if (left == null) return 1;
+      if (right == null) return -1;
+      return (left - right) * (state.researchSortDirection === "asc" ? 1 : -1);
+    });
+    if (!runs.length) {
+      host.innerHTML = `<p class="hint">${t("researchNoRuns")}</p>`;
+      return;
+    }
+    const sort = (key, label) => `<button type="button" class="research-sort" data-research-sort="${key}" aria-label="${t("researchSortBy")} ${label}">${label}${state.researchSort === key ? (state.researchSortDirection === "asc" ? " ↑" : " ↓") : ""}</button>`;
+    const rows = runs.map((run) => {
+      const stats = run.stats || {};
+      const openBet = run.openBet && typeof run.openBet === "object" ? researchUsd(run.openBet.amount ?? run.openBet.stake ?? run.openBet.sizeUsd) : run.openBet ? t("researchOpen") : t("researchNone");
+      const trades = researchMetric(run, "trades");
+      const pnl = researchMetric(run, "netPnl");
+      const drawdown = researchMetric(run, "drawdown");
+      const fees = researchMetric(run, "fees");
+      const winRate = researchMetric(run, "winRate");
+      const versionNumber = run.version ?? run.setup?.version;
+      const version = versionNumber == null ? "—" : `v${versionNumber}`;
+      const period = run.period && typeof run.period === "object" ? `${run.period.bars ?? 0} ${t("researchSamples")}${run.period.fromTs != null ? ` · ${new Date(run.period.fromTs).toLocaleDateString(state.locale)}` : ""}${run.period.toTs != null ? ` – ${new Date(run.period.toTs).toLocaleDateString(state.locale)}` : ""}` : "—";
+      const hash = run.datasetHash ? `<span class="research-hash" title="${esc(run.datasetHash)}">${esc(String(run.datasetHash))}</span>` : "—";
+      const status = run.running || run.status === "running" ? t("researchRunning") : esc(run.status === "error" && run.error ? run.error : run.status || t("researchComplete"));
+      const approximate = run.approximate ? `<span class="research-approx-badge">${t("researchApproximate")}</span>` : "";
+      const pnlClass = pnl == null ? "" : pnl < 0 ? "neg" : "pos";
+      const ddValue = drawdown == null ? "—" : `${researchNumber(drawdown)}${stats.maxDrawdownPct === drawdown ? "%" : ""}`;
+      const stop = run.mode === "paper" && (run.running || run.status === "running")
+        ? `<button class="ghost research-stop" type="button" data-research-stop="${esc(run.id)}">${t("stop")}</button>` : "";
+      return `<tr>
+        <td><strong>${esc(run.name || run.setup?.name || run.id || "—")}</strong><small>${esc(run.mode || "—")} · ${version} · ${status}</small>${approximate}<small>${t("researchBalance")}: ${researchUsd(run.balance)} · ${t("researchOpenBet")}: ${esc(openBet)}</small><small>${t("researchPeriodSample")}: ${esc(period)}</small><small>${t("researchDataset")}: ${hash}</small></td>
+        <td class="${pnlClass}">${pnl == null ? "—" : researchUsd(pnl)}</td>
+        <td>${ddValue}</td><td>${fees == null ? "—" : researchUsd(fees)}</td><td>${trades == null ? "—" : researchNumber(trades, 0)}</td><td>${winRate == null ? "—" : `${researchNumber(winRate * 100)}%`}</td><td>${stop}</td>
+      </tr>`;
+    }).join("");
+    host.innerHTML = `<div class="research-table-wrap"><table class="research-table"><thead><tr><th>${t("researchRun")}</th><th>${sort("netPnl", t("researchNetPnl"))}</th><th>${sort("drawdown", t("researchDrawdown"))}</th><th>${sort("fees", t("researchFees"))}</th><th>${sort("trades", t("researchTrades"))}</th><th>${sort("winRate", t("researchWinRate"))}</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    host.querySelectorAll("[data-research-sort]").forEach((button) => {
+      button.onclick = () => {
+        const key = button.dataset.researchSort;
+        if (state.researchSort === key) state.researchSortDirection = state.researchSortDirection === "asc" ? "desc" : "asc";
+        else { state.researchSort = key; state.researchSortDirection = "desc"; }
+        renderResearchRuns();
+      };
+    });
+    host.querySelectorAll("[data-research-stop]").forEach((button) => {
+      button.onclick = async () => {
+        if (typeof window.vespera?.stopPaperRun !== "function") return researchMessage(t("researchUnavailable"), true);
+        button.disabled = true;
+        try {
+          const result = await window.vespera.stopPaperRun({ id: button.dataset.researchStop });
+          if (result?.ok === false) throw new Error(result.message || result.reason || t("researchFailed"));
+          researchMessage(t("researchStopped"));
+          await refreshResearchStatus();
+        } catch (error) { researchMessage(error.message || t("researchFailed"), true); }
+        finally { button.disabled = false; }
+      };
+    });
+  }
+
+  function renderResearchReport() {
+    const host = $("researchReport");
+    if (!host) return;
+    const value = state.researchReport?.report ?? state.researchReport;
+    const runs = Array.isArray(value?.runs) ? value.runs : null;
+    if (!value || (runs && !runs.length) || (Array.isArray(value) && !value.length) || (typeof value === "object" && !Array.isArray(value) && !Object.keys(value).length)) {
+      host.innerHTML = `<p class="hint">${t("researchNoReport")}</p>`;
+      return;
+    }
+    if (runs) {
+      host.innerHTML = `<div class="research-table-wrap"><table class="research-table research-report-table"><thead><tr><th>${t("researchRun")}</th><th>${t("researchTrades")}</th><th>${t("researchWinRate")}</th><th>${t("researchNetPnl")}</th><th>${t("researchFees")}</th><th>${t("researchDrawdown")}</th></tr></thead><tbody>${runs.map((run) => {
+        const stats = run.stats || {};
+        const pnl = Number(stats.pnl);
+        return `<tr><td>${esc(run.name || run.id)}<small>${esc(run.mode || "—")}</small></td><td>${esc(stats.count ?? 0)}</td><td>${stats.winRate == null ? "—" : `${researchNumber(Number(stats.winRate) * 100)}%`}</td><td class="${pnl < 0 ? "neg" : "pos"}">${Number.isFinite(pnl) ? researchUsd(pnl) : "—"}</td><td>${researchUsd(stats.fees)}</td><td>${researchUsd(stats.maxDrawdown)}</td></tr>`;
+      }).join("")}</tbody></table></div>`;
+      return;
+    }
+    const rows = Array.isArray(value) ? value : typeof value === "object" ? Object.entries(value).map(([key, item]) => ({ label: key, value: item })) : [{ label: t("researchReportsTitle"), value }];
+    host.innerHTML = `<div class="research-report-grid">${rows.map((row, index) => {
+      if (row && typeof row === "object") {
+        const entries = Object.entries(row);
+        return `<article>${entries.map(([key, item]) => `<span>${esc(key)}</span><strong>${esc(typeof item === "object" && item !== null ? JSON.stringify(item) : item)}</strong>`).join("")}</article>`;
+      }
+      return `<article><span>${index + 1}</span><strong>${esc(row)}</strong></article>`;
+    }).join("")}</div>`;
+  }
+
+  async function refreshResearchStatus() {
+    if ($("panel")?.hidden || $("panelBody")?.dataset.panelKind !== "research") return;
+    if (state.researchPolling) return;
+    state.researchPolling = true;
+    const requestId = state.researchRequestId;
+    if (typeof window.vespera?.researchStatus !== "function") {
+      researchMessage(t("researchUnavailable"), true);
+      state.researchRuns = [];
+      renderResearchRuns();
+      state.researchPolling = false;
+      return;
+    }
+    try {
+      const result = await window.vespera.researchStatus();
+      if (requestId !== state.researchRequestId || $("panelBody")?.dataset.panelKind !== "research") return;
+      if (!result || result.ok === false) throw new Error(result?.message || result?.reason || t("researchFailed"));
+      state.researchRuns = Array.isArray(result.runs) ? result.runs : [];
+      if (!state.researchPeriodInitialized && ["day", "week", "month"].includes(result.reportPeriod)) {
+        state.researchPeriod = result.reportPeriod;
+        state.researchPeriodInitialized = true;
+        if ($("researchPeriod")) $("researchPeriod").value = state.researchPeriod;
+      }
+      const streams = Array.isArray(result.streams) ? result.streams.length : Number(result.streams) || 0;
+      const streamEl = $("researchStreams");
+      if (streamEl) streamEl.textContent = t("researchStreams").replace("{count}", String(streams));
+      renderResearchRuns();
+    } catch (error) {
+      if (requestId === state.researchRequestId) researchMessage(error.message || t("researchFailed"), true);
+    } finally { state.researchPolling = false; }
+  }
+
+  async function refreshResearchReport(period = state.researchPeriod) {
+    const requestId = ++state.researchReportRequestId;
+    const host = $("researchReport");
+    if (host) host.innerHTML = `<p class="hint">${t("researchLoading")}</p>`;
+    if (typeof window.vespera?.researchReport !== "function") {
+      state.researchReport = null;
+      renderResearchReport();
+      return;
+    }
+    try {
+      const result = await window.vespera.researchReport({ period });
+      if (requestId !== state.researchReportRequestId || $("panelBody")?.dataset.panelKind !== "research") return;
+      if (result?.ok === false) throw new Error(result.message || result.reason || t("researchFailed"));
+      state.researchReport = result;
+      renderResearchReport();
+    } catch (error) {
+      if (requestId !== state.researchReportRequestId || $("panelBody")?.dataset.panelKind !== "research") return;
+      state.researchReport = null;
+      renderResearchReport();
+      researchMessage(error.message || t("researchFailed"), true);
+    }
+  }
+
+  async function initializeResearchPanel() {
+    const body = $("panelBody");
+    body.dataset.panelKind = "research";
+    const requestId = ++state.researchRequestId;
+    const backtestSelect = $("researchBacktestSetup");
+    const paperSelect = $("researchPaperSetups");
+    const actionButton = (id, busy) => {
+      const button = $(id);
+      if (button) button.disabled = Boolean(busy);
+    };
+    const readLibrary = async () => {
+      if (typeof window.vespera?.listSetups !== "function") throw new Error(t("researchUnavailable"));
+      const library = await window.vespera.listSetups();
+      if (!library || library.ok === false) throw new Error(library?.message || library?.reason || t("researchFailed"));
+      state.researchSetups = Array.isArray(library.setups) ? library.setups : [];
+      researchSetupsHtml(backtestSelect, false);
+      researchSetupsHtml(paperSelect, true);
+    };
+    try { await readLibrary(); }
+    catch (error) {
+      researchSetupsHtml(backtestSelect, false);
+      researchSetupsHtml(paperSelect, true);
+      researchMessage(error.message || t("researchUnavailable"), true);
+    }
+    if (requestId !== state.researchRequestId || body.dataset.panelKind !== "research") return;
+
+    paperSelect.onchange = () => {
+      const values = [...paperSelect.selectedOptions].map((option) => option.value).filter(Boolean);
+      if (values.length > 10) {
+        values.slice(10).forEach((value) => { const option = [...paperSelect.options].find((item) => item.value === value); if (option) option.selected = false; });
+        researchMessage(t("researchMaxSetups"), true);
+      }
+      state.researchSelectedPaper = [...paperSelect.selectedOptions].map((option) => option.value).filter(Boolean);
+      $("researchSelectionCount").textContent = t("researchSelectedCount").replace("{count}", String(state.researchSelectedPaper.length));
+    };
+    $("researchSelectionCount").textContent = t(state.researchSelectedPaper.length ? "researchSelectedCount" : "researchSelectedZero").replace("{count}", String(state.researchSelectedPaper.length));
+    $("researchBacktestButton").onclick = async () => {
+      if (state.researchBusy) return;
+      const [id, version] = String(backtestSelect.value || "").split("\u0000");
+      const startingBalance = Number($("researchStartingBalance").value);
+      const sampleSize = Number($("researchSampleSize").value);
+      const from = $("researchFrom").value;
+      const to = $("researchTo").value;
+      if (!id || !version) return researchMessage(t("researchSelectSetup"), true);
+      if (!Number.isFinite(startingBalance) || startingBalance <= 0) return researchMessage(t("researchInvalidBalance"), true);
+      if (!Number.isInteger(sampleSize) || sampleSize < 1 || sampleSize > 5000) return researchMessage(t("researchInvalidSample"), true);
+      if (from && to && from > to) return researchMessage(t("researchInvalidDates"), true);
+      if (typeof window.vespera?.runBacktest !== "function") return researchMessage(t("researchUnavailable"), true);
+      const selectedSetup = state.researchSetups.find((setup) => String(setup.id) === id);
+      const selectedVersion = selectedSetup?.versions?.find((item) => String(item.version) === version);
+      const intervalMs = ({ "1m": 60_000, "3m": 180_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000, "1h": 3_600_000, "2h": 7_200_000, "4h": 14_400_000, "6h": 21_600_000, "8h": 28_800_000, "12h": 43_200_000, "1d": 86_400_000 })[selectedVersion?.settings?.timeframe] || 1;
+      state.researchBusy = "backtest"; actionButton("researchBacktestButton", true); actionButton("researchPaperButton", true);
+      try {
+        const result = await window.vespera.runBacktest({
+          id, version: Number(version), startingBalance, sampleSize,
+          fromTs: from ? Date.parse(`${from}T00:00:00.000Z`) : undefined,
+          toTs: to ? Date.parse(`${to}T00:00:00.000Z`) + 86_400_000 - intervalMs : undefined,
+        });
+        if (!result || result.ok === false) throw new Error(result?.message || result?.reason || t("researchFailed"));
+        researchMessage(t("researchBacktestStarted"));
+        await refreshResearchStatus();
+      } catch (error) { researchMessage(error.message || t("researchFailed"), true); }
+      finally { state.researchBusy = ""; actionButton("researchBacktestButton", false); actionButton("researchPaperButton", false); }
+    };
+    $("researchPaperButton").onclick = async () => {
+      if (state.researchBusy) return;
+      const selected = [...paperSelect.selectedOptions].map((option) => option.value).filter(Boolean).slice(0, 10);
+      const startingBalance = Number($("researchStartingBalance").value);
+      if (!selected.length) return researchMessage(t("researchSelectSetup"), true);
+      if (!Number.isFinite(startingBalance) || startingBalance <= 0) return researchMessage(t("researchInvalidBalance"), true);
+      if (typeof window.vespera?.startPaperRuns !== "function") return researchMessage(t("researchUnavailable"), true);
+      const setups = selected.map((value) => { const [id, version] = value.split("\u0000"); return { id, version: Number(version) }; });
+      state.researchBusy = "paper"; actionButton("researchPaperButton", true); actionButton("researchBacktestButton", true);
+      try {
+        const result = await window.vespera.startPaperRuns({ setups, startingBalance });
+        if (!result || result.ok === false) throw new Error(result?.message || result?.reason || t("researchFailed"));
+        researchMessage(t("researchPaperStarted"));
+        await refreshResearchStatus();
+      } catch (error) { researchMessage(error.message || t("researchFailed"), true); }
+      finally { state.researchBusy = ""; actionButton("researchPaperButton", false); actionButton("researchBacktestButton", false); }
+    };
+    $("researchPeriod").value = state.researchPeriod;
+    $("researchPeriod").onchange = () => {
+      state.researchPeriod = ["day", "week", "month"].includes($("researchPeriod").value) ? $("researchPeriod").value : "day";
+      refreshResearchReport(state.researchPeriod);
+    };
+    $("researchExportButton").onclick = async () => {
+      if (typeof window.vespera?.exportResearch !== "function") return researchMessage(t("researchUnavailable"), true);
+      actionButton("researchExportButton", true);
+      try {
+        const result = await window.vespera.exportResearch({ period: state.researchPeriod });
+        if (!result || result.ok === false) throw new Error(result?.message || result?.reason || t("researchFailed"));
+        researchMessage(result.count === 0 ? t("researchExportEmpty") : t("researchExported"));
+      } catch (error) { researchMessage(error.message || t("researchFailed"), true); }
+      finally { actionButton("researchExportButton", false); }
+    };
+    await refreshResearchStatus();
+    await refreshResearchReport(state.researchPeriod);
+    if (requestId === state.researchRequestId && body.dataset.panelKind === "research") {
+      state.researchTimer = setInterval(refreshResearchStatus, 2000);
+    }
   }
 
   function saveSettingsSerial(patch) {
@@ -1270,19 +1604,60 @@
   function openPanel(kind) {
     state.setupRequestId += 1;
     const body = $("panelBody");
+    body.dataset.panelKind = kind;
     const title = $("panelTitle");
     const foot = $("panelFoot");
     $("panel").hidden = false;
+    $("panel").classList.toggle("research-panel", kind === "research");
     $("backdrop").hidden = false;
     clearInterval(state.depositTimer);
     state.depositTimer = 0;
     clearInterval(state.telegramTimer);
     state.telegramTimer = 0;
+    clearInterval(state.researchTimer);
+    state.researchTimer = 0;
     if (foot) {
       foot.hidden = true;
       foot.innerHTML = "";
     }
     closeMenus();
+
+    if (kind === "research") {
+      title.textContent = t("researchTitle");
+      body.innerHTML = `
+        <div class="research-warning" role="note"><strong>${t("researchApproxTitle")}</strong><span>${t("researchApproxHint")}</span></div>
+        <p class="hint research-notify">${t("researchNotifications")}</p>
+        <section class="research-card">
+          <h3>${t("researchBacktestTitle")}</h3>
+          <div class="field"><label for="researchBacktestSetup">${t("researchBacktestSetup")}</label><select id="researchBacktestSetup" size="4"></select></div>
+          <div class="research-grid">
+            <div class="field"><label for="researchStartingBalance">${t("researchStartingBalance")}</label><input id="researchStartingBalance" type="number" min="0.01" step="0.01" value="1000" /></div>
+            <div class="field"><label for="researchSampleSize">${t("researchSampleSize")}</label><input id="researchSampleSize" type="number" min="1" max="5000" step="1" value="5000" /></div>
+            <div class="field"><label for="researchFrom">${t("researchFrom")}</label><input id="researchFrom" type="date" /></div>
+            <div class="field"><label for="researchTo">${t("researchTo")}</label><input id="researchTo" type="date" /></div>
+          </div>
+          <button class="ok" id="researchBacktestButton" type="button">${t("researchBacktest")}</button>
+        </section>
+        <section class="research-card">
+          <h3>${t("researchPaperTitle")}</h3>
+          <p class="hint">${t("researchPaperHint")}</p>
+          <div class="field"><label for="researchPaperSetups">${t("researchPaperSetups")}</label><select id="researchPaperSetups" multiple size="6"></select><span class="hint" id="researchSelectionCount">${t("researchSelectedZero")}</span></div>
+          <button class="ok" id="researchPaperButton" type="button">${t("researchStartPaper")}</button>
+        </section>
+        <div id="researchStatusMessage" class="hint" role="status" aria-live="polite"></div>
+        <section class="research-card">
+          <div class="research-section-heading"><h3>${t("researchRunsTitle")}</h3><span class="research-stream-count" id="researchStreams"></span></div>
+          <div id="researchRuns"><p class="hint">${t("researchLoading")}</p></div>
+        </section>
+        <section class="research-card">
+          <div class="research-section-heading"><h3>${t("researchReportsTitle")}</h3><select id="researchPeriod"><option value="day">${t("researchDay")}</option><option value="week">${t("researchWeek")}</option><option value="month">${t("researchMonth")}</option></select></div>
+          <div class="research-report-actions"><button class="ghost" id="researchExportButton" type="button">${t("researchExport")}</button></div>
+          <div id="researchReport"><p class="hint">${t("researchLoading")}</p></div>
+        </section>
+      `;
+      initializeResearchPanel();
+      return;
+    }
 
     if (kind === "api") {
       title.textContent = t("api");

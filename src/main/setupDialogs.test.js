@@ -28,6 +28,7 @@ async function run() {
   const router = { async dispatch(method, args) {
     calls.push({ method, args });
     if (method === "exportSetup") return { ok: true, name: "../BTC / first", json: '{"schemaVersion":1}' };
+    if (method === "exportResearch") return { ok: true, csv: "run_id,pnl\r\nvirtual,1.25\r\n", count: 1 };
     return { ok: true };
   } };
   try {
@@ -51,6 +52,9 @@ async function run() {
     savePick = { canceled: false, filePath: path.join(dir, "export.json") };
     assert.equal((await handlers.get("setups:export")(null, { id: "id", version: 1 })).ok, true);
     assert.equal(fs.readFileSync(savePick.filePath, "utf8"), '{"schemaVersion":1}');
+    savePick = { canceled: false, filePath: path.join(dir, "research.csv") };
+    assert.equal((await handlers.get("research:export")(null, { period: "week" })).ok, true);
+    assert.equal(fs.readFileSync(savePick.filePath, "utf8"), "run_id,pnl\r\nvirtual,1.25\r\n");
     console.log("Setup native dialog tests ok");
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 }
