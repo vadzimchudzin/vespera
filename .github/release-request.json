@@ -1,5 +1,6 @@
 {
   "version": "0.25.1",
-  "reason": "Security dependency updates and verified desktop/server/backtest acceptance",
-  "baselineCommit": "11129fc354d60d67109424361919937941538c7d"
+  "reason": "Security update; stage verified installers in a draft release to avoid exhausted Actions artifact quota",
+  "baselineCommit": "11129fc354d60d67109424361919937941538c7d",
+  "attempt": 2
 }
