@@ -56,4 +56,4 @@ against the same wallet.
 For the user-facing ownership, handoff and rollback rules, see
 [`docs/ZERO_MODE.md`](../docs/ZERO_MODE.md). This release supplies the service
 and deployment template; it does not provision the user's production server
-or claim a year-long production soak. Telegram is a subsequent integration.
+or claim a year-long production soak. Telegram control is implemented; configure and pair the bot on the intended executor as described in `docs/TELEGRAM.md`. Real bot delivery and production onboarding must be verified separately.

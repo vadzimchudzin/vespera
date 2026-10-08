@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.25.1 — 2026-10-08
+
+- Update ethers within v5 and override its pinned websocket dependency to remove high/moderate production WebSocket advisories.
+- Update Electron to 44.7 and electron-builder to 26.15.3; eliminate high/critical dependency advisories found in the old desktop runtime/build tooling. Require Node 22+.
+- Gate release publication on Linux/Windows/macOS tests and successful Windows/macOS builds; use locked installation and validate release version/artifact names.
+- Correct stale Telegram deployment instructions.
+- Isolated Linux acceptance: actual headless Electron settings/setup/backtest, desktop-to-server Paper transfer, desktop closure/reopen, and safe return to local execution. Production deployment, live Telegram, real-money trades and multi-day soak remain unverified.
+- Remaining npm audit findings: low production cryptography-chain advisories and moderate build-only sprintf-js advisory; no high/critical findings after this update. See release verification notes.
+
 ## 0.25.0 — source changes, 2026-10-07
 
 - **Advisory AI:** optional OpenRouter and loopback local-model integration, disabled by default. A separate encrypted API key, request/day budgets, timeout/token caps, structured JSON validation and indicator-only patches keep recommendations away from account keys, sizing and execution controls.

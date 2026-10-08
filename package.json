@@ -1,7 +1,7 @@
 {
   "name": "vespera",
   "productName": "Vespera",
-  "version": "0.25.0",
+  "version": "0.25.1",
   "description": "Vespera (VSP) — glass terminal for Polymarket MA200/MA20. Paper first.",
   "author": "VadimChudin",
   "license": "UNLICENSED",
@@ -77,15 +77,23 @@
     }
   },
   "devDependencies": {
-    "electron": "^33.2.1",
-    "electron-builder": "^25.1.8"
+    "electron": "^44.7.0",
+    "electron-builder": "^26.15.3"
   },
   "dependencies": {
-    "ethers": "^5.7.2",
+    "ethers": "^5.8.0",
     "https-proxy-agent": "^7.0.6",
     "lightweight-charts": "^4.2.3",
     "qrcode": "^1.5.4",
     "socks-proxy-agent": "^8.0.5",
-    "ws": "^8.18.3"
+    "ws": "^8.21.0"
+  },
+  "overrides": {
+    "@ethersproject/providers": {
+      "ws": "^8.21.0"
+    }
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

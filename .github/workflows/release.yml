@@ -4,36 +4,85 @@ on:
   push:
     tags:
       - "v*"
+    branches:
+      - "hoplite/kranioi-92ea492d--operations-safety--setups--research--ai"
+    paths:
+      - ".github/release-request.json"
   workflow_dispatch:
-    inputs:
-      version:
-        description: "Version label (e.g. 0.1.0)"
-        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            script: dist:win
-            glob: dist/*.exe
-          - os: macos-latest
-            script: dist:mac
-            glob: dist/*.dmg
-    runs-on: ${{ matrix.os }}
-    permissions:
-      contents: write
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm install
+      - id: version
+        name: Validate exact release version
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+          const p = require('./package.json');
+          const lock = require('./package-lock.json');
+          if (!/^\d+\.\d+\.\d+$/.test(p.version)) throw Error('invalid_version');
+          if (lock.version !== p.version || lock.packages[''].version !== p.version) throw Error('lock_version_mismatch');
+          if (process.env.GITHUB_REF.startsWith('refs/tags/') && process.env.GITHUB_REF !== `refs/tags/v${p.version}`) throw Error('tag_version_mismatch');
+          if (!process.env.GITHUB_REF.startsWith('refs/tags/')) {
+            const request = require('./.github/release-request.json');
+            if (request.version !== p.version) throw Error('request_version_mismatch');
+          }
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${p.version}\ntag=v${p.version}\n`);
+          NODE
+
+  test:
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
       - run: npm test
+
+  build:
+    needs: [validate, test]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: win
+            script: dist:win
+            glob: dist/*.exe
+          - os: macos-latest
+            platform: mac
+            script: dist:mac
+            glob: dist/*.dmg
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
       - run: npm run ${{ matrix.script }}
-      - name: Verify macOS app (signature + architectures)
+      - name: Verify macOS app signature and architectures
         if: runner.os == 'macOS'
         run: |
           APP="$(ls -d dist/mac-universal/*.app)"
@@ -42,10 +91,57 @@ jobs:
           BIN="$APP/Contents/MacOS/$(basename "$APP" .app)"
           ARCHS="$(lipo -archs "$BIN")"; echo "archs: $ARCHS"
           echo "$ARCHS" | grep -qw x86_64 && echo "$ARCHS" | grep -qw arm64
-      - name: Publish to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}
+          path: ${{ matrix.glob }}
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: [validate, test, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+      - name: Verify both installers
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          test -s "release-assets/Vespera-${VERSION}-win-x64.exe"
+          test -s "release-assets/Vespera-${VERSION}-mac.dmg"
+          cd release-assets
+          sha256sum *.exe *.dmg > SHA256SUMS.txt
+      - name: Refuse moving an existing release tag
+        uses: actions/github-script@v7
+        env:
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        with:
+          script: |
+            const ref = `tags/${process.env.RELEASE_TAG}`;
+            try {
+              const result = await github.rest.git.getRef({...context.repo, ref});
+              let object = result.data.object;
+              if (object.type === 'tag') object = (await github.rest.git.getTag({...context.repo, tag_sha: object.sha})).data.object;
+              if (object.sha !== context.sha) throw new Error('Existing release tag points to a different commit; refusing publication');
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+      - name: Publish verified Windows and macOS packages
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
-          fail_on_unmatched_files: false
-          files: ${{ matrix.glob }}
+          tag_name: ${{ needs.validate.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: Vespera ${{ needs.validate.outputs.version }}
+          body_path: docs/RELEASE_VERIFICATION.md
+          fail_on_unmatched_files: true
+          files: |
+            release-assets/*.exe
+            release-assets/*.dmg
+            release-assets/SHA256SUMS.txt
