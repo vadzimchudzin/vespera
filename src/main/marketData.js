@@ -47,7 +47,10 @@ function parseKlines(raw) {
   }));
 }
 
-const KLINE_HOSTS = ["https://api.binance.com", "https://api.binance.us"];
+// Binance.com market data first. data-api.binance.vision serves the same Binance.com data from hosts where
+// api.binance.com answers 451. Binance.US is a different exchange with different candles: last resort, always flagged.
+const KLINE_HOSTS = ["https://api.binance.com", "https://data-api.binance.vision", "https://api.binance.us"];
+const OTHER_EXCHANGE = /binance\.us/i;
 
 function wsUrl(host, symbol, timeframe) {
   const s = String(symbol || "BTCUSDT").toLowerCase();
@@ -94,6 +97,7 @@ class MarketData {
     this._historyRequest = 0;
     this._wsClosedBars = new Map();
     this._wsSignalledBars = new Set();
+    this.feed = { rest: null, ws: null };
   }
 
   on(fn) {
@@ -117,6 +121,16 @@ class MarketData {
       timeframe: this.timeframe,
       ...details,
     });
+  }
+
+  /**
+   * Where the candles come from. `degraded` means a different exchange (Binance.US) supplied the REST history
+   * or the WebSocket stream, so signals can differ from Binance.com charts.
+   */
+  feedStatus() {
+    const { rest, ws } = this.feed;
+    const degraded = Boolean((rest && OTHER_EXCHANGE.test(rest)) || (ws && OTHER_EXCHANGE.test(ws)));
+    return { rest, ws, degraded, reason: degraded ? "binance_us_fallback" : null };
   }
 
   setRefreshMs(ms) {
@@ -171,7 +185,10 @@ class MarketData {
       if (endTime) url += `&endTime=${endTime}`;
       try {
         raw = await this.fetchJson(url);
-        if (Array.isArray(raw)) return raw;
+        if (Array.isArray(raw)) {
+          this.feed.rest = host;
+          return raw;
+        }
         lastErr = new Error(`klines_not_array from ${host}`);
       } catch (err) {
         lastErr = err;
@@ -382,6 +399,7 @@ class MarketData {
       if (this._wsConnectTimer) clearTimeout(this._wsConnectTimer);
       this._wsConnectTimer = null;
       this._lastWsAt = Date.now();
+      this.feed.ws = host;
       this._emitHealth("connected", { host });
     });
     ws.on("ping", () => {
@@ -396,6 +414,7 @@ class MarketData {
     ws.on("message", (buf) => {
       if (this._wsGeneration !== generation) return;
       this._lastWsAt = Date.now();
+      this.feed.ws = host;
       this._onWs(buf);
     });
     ws.on("close", () => {
@@ -561,4 +580,4 @@ class MarketData {
   }
 }
 
-module.exports = { MarketData, INTERVAL_MS, parseKlines, clampRefreshMs };
+module.exports = { MarketData, INTERVAL_MS, KLINE_HOSTS, WS_HOSTS, parseKlines, clampRefreshMs };

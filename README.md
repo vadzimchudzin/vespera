@@ -2,7 +2,7 @@
 
 Glass desktop terminal for BTC 15m Polymarket Up/Down.
 
-**v0.25.0 source.** SMA/EMA 200/20 on a **closed** candle `S`, bet on **S+1**. Arrow sits on the entry candle. Auto prices the live Polymarket round and sends **CLOB V2** signed orders once the wallet, a signing key and the derived CLOB keys are in the API panel.
+**v0.26.0.** SMA/EMA 200/20 on a **closed** candle `S`, bet on **S+1**. Arrow sits on the entry candle. Auto prices the live Polymarket round and sends **CLOB V2** signed orders once the wallet, a signing key and the derived CLOB keys are in the API panel.
 
 **Для следующих агентов:** [подробный отчёт и передача проекта](#отчёт-и-передача-проекта--2026-10-06) · [ROADMAP](ROADMAP.md) · [правила Zero Mode](docs/ZERO_MODE.md). Публикация релиза не означает слияние PR в `main`; перед продолжением сверяйте GitHub.
 
@@ -20,7 +20,7 @@ preflight, offline backup, fenced isolated restore, monitor units and a TLS exam
 master key, with fail-closed migration and rotation. Production deployment,
 external alerts and a 24–72-hour soak still require the real server.
 
-Repo: private [`VadimChudin/vespera`](https://github.com/VadimChudin/vespera)
+Repo: private [`vadzimchudzin/vespera`](https://github.com/vadzimchudzin/vespera)
 
 ## What it does
 
@@ -117,8 +117,8 @@ npm start
 Bump `version` in `package.json`, add a `CHANGELOG` line, tag:
 
 ```bash
-git tag v0.17.0
-git push origin v0.17.0
+git tag v0.26.0
+git push origin v0.26.0
 ```
 
 GitHub Actions builds:
@@ -186,9 +186,9 @@ See `docs/TZ_Predic_MA200_MA20.md`.
 
 | Этап | Релиз | PR | Статус на момент отчёта |
 | --- | --- | --- | --- |
-| Стабильность | [0.18.10](https://github.com/VadimChudin/vespera/releases/tag/v0.18.10) | [#17](https://github.com/VadimChudin/vespera/pull/17) | Опубликован; PR открыт |
-| Настройки и ставки | [0.19.0](https://github.com/VadimChudin/vespera/releases/tag/v0.19.0) | [#18](https://github.com/VadimChudin/vespera/pull/18) | Опубликован; PR открыт |
-| Сервер/Zero Mode | [0.20.0](https://github.com/VadimChudin/vespera/releases/tag/v0.20.0) | [#19](https://github.com/VadimChudin/vespera/pull/19) | Опубликован; PR открыт, CI зелёный |
+| Стабильность | [0.18.10](https://github.com/vadzimchudzin/vespera/releases/tag/v0.18.10) | [#17](https://github.com/vadzimchudzin/vespera/pull/17) | Опубликован; PR открыт |
+| Настройки и ставки | [0.19.0](https://github.com/vadzimchudzin/vespera/releases/tag/v0.19.0) | [#18](https://github.com/vadzimchudzin/vespera/pull/18) | Опубликован; PR открыт |
+| Сервер/Zero Mode | [0.20.0](https://github.com/vadzimchudzin/vespera/releases/tag/v0.20.0) | [#19](https://github.com/vadzimchudzin/vespera/pull/19) | Опубликован; PR открыт, CI зелёный |
 
 Точка программной передачи: тег `v0.20.0`, коммит `2a009ee`.
 Ветка реализации: `hoplite/axos-4ebe8446--settings--zero`.

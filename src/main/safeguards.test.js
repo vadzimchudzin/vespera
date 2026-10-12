@@ -304,6 +304,8 @@ const bar = (openTs) => ({ openTs, closeTs: openTs + 899_999, open: 100, high: 1
     assert.strictEqual(e.running, false, "stops once today's loss reaches the limit");
     assert.strictEqual(e.status, "daily_limit");
     assert.strictEqual((await e.start()).reason, "daily_limit", "and refuses to start again today");
+    assert.strictEqual(e.journal.entries.at(-1).type, "start_refused", "the refusal remains visible in the activity log");
+    assert.strictEqual(e.journal.entries.at(-1).reason, "daily_limit");
     // yesterday's losses do not count
     const old = new Date(Date.now() - 36 * 3600_000).toISOString();
     assert.strictEqual(todayPnl([{ ts: old, type: "settled", pnl: "-50" }], "paper"), 0);

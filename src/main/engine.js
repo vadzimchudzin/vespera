@@ -757,6 +757,7 @@ class Engine {
     if (this.running) return { ok: true };
     if (this._dailyLimitHit()) {
       this.status = "daily_limit";
+      this.journal.write({ type: "start_refused", reason: "daily_limit" });
       this.emit("status", this.status);
       return { ok: false, reason: "daily_limit" };
     }
@@ -795,6 +796,19 @@ class Engine {
       }
     }
     if (generation !== this._executionGeneration) return { ok: false, reason: "execution_changed" };
+    if (this._feedDegraded()) {
+      const feed = this._feedStatus();
+      this.journal.write({ type: "data_health", event: "feed_fallback_binance_us", rest: feed.rest, ws: feed.ws });
+      this.emit("log", { level: "warn", message: "feed_fallback_binance_us: candles come from Binance.US, a different exchange than Binance.com; signals can differ from the customer's chart" });
+      if (this.isLiveMoney()) {
+        this.running = false;
+        this.status = "paused";
+        this.pauseReason = "feed_source_not_binance_com: candles come from Binance.US; restore access to api.binance.com or data-api.binance.vision";
+        this.journal.write({ type: "start_refused", reason: "feed_source_not_binance_com" });
+        this.emit("status", this.status);
+        return { ok: false, reason: "feed_source_not_binance_com" };
+      }
+    }
     const last = this.market.bars[this.market.bars.length - 1];
     if (last && this.openBet()) {
       this._settleIfOpen(last);
@@ -856,6 +870,15 @@ class Engine {
     } finally {
       this._healthBusy = false;
     }
+  }
+
+  _feedStatus() {
+    return typeof this.market.feedStatus === "function" ? this.market.feedStatus() : null;
+  }
+
+  /** True when candles come from Binance.US, a different exchange than Binance.com. */
+  _feedDegraded() {
+    return Boolean(this._feedStatus()?.degraded);
   }
 
   _venueOk() {
@@ -1831,6 +1854,12 @@ class Engine {
       this.emit("status", this.status);
       return null;
     }
+    if (this.mode === "auto" && !this.isDryRun() && this._feedDegraded()) {
+      // The feed switched to Binance.US while running: never place a real order on another exchange's candles.
+      this.journal.write({ type: "skip", reason: "feed_source_not_binance_com", signal: ev.signal, openTs: bar.openTs });
+      this.pause("feed_source_not_binance_com: candles switched to Binance.US; no real order was placed");
+      return null;
+    }
     const interval = INTERVAL_MS[this.settings.timeframe || "15m"] || 900_000;
     const sClose = bar.closeTs || bar.openTs + interval - 1;
     const round = {
@@ -2160,6 +2189,7 @@ class Engine {
       lastEval: this.lastEval,
       markers: this.markers.slice(-200),
       todayPnl: this.todayPnl().toFixed(2),
+      feed: this._feedStatus(),
       barsReady: this.market.bars.length,
       bars: this.market.bars.map((b) => ({
         time: Math.floor(b.openTs / 1000),

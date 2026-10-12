@@ -4,6 +4,8 @@
 // V1-signed orders are rejected by production, see docs.polymarket.com/v2-migration.
 // Chain: Polygon mainnet (chainId 137). Uses ethers@5 (CommonJS, works in Electron).
 
+const crypto = require("crypto");
+
 const CHAIN_ID = 137;
 const EXCHANGE_ADDRESS = "0xE111180000d2663C0091e4f400237545B87B996B";
 const NEG_RISK_EXCHANGE_ADDRESS = "0xe2222d279d744050d28e00520010520000310F59";
@@ -71,7 +73,7 @@ function buildOrder({
   builder = ZERO_BYTES32,
 }) {
   // the wire body sends salt as a JSON number, keep it inside MAX_SAFE_INTEGER
-  const salt = String(Math.floor(Math.random() * 1e15));
+  const salt = String(crypto.randomBytes(6).readUIntBE(0, 6));
   return {
     salt,
     // maker holds the funds; signer is the key (or, for a Deposit Wallet, the wallet itself)
