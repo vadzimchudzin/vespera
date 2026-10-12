@@ -83,3 +83,7 @@ understand Fixed mode or series budgets.
 `settingsEngine.test.js`. UI verification uses the actual Electron renderer
 with a disposable Paper profile, not production credentials. The managed
 HTTP preview is a launcher status page, not a web version of the trading app.
+
+## Verification
+
+`src/main/settingsAudit.test.js` checks every setting end to end: the shared limits (edges accepted, outside and off-step values refused), the engine, a restart through the real host and settings store, the effect of each strategy setting on the signals of the same candles, and the binding of each window control to the shared limits. A new setting must be added to that test.

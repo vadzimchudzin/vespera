@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.26.0 — 2026-10-12
+
+- **The candle source is no longer a silent fallback.** History is requested from `api.binance.com`, then from the official market-data mirror `data-api.binance.vision` (Binance's public mirror of the Binance.com market data), and only then from Binance.US. Binance.US is a different exchange with different candles (on a 31-day check about 20% of signals differed), so using it is now reported: `snapshot().feed` shows the REST and WebSocket hosts and `degraded`, the header shows an amber **BINANCE.US** badge, the journal records `feed_fallback_binance_us`, Start on real money is refused with `feed_source_not_binance_com`, and a real-money order is never placed on such candles (the session pauses). Paper and dry run keep running with a warning.
+- **Definite refusals reach the client as such.** Through the server, a refusal raised before any external effect (for example `ai_disabled`, `ai_local_desktop_only`, `ai_key_missing`, or any coded error from research and setup methods) is returned as `409` with its real code and the request is closed. Before, every such error became `command_outcome_unknown` (503) and left the request pending. Unclassified errors and errors of money-moving methods still fail closed as unknown.
+- **One bad journal row can no longer stop the window from starting.** A malformed or old row used to throw inside `logLine` while the first snapshot was drawn, before any button was wired. The renderer now degrades that row instead.
+- **The journal and Research speak the same language everywhere.** Nine event types (feed health, auto resumed, budget block, partial fill, market adjusted or blocked, derived keys, below the live minimum, failed result check) were shown by their raw names; Research run rows showed raw `backtest` and `complete`. All are translated in English and Russian, with readable reasons for feed and connection events.
+- **Fixes carried over from PR #15:** open Stats and Journal panels refresh when the state changes, a paper reset asks for confirmation and explains when an open bet blocks it, a refused Start at the daily loss limit stays in the activity log, and journal lines are HTML-escaped.
+- **Smaller window fixes:** the journal time column is no longer clipped, and the deposit panel tolerates an empty status reply.
+- **Safer by default:** external links open only over https and the window never navigates away from the bundled interface; the order salt now comes from a cryptographic source instead of `Math.random`.
+- **Tests:** `npm test` runs every file in its own process with a clean network environment, so system proxies no longer break the loopback tests, and prints a per-file result. New suites: candle source and real-money protection, server refusal classification, and a settings audit that checks every setting end to end: validator edges, the engine, a restart through the real host and store, the effect of each strategy setting on the signals of the same candles, and the binding of every control to the shared limits. 42 test files.
+
 ## 0.25.1 — 2026-10-08
 
 - Update ethers within v5 and override its pinned websocket dependency to remove high/moderate production WebSocket advisories.

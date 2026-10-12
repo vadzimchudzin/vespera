@@ -24,6 +24,27 @@ const METHODS = new Set([
 ]);
 const SECRET_KEYS = /^(api.?key|api.?secret|api.?passphrase|private.?key|proxy.?url|server.?token|telegram.?token|token|authorization|credentials|bundle)$/i;
 
+// Refusals raised before any external effect. They are definite: the request is closed and the client sees the
+// real reason. Anything else keeps failing closed as "command_outcome_unknown", because it may follow a venue call.
+const DEFINITE_REFUSALS = new Set([
+  "invalid_settings", "settings_locked",
+  "ai_disabled", "ai_key_missing", "ai_local_desktop_only", "ai_provider_invalid", "ai_config_invalid", "ai_model_invalid",
+  "ai_budget_exceeded", "ai_pricing_unknown", "ai_busy", "ai_confirmation_required", "ai_candidate_required",
+  "ai_recommendation_not_found", "ai_recommendation_exists", "ai_setup_ref_invalid", "setup_not_found",
+  "ai_local_url_denied", "ai_local_hardware_insufficient",
+]);
+// Research and setup methods only touch virtual books and the setup library, never the venue.
+const VIRTUAL_METHODS = new Set([
+  "runBacktest", "startPaperRuns", "stopPaperRun", "researchStatus", "researchReport", "exportResearch",
+  "listSetups", "saveSetup", "applySetup", "copySetup", "importSetup", "exportSetup",
+]);
+function isDefiniteRefusal(method, error) {
+  const code = error && error.code;
+  if (typeof code !== "string") return false;
+  if (DEFINITE_REFUSALS.has(code)) return true;
+  return VIRTUAL_METHODS.has(method) && /^[a-z][a-z0-9_]{2,63}$/.test(code);
+}
+
 class ServiceError extends Error {
   constructor(code, status = 400) {
     super(code);
@@ -471,7 +492,7 @@ function createService({ userDataDir, token, host, hostFactory, now = Date.now, 
           finishRequest(id);
           return clean(safeResult, 0, redactions);
         } catch (error) {
-          if (["invalid_settings", "settings_locked"].includes(error && error.code)) {
+          if (isDefiniteRefusal(body.method, error)) {
             finishRequest(id);
             throw new ServiceError(error.code, 409);
           }

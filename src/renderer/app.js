@@ -58,6 +58,8 @@
     aiRecommendationsKey: "",
     aiLocalStatus: null,
     aiDirtyFields: new Set(),
+    panelKind: null,
+    panelKey: "",
   };
   window.addEventListener("beforeunload", () => {
     clearInterval(state.researchTimer);
@@ -330,7 +332,7 @@
   }
 
   function money(n) {
-    return Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return Number(n).toLocaleString(state.locale || undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
 
   function reasonText(reason) {
@@ -347,8 +349,17 @@
     return `${name}${version}${modified}`;
   }
 
+  // One malformed journal row must never stop the whole window from starting.
   function logLine(row) {
-    const when = (row.ts || "").slice(11, 19);
+    try {
+      return logLineUnsafe(row);
+    } catch {
+      return { when: "", title: String((row && row.type) || "?"), detail: "", kind: "unknown" };
+    }
+  }
+
+  function logLineUnsafe(row) {
+    const when = String(row.ts || "").slice(11, 19);
     const type = row.type;
     let title = type;
     let detail = "";
@@ -412,6 +423,33 @@
     } else if (type === "stake_capped") {
       title = t("logCapped");
       detail = `$${row.needed} \u2192 $${row.cap}`;
+    } else if (type === "data_health") {
+      title = t("logFeed");
+      detail = reasonText(row.event || row.reason || row.state);
+    } else if (type === "auto_resumed") {
+      title = t("logAutoResumed");
+      detail = reasonText(row.reason);
+    } else if (type === "budget_blocked") {
+      title = t("logBudgetBlocked");
+      detail = `$${row.lossCost} > $${row.remainingUsd}`;
+    } else if (type === "derive_keys") {
+      title = t("logDeriveKeys");
+      detail = row.ok === false ? reasonText(row.reason) : "";
+    } else if (type === "market_adjusted") {
+      title = t("logMarketAdjusted");
+      detail = `${row.from} \u2192 ${row.to}`;
+    } else if (type === "market_blocked") {
+      title = t("logMarketBlocked");
+      detail = reasonText(row.reason);
+    } else if (type === "paper_below_live_min") {
+      title = t("logBelowMin");
+      detail = `${row.shares} < ${row.minOrderSize} \u00b7 $${row.minUsd}`;
+    } else if (type === "partial_fill") {
+      title = t("logPartialFill");
+      detail = `$${row.filled} / $${row.requested}`;
+    } else if (type === "settlement_failed") {
+      title = t("logSettlementFailed");
+      detail = reasonText(row.reason || row.code);
     }
     if (type === "order_sent" || type === "settled") {
       const setup = setupAttributionText(row.setup);
@@ -492,6 +530,17 @@
       lamp.dataset.on = snap.running ? "1" : "0";
       lamp.title = statusLabel(snap.status) + (snap.pauseReason ? ` \u2014 ${snap.pauseReason}` : "");
     }
+    const feedBadge = $("feedBadge");
+    if (feedBadge) {
+      // Candles from Binance.US are a different exchange than Binance.com: say so in the header.
+      const degraded = Boolean(snap.feed && snap.feed.degraded);
+      if (feedBadge.hidden === degraded) feedBadge.hidden = !degraded;
+      const text = t("feedBadgeText");
+      const label = $("feedBadgeText");
+      if (label && label.textContent !== text) label.textContent = text;
+      const hint = t("feedBadgeHint");
+      if (feedBadge.title !== hint) feedBadge.title = hint;
+    }
     const badge = $("moneyBadge");
     if (badge) {
       const auto = snap.mode === "auto";
@@ -539,6 +588,21 @@
       updateSetupSafety();
     }
     paintExecution(execution);
+    if (!$("panel").hidden && (state.panelKind === "stats" || state.panelKind === "journal")) {
+      const key = panelSnapshotKey(state.panelKind, snap);
+      if (key !== state.panelKey) {
+        const body = $("panelBody");
+        const scroll = body.scrollTop;
+        const exportMessage = $("exportOut")?.textContent;
+        openPanel(state.panelKind);
+        body.scrollTop = scroll;
+        if (exportMessage && $("exportOut")) $("exportOut").textContent = exportMessage;
+      }
+    }
+  }
+
+  function panelSnapshotKey(kind, snap) {
+    return JSON.stringify(kind === "journal" ? snap.log : [snap.book, snap.mode, snap.risk, snap.paper?.balance, snap.todayPnl, snap.stats, snap.daily]);
   }
 
   function renderStrategies(snap) {
@@ -712,6 +776,8 @@
     state.aiRequestId += 1;
     $("panel").hidden = true;
     state.setupRequestId += 1;
+    state.panelKind = null;
+    state.panelKey = "";
     $("backdrop").hidden = true;
     const foot = $("panelFoot");
     if (foot) {
@@ -733,6 +799,12 @@
     return Number.isFinite(number)
       ? new Intl.NumberFormat(state.locale, { minimumFractionDigits: digits, maximumFractionDigits: digits }).format(number)
       : "—";
+  }
+
+  function researchModeLabel(mode) {
+    if (mode === "backtest") return t("researchModeBacktest");
+    if (mode === "paper") return t("paper");
+    return esc(mode || "\u2014");
   }
 
   function researchUsd(value) {
@@ -1181,14 +1253,17 @@
       const version = versionNumber == null ? "—" : `v${versionNumber}`;
       const period = run.period && typeof run.period === "object" ? `${run.period.bars ?? 0} ${t("researchSamples")}${run.period.fromTs != null ? ` · ${new Date(run.period.fromTs).toLocaleDateString(state.locale)}` : ""}${run.period.toTs != null ? ` – ${new Date(run.period.toTs).toLocaleDateString(state.locale)}` : ""}` : "—";
       const hash = run.datasetHash ? `<span class="research-hash" title="${esc(run.datasetHash)}">${esc(String(run.datasetHash))}</span>` : "—";
-      const status = run.running || run.status === "running" ? t("researchRunning") : esc(run.status === "error" && run.error ? run.error : run.status || t("researchComplete"));
+      const status = run.running || run.status === "running" ? t("researchRunning")
+        : run.status === "error" && run.error ? esc(run.error)
+          : run.status === "stopped" ? t("researchStoppedStatus")
+            : run.status === "complete" || !run.status ? t("researchComplete") : esc(run.status);
       const approximate = run.approximate ? `<span class="research-approx-badge">${t("researchApproximate")}</span>` : "";
       const pnlClass = pnl == null ? "" : pnl < 0 ? "neg" : "pos";
       const ddValue = drawdown == null ? "—" : `${researchNumber(drawdown)}${stats.maxDrawdownPct === drawdown ? "%" : ""}`;
       const stop = run.mode === "paper" && (run.running || run.status === "running")
         ? `<button class="ghost research-stop" type="button" data-research-stop="${esc(run.id)}">${t("stop")}</button>` : "";
       return `<tr>
-        <td><strong>${esc(run.name || run.setup?.name || run.id || "—")}</strong><small>${esc(run.mode || "—")} · ${version} · ${status}</small>${approximate}<small>${t("researchBalance")}: ${researchUsd(run.balance)} · ${t("researchOpenBet")}: ${esc(openBet)}</small><small>${t("researchPeriodSample")}: ${esc(period)}</small><small>${t("researchDataset")}: ${hash}</small></td>
+        <td><strong>${esc(run.name || run.setup?.name || run.id || "—")}</strong><small>${researchModeLabel(run.mode)} · ${version} · ${status}</small>${approximate}<small>${t("researchBalance")}: ${researchUsd(run.balance)} · ${t("researchOpenBet")}: ${esc(openBet)}</small><small>${t("researchPeriodSample")}: ${esc(period)}</small><small>${t("researchDataset")}: ${hash}</small></td>
         <td class="${pnlClass}">${pnl == null ? "—" : researchUsd(pnl)}</td>
         <td>${ddValue}</td><td>${fees == null ? "—" : researchUsd(fees)}</td><td>${trades == null ? "—" : researchNumber(trades, 0)}</td><td>${winRate == null ? "—" : `${researchNumber(winRate * 100)}%`}</td><td>${stop}</td>
       </tr>`;
@@ -1230,7 +1305,7 @@
       host.innerHTML = `<div class="research-table-wrap"><table class="research-table research-report-table"><thead><tr><th>${t("researchRun")}</th><th>${t("researchTrades")}</th><th>${t("researchWinRate")}</th><th>${t("researchNetPnl")}</th><th>${t("researchFees")}</th><th>${t("researchDrawdown")}</th></tr></thead><tbody>${runs.map((run) => {
         const stats = run.stats || {};
         const pnl = Number(stats.pnl);
-        return `<tr><td>${esc(run.name || run.id)}<small>${esc(run.mode || "—")}</small></td><td>${esc(stats.count ?? 0)}</td><td>${stats.winRate == null ? "—" : `${researchNumber(Number(stats.winRate) * 100)}%`}</td><td class="${pnl < 0 ? "neg" : "pos"}">${Number.isFinite(pnl) ? researchUsd(pnl) : "—"}</td><td>${researchUsd(stats.fees)}</td><td>${researchUsd(stats.maxDrawdown)}</td></tr>`;
+        return `<tr><td>${esc(run.name || run.id)}<small>${researchModeLabel(run.mode)}</small></td><td>${esc(stats.count ?? 0)}</td><td>${stats.winRate == null ? "—" : `${researchNumber(Number(stats.winRate) * 100)}%`}</td><td class="${pnl < 0 ? "neg" : "pos"}">${Number.isFinite(pnl) ? researchUsd(pnl) : "—"}</td><td>${researchUsd(stats.fees)}</td><td>${researchUsd(stats.maxDrawdown)}</td></tr>`;
       }).join("")}</tbody></table></div>`;
       return;
     }
@@ -1987,6 +2062,8 @@
     $("panel").hidden = false;
     $("panel").classList.toggle("research-panel", kind === "research");
     $("panel").classList.toggle("ai-panel", kind === "ai");
+    state.panelKind = kind;
+    state.panelKey = kind === "stats" || kind === "journal" ? panelSnapshotKey(kind, state.snapshot || {}) : "";
     $("backdrop").hidden = false;
     clearInterval(state.depositTimer);
     state.depositTimer = 0;
@@ -2327,7 +2404,7 @@
         const extra = [];
         const bal = res.checks.find((c) => c.id === "balance");
         if (bal && bal.baseBelowMin) extra.push(`${t("chkBaseBelowMin")} ${usd(bal.minStake)}`);
-        const when = res.at ? new Date(res.at).toLocaleTimeString() : "";
+        const when = res.at ? new Date(res.at).toLocaleTimeString(state.locale) : "";
         const fund =
           bal && (bal.status === "fail" || bal.status === "warn")
             ? `<button type="button" class="ghost dep-fund" id="btnFund">${t("depFund")}</button>`
@@ -2448,13 +2525,13 @@
           host.innerHTML = `<p class="hint warn">${esc((res && res.reason) || "")}</p>`;
           return;
         }
-        if (!res.transactions.length) {
+        if (!Array.isArray(res.transactions) || !res.transactions.length) {
           host.innerHTML = `<p class="hint">${t("depNone")}</p>`;
           return;
         }
         host.innerHTML = res.transactions
           .map((tx) => {
-            const when = tx.createdTimeMs ? new Date(tx.createdTimeMs).toLocaleString() : "";
+            const when = tx.createdTimeMs ? new Date(tx.createdTimeMs).toLocaleString(state.locale) : "";
             const amount = tx.amount != null ? `${esc(tx.amount)} ${esc(tx.symbol)}` : esc(tx.symbol || "");
             return `<div class="dep-tx" data-state="${esc(tx.state)}">
               <div><div>${amount} <span class="hint">· ${esc(tx.chainName)}</span></div><div class="hint">${esc(when)}</div></div>
@@ -2544,7 +2621,7 @@
         if (!alive()) return;
         if (saved && saved.depositToken) symbol = saved.depositToken;
         if (saved && saved.depositChain) chainId = saved.depositChain;
-        if (!res || !res.ok || !res.tokens.length) {
+        if (!res || !res.ok || !Array.isArray(res.tokens) || !res.tokens.length) {
           $("depBody").innerHTML = `<p class="hint warn">${t("depFail")}: ${esc((res && res.reason) || "")}</p><p class="hint">${t("depProxyHint")}</p>`;
           return;
         }
@@ -3028,6 +3105,7 @@
           <button type="button" class="ok" id="saveSet">${t("settingsSaveGroup")}</button>
           <button type="button" class="ghost" id="newSeries" hidden>${t("newSeries")}</button>
           <button type="button" class="ghost" id="resetPaper">${t("resetPaper")}</button>
+          <span class="hint warn" id="resetOut" role="status" hidden></span>
         `;
       }
       state.paintSettingsSaveButton = (group = body.querySelector("[data-settings-tab].on")?.dataset.settingsTab || "strategy") => {
@@ -3297,8 +3375,23 @@
         e.preventDefault();
         e.stopPropagation();
         if (!window.vespera || !window.vespera.resetPaper) return;
-        const snap = await window.vespera.resetPaper(s.paperBalance || "1000.00");
-        renderSnap(snap);
+        if (state.snapshot?.paper?.openBet) {
+          $("resetOut").textContent = t("resetPaperBlocked");
+          $("resetOut").hidden = false;
+          return;
+        }
+        if (!window.confirm(t("resetPaperConfirm"))) return;
+        try {
+          const snap = await window.vespera.resetPaper(s.paperBalance || "1000.00");
+          if (snap?.paper?.openBet) {
+            $("resetOut").textContent = t("resetPaperBlocked");
+            $("resetOut").hidden = false;
+          }
+          renderSnap(snap);
+        } catch (err) {
+          $("resetOut").textContent = `${t("logError")}: ${String((err && err.message) || err)}`;
+          $("resetOut").hidden = false;
+        }
       };
       const saveBtn = $("saveSet");
       if (saveBtn) saveBtn.onclick = (e) => {
@@ -3422,11 +3515,17 @@
         <p class="hint" id="exportOut">${t("exportCsvHint")}</p>
       `;
       $("btnExportCsv").onclick = async () => {
-        const out = $("exportOut");
-        const res = await window.vespera.exportCsv();
-        if (res && res.ok) out.textContent = `${t("exportCsvDone")} ${res.count} \u2192 ${res.path}`;
-        else if (res && res.reason === "canceled") out.textContent = t("exportCsvHint");
-        else out.textContent = res && res.reason === "empty" ? t("exportCsvEmpty") : `${t("exportCsvFail")}: ${(res && res.reason) || ""}`;
+        const showResult = (message) => {
+          if (state.panelKind === "stats" && $("exportOut")) $("exportOut").textContent = message;
+        };
+        try {
+          const res = await window.vespera.exportCsv();
+          if (res && res.ok) showResult(`${t("exportCsvDone")} ${res.count} \u2192 ${res.path}`);
+          else if (res && res.reason === "canceled") showResult(t("exportCsvHint"));
+          else showResult(res && res.reason === "empty" ? t("exportCsvEmpty") : `${t("exportCsvFail")}: ${(res && res.reason) || ""}`);
+        } catch (err) {
+          showResult(`${t("exportCsvFail")}: ${String((err && err.message) || err)}`);
+        }
       };
     }
 
@@ -3438,7 +3537,7 @@
         (rows
           .map((row) => {
             const line = logLine(row);
-            return `<div class="hint journal-line"><span class="log-time">${line.when}</span> ${line.title}${
+            return `<div class="hint journal-line"><span class="log-time">${esc(line.when)}</span> ${esc(line.title)}${
               line.detail ? " · " + esc(line.detail) : ""
             }</div>`;
           })

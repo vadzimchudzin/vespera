@@ -10,6 +10,7 @@ future work. Final venue settlement is described in [RECONCILIATION](RECONCILIAT
   REST reconciliation every 15 seconds. Reconnect events are logged as
   `data_health`; REST failures appear as `data_error`.
 - Trade ticks update the forming candle, but do not declare it closed.
+- Candle history comes from Binance.com (`api.binance.com`, then the official mirror `data-api.binance.vision`). If both are unreachable the app falls back to Binance.US, a different exchange with different candles. The status exposes `feed.degraded`, the journal records `feed_fallback_binance_us`, real-money Start is refused and a real-money order is never placed on such candles. Paper and dry run continue with a warning.
 - Missing historical candles block entries until the required indicator window
   is continuous. Expired recovered signals are not traded retrospectively.
 - A confirmed live test bet locks further test/strategy entries until its round

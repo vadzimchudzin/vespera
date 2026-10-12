@@ -20,7 +20,14 @@ function createWindow() {
     webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   win.loadFile(path.join(__dirname, "../renderer/index.html"));
-  win.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: "deny" }; });
+  // Only https links ever leave the app; the window itself never navigates away from the bundled UI.
+  const safeExternal = (value) => { try { return new URL(value).protocol === "https:"; } catch { return false; } };
+  win.webContents.setWindowOpenHandler(({ url }) => { if (safeExternal(url)) shell.openExternal(url); return { action: "deny" }; });
+  win.webContents.on("will-navigate", (event, url) => {
+    if (url === win.webContents.getURL()) return;
+    event.preventDefault();
+    if (safeExternal(url)) shell.openExternal(url);
+  });
 }
 
 app.whenReady().then(() => {
