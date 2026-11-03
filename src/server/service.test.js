@@ -324,6 +324,47 @@ test("a prior explicit run resumes only after restart checks", async (t) => {
   assert.equal(service.owner.desiredRunning, true);
 });
 
+test("auto-resume survives chart warm-up snapshots across repeated restarts", async () => {
+  const ctx = await setup();
+  await activate(ctx.root);
+  await request(ctx.root, "/v1/command", { method: "POST", body: { deviceId: DEVICE, requestId: "start-before-restarts", method: "start", args: [] } });
+  await ctx.service.close();
+  for (const round of [1, 2, 3]) {
+    const host = fakeHost();
+    const call = host.call.bind(host);
+    // The real Engine emits full snapshots (status "stopped") while warming the chart, before start() runs.
+    host.call = async (method, args) => {
+      if (method === "warmChart") host.listener({ type: "history", payload: { bars: [] }, state: { status: "stopped", running: false } });
+      const result = await call(method, args);
+      if (method === "start") host.listener({ type: "status", payload: "watching", state: { status: "watching", running: true } });
+      return result;
+    };
+    const service = createService({ userDataDir: ctx.userDataDir, token: TOKEN, hostFactory: ({ onEvent }) => { host.listener = onEvent; return host; } });
+    service.server.listen(0, "127.0.0.1");
+    await new Promise((resolve, reject) => { service.server.once("listening", resolve); service.server.once("error", reject); });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      assert.ok(host.calls.some((item) => item.method === "start"), `restart ${round} resumed execution`);
+      assert.equal(service.owner.desiredRunning, true, `restart ${round} keeps the run resumable`);
+    } finally {
+      await service.close();
+    }
+    assert.equal(JSON.parse(fs.readFileSync(path.join(ctx.userDataDir, "ownership.json"), "utf8")).desiredRunning, true);
+  }
+});
+
+test("a stop-like snapshot after the engine ran still ends the resumable run", async (t) => {
+  const ctx = await setup();
+  t.after(() => ctx.service.close());
+  await activate(ctx.root);
+  await request(ctx.root, "/v1/command", { method: "POST", body: { deviceId: DEVICE, requestId: "start-then-derived-stop", method: "start", args: [] } });
+  assert.equal(ctx.service.owner.desiredRunning, true);
+  ctx.hosts[0].emit({ type: "log", payload: { level: "info" }, state: { status: "watching", running: true } });
+  // e.g. turning dry run off mid-run stops the engine without a separate status event
+  ctx.hosts[0].emit({ type: "settings", payload: {}, state: { status: "stopped", running: false } });
+  assert.equal(ctx.service.owner.desiredRunning, false);
+});
+
 test("activation warms the server chart in background without starting execution", async (t) => {
   const ctx = await setup();
   t.after(() => ctx.service.close());
