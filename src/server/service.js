@@ -242,6 +242,9 @@ function createService({ userDataDir, token, host, hostFactory, now = Date.now, 
   let eventCursor = 0;
   let queue = Promise.resolve();
   let closing = false;
+  // Derived statuses only end a run once the engine was seen running: chart
+  // warm-up and auto-resume emit "stopped" snapshots before start() runs.
+  let engineSeenRunning = false;
   let telegramBot = null;
   const serialize = (work) => {
     const result = queue.then(work, work);
@@ -267,10 +270,13 @@ function createService({ userDataDir, token, host, hostFactory, now = Date.now, 
     } catch { /* Telegram delivery is isolated from Engine events */ }
     const status = typeof event.payload === "string" ? event.payload : state && state.status;
     const venueDown = status === "venue_down" || (status === "paused" && state && /^venue_down:/.test(state.pauseReason || ""));
-    if (!closing && status && ["stopped", "halt", "paused", "daily_limit"].includes(status) && !venueDown && owner.desiredRunning) {
+    const explicitStatus = event.type === "status" && typeof event.payload === "string";
+    if (!closing && status && ["stopped", "halt", "paused", "daily_limit"].includes(status) && !venueDown && owner.desiredRunning &&
+        (explicitStatus || engineSeenRunning)) {
       owner.desiredRunning = false;
       try { saveOwner(); } catch { /* a later explicit command will surface disk errors */ }
     }
+    if (state && typeof state.running === "boolean") engineSeenRunning = state.running;
   };
 
   try {
@@ -593,7 +599,8 @@ function createService({ userDataDir, token, host, hostFactory, now = Date.now, 
     serialize(async () => {
       try {
         const result = await activeHost.call("start", [{ confirmLive: true }]);
-        if (!result || result.ok === false) owner.desiredRunning = false;
+        // Same rule as an explicit Start: a resumed run stays resumable after the next restart.
+        owner.desiredRunning = Boolean(result && result.ok);
       } catch { owner.desiredRunning = false; }
       saveOwner();
     });
