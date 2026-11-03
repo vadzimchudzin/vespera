@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Vespera · Engine Vision (concept)</title>
+<style>html,body{margin:0;height:100%;background:#060607;overflow:hidden}canvas{display:block}</style>
+</head>
+<body>
+<canvas id="viz"></canvas>
+<script src="data.js"></script>
+<script src="engine-viz.js"></script>
+<script>
+  const q = new URLSearchParams(location.search);
+  if (!window.VESPERA_VIZ) {
+    document.body.innerHTML = '<pre style="color:#ddd;font:14px monospace;padding:24px">Нет data.js. Запустите: python3 tools/engine-viz/build_data.py</pre>';
+  } else VesperaViz.mount(document.getElementById("viz"), window.VESPERA_VIZ, {
+    animate: !q.has("still"), t: q.has("t") ? Number(q.get("t")) : null,
+    width: q.has("w") ? Number(q.get("w")) : null, height: q.has("h") ? Number(q.get("h")) : null,
+    dpr: q.has("dpr") ? Number(q.get("dpr")) : (window.devicePixelRatio || 1),
+  });
+</script>
+</body>
+</html>
