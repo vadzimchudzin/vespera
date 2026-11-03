@@ -13,25 +13,35 @@
   const J = (s) => { try { return typeof s === "string" ? JSON.parse(s) : s; } catch (e) { return null; } };
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  // WebSocket with text PING keep-alive and capped exponential reconnect.
+  // WebSocket with text PING keep-alive, capped exponential reconnect, and an idle watchdog: a socket that stays
+  // open but goes silent for h.idle ms is dropped and replaced (a silent socket never fires onclose by itself).
   function socket(url, name, h, status) {
-    let ws = null, timer = null, wait = 1000, alive = true;
+    let ws = null, timer = null, dog = null, wait = 1000, alive = true, last = 0;
     const send = (s) => { if (ws && ws.readyState === 1) ws.send(typeof s === "string" ? s : JSON.stringify(s)); };
+    const retry = () => {
+      clearInterval(timer); clearInterval(dog);
+      if (!alive) return;
+      status(name, "reconnect"); setTimeout(connect, wait); wait = Math.min(wait * 2, 20000);
+      if (h.lost) h.lost();
+    };
     const connect = () => {
       status(name, "connecting");
       try { ws = new WebSocket(url); } catch (e) { status(name, "error"); setTimeout(connect, wait); return; }
-      ws.onopen = () => { wait = 1000; status(name, "open"); h.open(send); timer = setInterval(() => send("PING"), h.ping); };
-      ws.onmessage = (e) => { if (typeof e.data === "string" && e.data !== "PONG") h.message(e.data); };
-      ws.onclose = () => {
-        clearInterval(timer);
-        if (!alive) return;
-        status(name, "reconnect"); setTimeout(connect, wait); wait = Math.min(wait * 2, 20000);
-        if (h.lost) h.lost();
+      const me = ws, drop = () => { me.onopen = me.onclose = me.onmessage = me.onerror = null; try { me.close(); } catch (e) {} ws = null; retry(); };
+      const hung = setTimeout(() => { if (ws === me && me.readyState !== 1) { status(name, "timeout"); drop(); } }, 15000);
+      ws.onopen = () => {
+        clearTimeout(hung); wait = 1000; last = Date.now(); status(name, "open"); h.open(send); timer = setInterval(() => send("PING"), h.ping);
+        if (h.idle) dog = setInterval(() => {
+          if (ws !== me || Date.now() - last < h.idle) return;
+          status(name, "silent"); drop();
+        }, 1000);
       };
+      ws.onmessage = (e) => { last = Date.now(); if (typeof e.data === "string" && e.data !== "PONG") h.message(e.data); };
+      ws.onclose = () => { clearTimeout(hung); if (ws === me) retry(); };
       ws.onerror = () => {};
     };
     connect();
-    return { send, close() { alive = false; clearInterval(timer); try { ws && ws.close(); } catch (e) {} } };
+    return { send, close() { alive = false; clearInterval(timer); clearInterval(dog); try { ws && ws.close(); } catch (e) {} } };
   }
 
   class Feeds {
@@ -44,7 +54,7 @@
     start() {
       const st = (n, s) => this.status(n, s);
       this.rtds = socket(RTDS, "rtds", {
-        ping: 5000, message: (s) => this.onRtds(s), lost: () => { this.gap = true; },
+        ping: 5000, idle: 15000, message: (s) => this.onRtds(s), lost: () => { this.gap = true; },
         open: (send) => {
           send({ action: "subscribe", subscriptions: [{ topic: "activity", type: "trades" },
             { topic: "crypto_prices_chainlink", type: "*", filters: "" }, { topic: "crypto_prices_twap_sixty", type: "*", filters: "" }] });
@@ -140,7 +150,7 @@
         });
       }
       if (!this.clob && this.subs.size) {
-        this.clob = socket(CLOB, "clob", { ping: 10000, message: (s) => this.onClob(s),
+        this.clob = socket(CLOB, "clob", { ping: 10000, idle: 30000, message: (s) => this.onClob(s),
           open: (send) => send({ assets_ids: [...this.subs], type: "market", custom_feature_enabled: true }) }, (n, s) => this.status(n, s));
       } else if (this.clob) {
         if (add.length) this.clob.send({ assets_ids: add, operation: "subscribe", custom_feature_enabled: true });

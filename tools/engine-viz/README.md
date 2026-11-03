@@ -43,6 +43,10 @@ frame for frame.
 | CLOB `wss://ws-subscriptions-clob.polymarket.com/ws/market` | `book`, `price_change`, `last_trade_price`, `tick_size_change`, `market_resolved`, both tokens | book, executable price, official result |
 | Gamma `/events?slug=` | tokens, fee schedule, tick, minimum size, `priceToBeat`, `finalPrice` | market config, K and result cross-checks |
 
+Sockets reconnect with backoff. A socket that stays open but goes silent (RTDS
+15 s, CLOB 30 s) is replaced, and after an RTDS gap the snapshot is fetched
+again. Gamma is polled every 15 s, at most 4 requests at a time.
+
 ## Screen
 
 1. **Threads.** One thread is one real fill. It runs from the wallet's node on
