@@ -2,22 +2,65 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<title>Vespera · Engine Vision (concept)</title>
-<style>html,body{margin:0;height:100%;background:#060607;overflow:hidden}canvas{display:block}</style>
+<title>Vespera · Engine Live</title>
+<style>html,body{margin:0;height:100%;background:#060607;overflow:hidden}canvas{display:block}#err{color:#ddd;font:14px monospace;padding:24px;white-space:pre-wrap}</style>
 </head>
 <body>
 <canvas id="viz"></canvas>
-<script src="data.js"></script>
-<script src="engine-viz.js"></script>
+<script src="live/core.js"></script>
+<script src="live/feeds.js"></script>
+<script src="live/render.js"></script>
 <script>
-  const q = new URLSearchParams(location.search);
-  if (!window.VESPERA_VIZ) {
-    document.body.innerHTML = '<pre style="color:#ddd;font:14px monospace;padding:24px">Нет data.js. Запустите: python3 tools/engine-viz/build_data.py</pre>';
-  } else VesperaViz.mount(document.getElementById("viz"), window.VESPERA_VIZ, {
-    animate: !q.has("still"), t: q.has("t") ? Number(q.get("t")) : null,
-    width: q.has("w") ? Number(q.get("w")) : null, height: q.has("h") ? Number(q.get("h")) : null,
-    dpr: q.has("dpr") ? Number(q.get("dpr")) : (window.devicePixelRatio || 1),
-  });
+(function () {
+  "use strict";
+  // Live by default. ?replay=rec.js[&from=s] plays a recording (record.mjs); ?still&t=s draws one frame; w/h/dpr fix the size.
+  const q = new URLSearchParams(location.search), num = (k, d) => (q.has(k) ? Number(q.get(k)) : d);
+  const canvas = document.getElementById("viz");
+  const opts = { width: num("w", null), height: num("h", null), dpr: num("dpr", window.devicePixelRatio || 1) };
+  const fail = (s) => { document.body.innerHTML = `<pre id="err">${s}</pre>`; };
+  const loop = (draw) => { const f = () => { draw(); requestAnimationFrame(f); }; f(); };
+
+  function replay(rec) {
+    const eng = new VesperaCore.Engine();
+    rec.events.forEach((e) => eng.push(e));
+    const t0 = rec.t0 + num("from", 0) * 1000;
+    const R = VesperaRender.mount(canvas, eng, Object.assign(opts, { mode: "replay", rec }));
+    window.__vizDraw = (t) => { const now = Math.min(t0 + t * 1000, rec.t1); eng.advance(now); R.draw(now); };
+    if (q.has("still")) window.__vizDraw(num("t", 0));
+    else { const a = performance.now(); loop(() => window.__vizDraw((performance.now() - a) / 1000)); }
+  }
+
+  function live() {
+    const PK = "vespera.engineLive.paper.v1", KK = "vespera.engineLive.k.v1";
+    const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) || d; } catch (e) { return d; } };
+    const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
+    // K seen at a window's start second survives a reload of the page within that window.
+    const ks = load(KK, {});
+    const kStore = { get: (s) => (s in ks ? ks[s] : null), set: (s, v) => {
+      ks[s] = v; const cut = Date.now() / 1000 - 7200;
+      for (const k of Object.keys(ks)) if (+k.split("-").pop() < cut) delete ks[k];
+      save(KK, ks);
+    } };
+    const paper = load(PK, []);
+    const eng = new VesperaCore.Engine({ kStore, paper, onPaper: (p) => save(PK, p.slice(-500)) });
+    const rec = q.has("record") ? [] : null;
+    new VesperaFeeds.Feeds((e) => { eng.push(e); if (rec) rec.push(e); }, { watch: paper.filter((p) => !p.final).map((p) => p.slug) }).start();
+    if (rec) window.__vizDump = () => `window.VESPERA_REC = ${JSON.stringify({ t0: rec.length ? rec[0].rt : Date.now(), t1: Date.now(), events: rec })};\n`;
+    const R = VesperaRender.mount(canvas, eng, Object.assign(opts, { mode: rec ? "record" : "live" }));
+    window.__vizDraw = () => { const now = Date.now(); eng.advance(now); R.draw(now); };
+    setInterval(() => eng.advance(Date.now()), 250);   // keeps the model clock running in background tabs
+    if (!opts.width) addEventListener("resize", () => R.resize());
+    loop(window.__vizDraw);
+  }
+
+  if (q.has("replay")) {
+    const s = document.createElement("script");
+    s.src = q.get("replay");
+    s.onload = () => (window.VESPERA_REC ? replay(window.VESPERA_REC) : fail("В файле нет window.VESPERA_REC"));
+    s.onerror = () => fail(`Нет файла записи: ${q.get("replay")}\nЗапись: node tools/engine-viz/live/record.mjs 600 rec.js`);
+    document.head.appendChild(s);
+  } else live();
+})();
 </script>
 </body>
 </html>
