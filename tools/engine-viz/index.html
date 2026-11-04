@@ -7,9 +7,12 @@
 </head>
 <body>
 <canvas id="viz"></canvas>
+<script src="live/universe.js"></script>
 <script src="live/core.js"></script>
 <script src="live/feeds.js"></script>
 <script src="live/render.js"></script>
+<script src="live/ring.js"></script>
+<script src="live/tiles.js"></script>
 <script>
 (function () {
   "use strict";
@@ -25,7 +28,8 @@
     const eng = new VesperaCore.Engine();
     rec.events.forEach((e) => eng.push(e));
     const t0 = rec.t0 + num("from", 0) * 1000;
-    const R = VesperaRender.mount(canvas, eng, Object.assign(opts, { mode: "replay", rec }));
+    const R = VesperaRender.mount(canvas, eng, Object.assign(opts, { mode: "replay", rec, sync: q.has("still") && !q.has("async") }));
+    window.__E = eng; window.__R = R;
     window.__vizDraw = (t) => { const now = Math.min(t0 + t * 1000, rec.t1); eng.advance(now); R.draw(now); };
     if (q.has("still")) window.__vizDraw(num("t", 0));
     else { const a = performance.now(); loop(() => window.__vizDraw((performance.now() - a) / 1000)); }
@@ -45,9 +49,17 @@
     const paper = load(PK, []);
     const eng = new VesperaCore.Engine({ kStore, paper, onPaper: (p) => save(PK, p.slice(-500)) });
     const rec = q.has("record") ? [] : null;
-    new VesperaFeeds.Feeds((e) => { eng.push(e); if (rec) rec.push(e); }, { watch: paper.filter((p) => !p.final).map((p) => p.slug) }).start();
+    const feeds = new VesperaFeeds.Feeds((e) => { eng.push(e); if (rec) rec.push(e); }, { watch: paper.filter((p) => !p.final).map((p) => p.slug) }).start();
+    // the ring asks for what it shows: details (markets, prices) of the events in view, the book of the market in focus
+    let fk = "";
+    setInterval(() => {
+      const need = eng.uni.takeNeeds(); if (need.length) feeds.details(need);
+      const toks = eng.uni.takeToks(); if (toks.length) feeds.resolve(toks);
+      const k = eng.uni.focusToks.join(","); if (k !== fk) { fk = k; feeds.books(eng.uni.focusToks); }
+    }, 500);
     if (rec) window.__vizDump = () => `window.VESPERA_REC = ${JSON.stringify({ t0: rec.length ? rec[0].rt : Date.now(), t1: Date.now(), events: rec })};\n`;
     const R = VesperaRender.mount(canvas, eng, Object.assign(opts, { mode: rec ? "record" : "live" }));
+    window.__E = eng; window.__R = R;
     window.__vizDraw = () => { const now = Date.now(); eng.advance(now); R.draw(now); };
     setInterval(() => eng.advance(Date.now()), 250);   // keeps the model clock running in background tabs
     if (!opts.width) addEventListener("resize", () => R.resize());
