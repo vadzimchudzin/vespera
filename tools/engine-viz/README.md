@@ -52,9 +52,14 @@ again. Gamma is polled every 15 s, at most 4 requests at a time.
 1. **Threads.** One thread is one real fill. It runs from the wallet's node on
    the left, bends at (moment in its window, UP price) and ends at its market
    on the ring. Teal = exposure to UP (buy UP or sell DOWN), orange = to DOWN.
-   Width = dollar size. A fill burns for about 5 s with a white pulse, then
-   cools into the 16-minute trace. White and yellow lines are the BTC book mid
-   and the model in the 5m and 15m windows. Dashed lines mark "now".
+   Threads are hairlines, and brightness = dollar size. A new fill flies to its
+   market as a small spark (about 1300 px/s) and its thread grows behind it. On
+   arrival a ripple marks the market's edge and the slot's tick flares. The
+   thread then cools over about 12 s into the 16-minute trace. RTDS delivers
+   fills in batches, so sparks often leave in waves. White and yellow lines are
+   the BTC book mid and the model in the 5m and 15m windows. Their heads ripple
+   when the mid moves a tick or the model moves 1% or more. Dashed lines mark
+   "now".
 2. **Ring.** Seven assets × 5m and 15m, plus BTC previous and next windows.
    Each slot shows τ, book, model, edge both ways, σ60, K, S − K, flow, the
    paper position, and the reason when it stays out. Ended windows show the
@@ -65,6 +70,30 @@ again. Gamma is polled every 15 s, at most 4 requests at a time.
 4. **Tiles:** feeds (events/s, delivery delay), Chainlink BTC with the TWAP and
    K lines, the model graph (what moved P(UP) in the last 250 ms step), the
    book, top wallets, and the paper test.
+
+## Drawing cost
+
+The page draws at most 60 frames per second, whatever the display refresh
+rate, and caps the pixel ratio at 2. Each layer is redrawn only as often as its
+content changes:
+
+| Layer | Redrawn |
+|---|---|
+| Background, grid, 16-minute trace | every 30 s and when the BTC slots roll, in a back buffer at 700 threads per frame; threads that cool in between are added directly |
+| Ring text | every 250 ms (the engine tick) |
+| Panels | 8 times per second |
+| Hot threads, sparks, book rays, BTC lines, "now" box | every frame |
+
+All thread strokes are at most 1 device pixel wide and use normal alpha
+blending, so Skia draws them on its fast hairline path. With additive
+(`lighter`) blending, the 250 or so hot threads cost about 30 ms per frame in
+software raster; now they cost about 3 ms. Colour strings are cached per alpha
+step, so strokes do not allocate.
+
+Measured in headless Chromium with software raster at 1920×1080 on the
+recording: a frame took 43–47 ms before (8–10 ms of JavaScript and 35–37 ms of
+raster) and takes about 8 ms now (3–4 ms and 4–5 ms). A GPU canvas is faster
+still.
 
 ## Model
 
@@ -123,8 +152,7 @@ again. Gamma is polled every 15 s, at most 4 requests at a time.
   credentials. A server version should read prices from PolyBolt.
 - Paper is taker only and fills against the visible book at the decision
   moment: no latency, no queue position, no partial fills.
-- The CLOB feed carries about 1000–1600 events/s. Frames take about 5–25 ms to
-  draw in Chromium.
+- The CLOB feed carries about 1000–1600 events/s.
 
 ## Files
 

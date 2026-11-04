@@ -16,9 +16,10 @@
   // Live by default. ?replay=rec.js[&from=s] plays a recording (record.mjs); ?still&t=s draws one frame; w/h/dpr fix the size.
   const q = new URLSearchParams(location.search), num = (k, d) => (q.has(k) ? Number(q.get(k)) : d);
   const canvas = document.getElementById("viz");
-  const opts = { width: num("w", null), height: num("h", null), dpr: num("dpr", window.devicePixelRatio || 1) };
+  const opts = { width: num("w", null), height: num("h", null), dpr: num("dpr", Math.min(2, window.devicePixelRatio || 1)) };
   const fail = (s) => { document.body.innerHTML = `<pre id="err">${s}</pre>`; };
-  const loop = (draw) => { const f = () => { draw(); requestAnimationFrame(f); }; f(); };
+  // at most ~60 frames a second, whatever the display refresh rate (120/144 Hz would double the work for nothing)
+  const loop = (draw) => { let last = -1e9; const f = (t) => { if (t - last > 14) { last = t; draw(); } requestAnimationFrame(f); }; requestAnimationFrame(f); };
 
   function replay(rec) {
     const eng = new VesperaCore.Engine();
