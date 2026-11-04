@@ -10,12 +10,26 @@ function kellyStake({ p, cost, bankroll, fraction }) {
   return Math.max(0, bankroll * fraction * ((p - cost) / (1 - cost)));
 }
 
-// Dollars a new trade may still use, and which limit binds. Exposure counts cost plus fees of open positions.
+// The match of an event or of a position (positions opened before matches were kept: their own event).
+const matchOfEvent = (event) => event.match || `ev:${event.id}`;
+const matchOfPosition = (p) => p.match || `ev:${p.eventId}`;
+// Outside arbitrage one agent holds at most this many markets of one match: the totals, handicaps and halves of a
+// game are one bet on how the game goes, not several independent ones.
+const MAX_PER_MATCH = 3;
+function matchCount(book, agentId, event, marketId) {
+  const match = matchOfEvent(event);
+  const held = book.s.positions.filter((p) => p.agentId === agentId && p.marketId !== marketId && matchOfPosition(p) === match);
+  return new Set(held.map((p) => p.marketId)).size;
+}
+
+// Dollars a new trade may still use, and which limit binds. Exposure counts cost plus fees of open positions; the
+// per-event limit counts every event of the same match.
 function capacity({ config, book, equity, agentId, event, market = null, arbitrage = false }) {
   const used = (filter) => book.exposure(filter);
+  const match = matchOfEvent(event);
   const limits = [
     ["trade", arbitrage ? config.perEventUsd : config.perTradeUsd],
-    ["event", config.perEventUsd - used((p) => p.eventId === event.id)],
+    ["event", config.perEventUsd - used((p) => matchOfPosition(p) === match)],
     ["sector", (config.sectorMaxPct / 100) * equity - used((p) => p.sector === event.sector)],
     ["total", (config.exposureMaxPct / 100) * equity - used()],
     ["agent", (config.agentCapitalPct / 100) * config.capitalUsd - used((p) => p.agentId === agentId)],
@@ -45,4 +59,4 @@ function haltCheck({ config, equity, dayStartEquity, peakEquity }) {
   return null;
 }
 
-module.exports = { kellyStake, capacity, haltCheck, limitName };
+module.exports = { kellyStake, capacity, haltCheck, limitName, MAX_PER_MATCH, matchCount, matchOfEvent, matchOfPosition };

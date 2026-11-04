@@ -66,11 +66,21 @@ function compactMarket(m) {
   };
 }
 
+// One game is often listed as several events ("… - More Markets" names its parent, and both carry the game's id):
+// they share the per-event limit. Without a game or a parent an event is its own match.
+function matchKey(e) {
+  const game = Number(e?.gameId);
+  if (Number.isSafeInteger(game) && game > 0) return `game:${game}`;
+  const parent = e?.parentEventId == null ? "" : String(e.parentEventId);
+  if (/^\d{1,15}$/.test(parent)) return `ev:${parent}`;
+  return `ev:${String(e?.id || "")}`;
+}
+
 function compactEvent(e) {
   const tags = Array.isArray(e.tags) ? e.tags.map((t) => String(t?.slug || "")).filter(Boolean).slice(0, 24) : [];
   const markets = (Array.isArray(e.markets) ? e.markets : []).map(compactMarket).filter((m) => m.id && m.yes && m.no);
   return {
-    id: String(e.id || ""), slug: str(e.slug, 200), title: str(e.title, 200), description: str(e.description, 1500),
+    id: String(e.id || ""), match: matchKey(e), slug: str(e.slug, 200), title: str(e.title, 200), description: str(e.description, 1500),
     endDate: ms(e.endDate), startDate: ms(e.startDate),
     negRisk: e.negRisk === true, augmented: e.negRiskAugmented === true,
     volume24h: num(e.volume24hr) || 0, liquidity: num(e.liquidity) || 0,
@@ -168,7 +178,7 @@ async function fetchResolutions(net, conditionIds) {
   return out;
 }
 
-module.exports = {
+module.exports = { matchKey,
   GAMMA, CLOB, BOOK_BATCH, num, list, sectorOf, compactMarket, compactEvent,
   fetchTopEvents, fetchEvents, fetchEventsById, fetchBooks, normalizeBook, mirror, fetchResolutions,
 };

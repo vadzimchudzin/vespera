@@ -137,7 +137,8 @@ function median(values) {
  * Probabilities of the buckets of one day's high or low.
  *   observed: the extreme of the routine observations already made on that local date;
  *   forecast: each ensemble member's extreme over the date's remaining hours, less the model's recent bias at the
- *   station (median of model − observation over the past day), blurred by σ = 0.7 °C + 0.35 °C per day of lead.
+ *   station (median of model − observation over the past day), blurred by σ = 0.7 °C + 0.35 °C per day of lead;
+ *   decided: the bucket is settled by the observations alone (out of reach or certain, half a degree of margin).
  * The qualifying value rounds half up to whole degrees of the market's unit, so bucket [lo, hi] is the interval
  * [lo − 0.5, hi + 0.5) in that unit.
  */
@@ -180,10 +181,16 @@ function weatherProbabilities({ kind, date, unit, buckets, times, members, offse
     if (kind === "max") return (observed == null || observed < x ? 1 : 0) * mean((v) => normCdf((x - v) / sigma));
     return 1 - (observed == null || observed >= x ? 1 : 0) * mean((v) => 1 - normCdf((x - v) / sigma));
   };
+  // Where the final value can still land, in °C: a high only rises from the observed one and a low only falls; once
+  // the day is over it is the observed one. Half a degree either way covers reports in whole degrees.
+  const range = observed == null ? null
+    : !values.length ? [observed - 0.5, observed + 0.5] : kind === "max" ? [observed - 0.5, Infinity] : [-Infinity, observed + 0.5];
   const out = buckets.map((b) => {
     const a = b.lo === -Infinity ? -Infinity : toC(b.lo - 0.5);
     const c = b.hi === Infinity ? Infinity : toC(b.hi + 0.5);
-    return { market: b.market, p: Math.max(0, Math.min(1, below(c) - below(a))) };
+    // decided: the observations alone settle the bucket (out of reach, or certain), whatever the forecast says
+    const decided = Boolean(range && (range[1] < a || range[0] >= c || (range[0] >= a && (c === Infinity || range[1] < c))));
+    return { market: b.market, p: Math.max(0, Math.min(1, below(c) - below(a))), decided };
   });
   return { buckets: out, observed, bias, sigma, members: values.length, remainingHours: remaining.length };
 }

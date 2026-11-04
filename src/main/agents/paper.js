@@ -80,7 +80,7 @@ class PaperBook {
       if (this.s.positions.length >= MAX_OPEN) throw fail("agents_too_many_positions");
       position = {
         id: `p${++this.s.seq}`, agentId, type, src, group,
-        eventId: event.id, eventSlug: event.slug, eventTitle: event.title.slice(0, 160), sector: event.sector,
+        eventId: event.id, match: event.match || `ev:${event.id}`, eventSlug: event.slug, eventTitle: event.title.slice(0, 160), sector: event.sector,
         marketId: market.id, conditionId: market.conditionId, tokenId: token, outcome,
         outcomeLabel: market.outcomes[outcome], label: market.label.slice(0, 120),
         shares: fill.shares, cost: fill.cost, fees: fill.fees, entry: r6(fill.cost / fill.shares),

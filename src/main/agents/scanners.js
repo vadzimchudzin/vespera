@@ -15,6 +15,13 @@ const MAX_LADDER_GAP = 0.1;
 // The model agents never buy a side priced under 3¢: the market is ≥ 97% sure of the other side, usually because
 // the deciding fact is already known to it (a model that disagrees is more likely missing data than right).
 const MIN_SIDE_PRICE = 0.03;
+// A single-market buy needs a book it could leave: a bid on its side, a spread of at most a fifth of the ask, a fill
+// at most 10% (at least 1¢) above the best ask, and shares worth at least 80% of their price at the bid right after.
+// A thin book turns the spread into an instant loss that the model's edge has to win back first.
+const BOOK = Object.freeze({ maxSpreadShare: 0.2, walkShare: 0.1, minWalk: 0.01, maxEntryLoss: 0.2 });
+// Weather: the model is one forecast against a market that sees many; its probability counts 40% against the book's
+// mid, and a gap over 25 points is taken for a model error. Buckets the observations already settle are exempt.
+const WEATHER = Object.freeze({ weight: 0.4, maxGap: 0.25 });
 const sidePrice = (m, side) => (side === "yes" ? m.ask : m.bid > 0 ? 1 - m.bid : null);
 const clampP = (p) => Math.min(0.99, Math.max(0.01, p));
 const pct = (x) => `${(x * 100).toFixed(1)}%`;
@@ -159,13 +166,22 @@ function confirmSingle(c, books, { cap, prob, minEdge, fraction, bankroll, say }
   const cost = best[0] + fs;
   const edge = p - cost;
   if (!(edge >= minEdge)) return { skip: say(`перевес ${pct(edge)} < ${pct(minEdge)}`, `edge ${pct(edge)} < ${pct(minEdge)}`), edge };
+  const bid = side.bids[0] ? side.bids[0][0] : 0;
+  if (!(bid > 0)) return { skip: say("на этой стороне нет покупателей: продать будет некому", "no bids on this side: nobody to sell to"), edge };
+  if (best[0] - bid > BOOK.maxSpreadShare * best[0] + 1e-9) {
+    return { skip: say(`спред ${c3(bid)}–${c3(best[0])} шире 20% цены`, `spread ${c3(bid)}–${c3(best[0])} is wider than 20% of the price`), edge };
+  }
   const kelly = kellyStake({ p, cost, bankroll, fraction });
   const stake = Math.min(kelly, cap.usd);
   const kl = fraction === 0.25 ? "¼" : fraction === 0.5 ? "½" : `${fraction}×`;
   if (stake < 1) return { skip: kelly < cap.usd ? say(`${kl}-Келли $${kelly.toFixed(2)} < $1`, `${kl}-Kelly $${kelly.toFixed(2)} < $1`) : say(`лимит «${limitName(cap.binding)}» исчерпан`, `limit "${limitName(cap.binding, true)}" used up`), edge };
-  const limit = Math.min(0.999, p - minEdge - fs);
+  const limit = Math.min(0.999, p - minEdge - fs, best[0] + Math.max(BOOK.minWalk, BOOK.walkShare * best[0]));
   const fill = simulateBuy(side.asks, { budgetUsd: stake, limit, fee: c.market.fee, minSize: book.minSize });
   if (!fill) return { skip: say("меньше минимального размера стакана", "below the book's minimum size"), edge };
+  if ((fill.avg - bid) / fill.avg > BOOK.maxEntryLoss + 1e-9) {
+    return { skip: say(`вход по ${c3(fill.avg)} при покупателе ${c3(bid)}: сразу −${pct(1 - bid / fill.avg)}`,
+      `entry at ${c3(fill.avg)} with the bid at ${c3(bid)}: −${pct(1 - bid / fill.avg)} at once`), edge };
+  }
   const sideMid = side.bids[0] ? (side.bids[0][0] + best[0]) / 2 : best[0];
   const why = say(
     `p=${c3(p)} против ${c3(best[0])}+комиссия ${c3(fs)} → перевес ${pct(edge)}; ${kl}-Келли $${kelly.toFixed(2)}, лимит «${limitName(cap.binding)}» $${cap.usd.toFixed(2)} → $${(fill.cost + fill.fees).toFixed(2)}`,
@@ -200,15 +216,22 @@ function screenFavorites(events, params, now) {
 }
 
 // Weather: model probabilities per bucket (see models.weatherProbabilities); the better side of each bucket.
+function weatherBlend(p, mid) { return mid + WEATHER.weight * (p - mid); }
+
 function screenWeather(models, minEdge) {
   const out = [];
   for (const { event, result, info } of models) {
     const rows = [];
-    for (const { market, p } of result.buckets) {
+    for (const { market, p, decided } of result.buckets) {
       if (!market.accepting || market.closed) continue;
-      const q = quoteEdge(market, clampP(p));
-      if (q.edge >= 0.5 * minEdge && sidePrice(market, q.side) >= MIN_SIDE_PRICE) rows.push({ key: `wx:${market.id}:${q.side}`, type: "weather", event, market, side: q.side, prob: q.prob, hint: q.edge,
-        model: `${info.kind === "max" ? "max" : "min"} ${info.icao} ${info.date}: obs ${result.observed ?? "—"}, bias ${result.bias.toFixed(1)}, σ ${result.sigma.toFixed(2)}, ${result.members} members` });
+      const mid = market.bid > 0 && market.ask > 0 && market.ask < 1 ? (market.bid + market.ask) / 2 : null;
+      if (!decided && (mid == null || Math.abs(p - mid) > WEATHER.maxGap)) continue;   // a model this far from the market is the likelier one to be wrong
+      const use = decided ? p : weatherBlend(p, mid);
+      const q = quoteEdge(market, clampP(use));
+      const shrink = decided ? null : { p: clampP(p), w: WEATHER.weight, maxGap: WEATHER.maxGap };
+      if (q.edge >= 0.5 * minEdge && sidePrice(market, q.side) >= MIN_SIDE_PRICE) rows.push({ key: `wx:${market.id}:${q.side}`, type: "weather", event, market, side: q.side, prob: q.prob, hint: q.edge, shrink,
+        model: `${info.kind === "max" ? "max" : "min"} ${info.icao} ${info.date}: obs ${result.observed ?? "—"}, bias ${result.bias.toFixed(1)}, σ ${result.sigma.toFixed(2)}, ${result.members} members, ` +
+          (decided ? `p=${c3(p)} by observation` : `model ${c3(p)} → ${c3(use)} with the market ${c3(mid)}`) });
     }
     out.push(...rows.sort((a, b) => b.hint - a.hint).slice(0, 2));
   }
@@ -367,6 +390,6 @@ function makerStep(prev, book, market, { size, maxShares, inventory, now }) {
 }
 
 module.exports = {
-  SKIP_TITLE, MAX_LADDER_GAP, MIN_SIDE_PRICE, screenBundles, ladderKey, deadlineOf, screenLadders, sizeArbitrage, confirmArbitrage, confirmSingle, quoteEdge,
+  SKIP_TITLE, MAX_LADDER_GAP, MIN_SIDE_PRICE, BOOK, WEATHER, weatherBlend, screenBundles, ladderKey, deadlineOf, screenLadders, sizeArbitrage, confirmArbitrage, confirmSingle, quoteEdge,
   screenFavorites, screenWeather, screenCrypto, ladderSigma, cryptoLadders, forecastPool, resolutionPool, makerPool, makerStep, isModelEvent,
 };
