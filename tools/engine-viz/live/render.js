@@ -9,9 +9,15 @@
   "use strict";
   const MONO = '"JetBrains Mono","DejaVu Sans Mono","Liberation Mono",monospace';
   const INK = "235,235,228", UP = "57,214,176", DN = "255,106,61", OURS = "255,211,77", WHITE = "255,255,255";
+  const UPL = "190,250,232", DNL = "255,214,190";   // light tints of UP and DN for sparks
   const TZ = "Etc/GMT-3", TZL = "UTC+3", HOT = 12000, TF = { "5m": 300, "15m": 900 }, TAU = Math.PI * 2;
   const C = global.VesperaCore, fp = C.fmtPx;
-  const rgba = (c, a) => `rgba(${c},${a <= 0 ? 0 : a >= 1 ? 1 : a.toFixed(3)})`;
+  // colour strings are cached per 1/255 of alpha (the canvas keeps 8 bits anyway): no new string per stroke, less GC
+  const RGBA = {};
+  const rgba = (c, a) => {
+    const q = a <= 0 ? 0 : a >= 1 ? 255 : Math.round(a * 255), A = RGBA[c] || (RGBA[c] = new Array(256));
+    return A[q] || (A[q] = `rgba(${c},${(q / 255).toFixed(3)})`);
+  };
   const pad = (n) => String(n).padStart(2, "0");
   const clock = (ms, sec) => new Date(ms).toLocaleTimeString("en-GB", sec ? { timeZone: TZ, hour12: false } : { hour: "2-digit", minute: "2-digit", timeZone: TZ, hour12: false });
   const utc = (ms) => new Date(ms).toISOString().slice(11, 19);
@@ -34,16 +40,35 @@
     ctx.font = `${weight ? weight + " " : ""}${size}px ${MONO}`; ctx.fillStyle = color; ctx.textAlign = align; ctx.fillText(s, x, y);
   }
   function tracePath(c, G) { c.moveTo(G[0], G[1]); c.bezierCurveTo(G[2], G[3], G[4], G[5], G[6], G[7]); c.bezierCurveTo(G[8], G[9], G[10], G[11], G[12], G[13]); }
+  // the part of a thread from its wallet to parameter u: de Casteljau split of the cubic that u falls in
+  function tracePart(c, G, u) {
+    let o = 0, t = u * 2;
+    c.moveTo(G[0], G[1]);
+    if (u >= 0.5) { c.bezierCurveTo(G[2], G[3], G[4], G[5], G[6], G[7]); o = 6; t = u * 2 - 1; }
+    const ax = G[o] + (G[o + 2] - G[o]) * t, ay = G[o + 1] + (G[o + 3] - G[o + 1]) * t, bx = G[o + 2] + (G[o + 4] - G[o + 2]) * t, by = G[o + 3] + (G[o + 5] - G[o + 3]) * t;
+    const qx = G[o + 4] + (G[o + 6] - G[o + 4]) * t, qy = G[o + 5] + (G[o + 7] - G[o + 5]) * t, dx = ax + (bx - ax) * t, dy = ay + (by - ay) * t;
+    c.bezierCurveTo(ax, ay, dx, dy, dx + (bx + (qx - bx) * t - dx) * t, dy + (by + (qy - by) * t - dy) * t);
+  }
   function pointAt(G, u) {
     const o = u < 0.5 ? 0 : 6, t = u < 0.5 ? u * 2 : (u - 0.5) * 2, m = 1 - t;
     const P = (k) => m * m * m * G[o + k] + 3 * m * m * t * G[o + 2 + k] + 3 * m * t * t * G[o + 4 + k] + t * t * t * G[o + 6 + k];
     return [P(0), P(1)];
   }
   const bucket = (t, age) => (t.up ? 16 : 0) + (t.usd < 5 ? 0 : t.usd < 50 ? 1 : t.usd < 500 ? 2 : 3) * 4 + (age < 60e3 ? 0 : age < 240e3 ? 1 : age < 480e3 ? 2 : 3);
-  function styleBucket(c, b) {
+  // Every thread stroke stays at or under 1 device px with plain alpha blending: Skia draws those on its fast hairline
+  // path (additive "lighter" strokes cost ~10× more). A fill's size reads as brightness, not width.
+  // a spark flies at ~1300 px/s (0.6–1.3 s), fast out of the wallet and slowing into its market
+  const FLY = 1300, fly = (age, T) => 1 - (1 - Math.min(1, age / T._fl)) ** 1.5, szN = (usd) => Math.min(1, Math.log10(1 + usd) / 4);
+  function styleBucket(c, b, d) {
     const wb = (b >> 2) & 3, ab = b & 3;
-    c.strokeStyle = rgba(b >= 16 ? UP : DN, 0.055 * [0.8, 1, 1.4, 1.9][wb] * [1, 0.62, 0.4, 0.22][ab]); c.lineWidth = [0.45, 0.7, 1.05, 1.5][wb];
+    c.strokeStyle = rgba(b >= 16 ? UP : DN, 0.07 * [0.75, 1, 1.35, 1.8][wb] * [1, 0.6, 0.38, 0.2][ab]); c.lineWidth = [0.5, 0.65, 0.85, 1][wb] / d;
   }
+  const canvasOf = () => (global.document ? global.document.createElement("canvas") : new OffscreenCanvas(1, 1));
+
+  const LEGEND = ["VESPERA · ENGINE LIVE",
+    "только живые данные Polymarket: rtds сделки и chainlink, clob стаканы, gamma рынки — без прокси и симуляций",
+    "① нить = реальная сделка: кошелёк → (момент в её окне, цена UP) → её рынок на кольце · бирюза = на UP, оранж = на DOWN · искра летит к рынку, яркость = $",
+    "② кольцо: рынки up/down 5m и 15m · ③ лучи: стакан BTC по уровням, у остальных — последние сделки · ④ панели ниже"];
 
   const SLOTS = [];
   for (const a of ["eth", "sol", "xrp"]) for (const tf of ["15m", "5m"]) SLOTS.push({ a, tf, rel: 0, w: 1 });
@@ -72,7 +97,8 @@
     constructor(canvas, eng, opts = {}) {
       this.c = canvas; this.ctx = canvas.getContext("2d"); this.E = eng;
       this.o = Object.assign({ dpr: 1, mode: "live" }, opts);
-      this.cool = null; this.coolKey = ""; this.coolAt = 0; this.coolTo = 0; this.lkey = ""; this.topW = []; this.topAt = -Infinity; this.stAt = -Infinity;
+      this.base = null; this.baseKey = ""; this.baseAt = 0; this.baseTo = 0; this.lkey = ""; this.topW = []; this.topAt = -Infinity; this.stAt = -Infinity;
+      this.back = null; this.job = null; this.tiny = null; this.ringC = null; this.ringK = null; this.tileK = null; this.pulse = {};
       this.resize();
     }
     resize() {
@@ -86,7 +112,9 @@
         const o = Object.assign({}, s, { i, y0: y, h: s.w * unit }); o.y1 = y + o.h; o.yc = y + o.h / 2; y = o.y1;
         this.idx[s.other ? "other" : s.a + s.tf + s.rel] = i; return o;
       });
-      this.coolKey = ""; this.lkey = ""; this.stAt = -Infinity;
+      const g = this.g, x0 = Math.floor(g.cx - g.R - 4), x1 = Math.min(W, Math.ceil(Math.max(g.arcX(0, g.Rin), g.arcX(g.mainH, g.Rin)) + 4));
+      this.rb = { x0, w: x1 - x0 };
+      this.baseKey = ""; this.lkey = ""; this.stAt = -Infinity; this.ringK = null; this.tileK = null; this.legW = 0;
     }
     slotOf(T, now) {
       if (!T.a || !TF[T.tf]) return this.idx.other;
@@ -105,6 +133,7 @@
       const wx = 8 + 16 * hx, wy = g.top + hw * (g.bottom - g.top), by = g.yP(T.p), bx = g.xW(T.prog, by);
       const ry = s.yc + (T.up ? -1 : 1) * s.h * (0.06 + 0.34 * ht), rx = g.arcX(ry, g.R) + 1;
       T._g = [wx, wy, lerp(wx, bx, 0.55), wy, lerp(bx, wx, 0.25), by, bx, by, lerp(bx, rx, 0.4), by, lerp(rx, bx, 0.3), ry, rx, ry];
+      T._fl = Math.min(FLY, Math.max(600, (Math.hypot(bx - wx, by - wy) + Math.hypot(rx - bx, ry - by)) / 1.3));
       T._k = this.lkey;
       return T._g;
     }
@@ -128,77 +157,108 @@
       const ctx = this.ctx, g = this.g, d = this.o.dpr;
       this.lkey = `${this.W}x${this.H}:${Math.floor(now / 300000)}`;
       ctx.setTransform(d, 0, 0, d, 0, 0);
-      ctx.fillStyle = "#060607"; ctx.fillRect(0, 0, this.W, this.H);
       if (now - this.topAt > 1000 || now < this.topAt) { this.topW = [...this.E.wallets.values()].sort((a, b) => b.usd - a.usd).slice(0, 8); this.topAt = now; }
       this.slotStats(now); this.rec = this.recent(now);
       ctx.save(); ctx.beginPath(); ctx.rect(0, 0, this.W, g.mainH); ctx.clip();
+      this.baseLayer(now); ctx.drawImage(this.base, 0, 0, this.W, g.mainH);
       this.web(ctx, now); this.rays(ctx, now); this.ring(ctx, now); this.nowBox(ctx, now); this.legend(ctx);
       ctx.restore();
-      this.tiles(ctx, now);
+      // the panels are numbers: 8 redraws a second keep them live at a fraction of the cost, and the canvas keeps them between
+      const tk = Math.floor((now + 60) / 125);
+      if (tk !== this.tileK) { this.tileK = tk; this.tiles(ctx, now); }
     }
 
     // ① ------------------------------------------------------------------------------------
-    coolLayer(now) {
-      const d = this.o.dpr, W = this.W, Hm = this.g.mainH, T = this.E.trades;
-      if (!this.cool) this.cool = global.document ? global.document.createElement("canvas") : new OffscreenCanvas(1, 1);
-      const cw = Math.round(W * d), ch = Math.round(Hm * d);
-      let full = this.coolKey !== this.lkey || now - this.coolAt > 30000 || now < this.coolAt;
-      if (this.cool.width !== cw || this.cool.height !== ch) { this.cool.width = cw; this.cool.height = ch; full = true; }
-      const c = this.cool.getContext("2d");
+    grid(c) {
+      const g = this.g;
+      c.lineWidth = 0.5;
+      for (const p of [0, 0.25, 0.5, 0.75, 1]) {
+        const y = g.yP(p);
+        c.setLineDash(p === 0.5 ? [2, 4] : [1, 6]); c.strokeStyle = rgba(INK, p === 0.5 ? 0.2 : 0.11);
+        c.beginPath(); c.moveTo(g.x0, y); c.lineTo(g.arcX(y, g.R) - 8, y); c.stroke();
+        tx(c, p === 1 ? "UP 1.00" : p === 0 ? "DOWN 0" : p.toFixed(2).replace(/^0/, ""), g.x0 + 3, y - 3, 8.5, rgba(INK, 0.42));
+      }
+      c.setLineDash([]);
+      for (let k = -3; k <= 15; k++) {
+        const prog = k / 15, major = k % 5 === 0;
+        c.strokeStyle = rgba(INK, k < 0 ? 0.03 : major ? 0.085 : 0.035); c.beginPath();
+        for (let y = g.top; y <= g.bottom; y += 8) { const x = g.xW(prog, y); y === g.top ? c.moveTo(x, y) : c.lineTo(x, y); }
+        c.stroke();
+        if (major && k >= 0) tx(c, `${k}:00 · ${mmss(k * 20)}`, g.xW(prog, g.bottom), g.bottom + 14, 8.5, rgba(INK, 0.38), "center");
+      }
+      tx(c, "до старта", g.xW(-0.125, g.bottom), g.bottom + 14, 8.5, rgba(INK, 0.3), "center");
+      tx(c, "момент сделки в окне 15m · 5m →", g.xW(1, g.bottom) - 4, g.bottom + 25, 8, rgba(INK, 0.3), "right");
+    }
+    // Background, grid and the 16-minute trace live in one opaque layer. The trace ages, so the layer is rebuilt every 30 s
+    // and when the BTC slots roll; the rebuild runs in a back buffer, 700 threads a frame, so no single frame stalls.
+    baseStart(cv, now) {
+      const d = this.o.dpr, c = cv.getContext("2d", { alpha: false }), list = [];
+      c.setTransform(d, 0, 0, d, 0, 0); c.fillStyle = "#060607"; c.fillRect(0, 0, this.W, this.g.mainH); this.grid(c);
+      for (const t of this.E.trades) { if (now - t.rt < HOT) break; list.push(t); }
+      return { c, now, list, i: 0, key: this.lkey, maxId: list.length ? list[list.length - 1].id : 0 };
+    }
+    baseStep(J, n) {
+      const d = this.o.dpr, groups = new Map(), end = Math.min(J.list.length, J.i + n);
+      for (; J.i < end; J.i++) { const t = J.list[J.i], b = bucket(t, J.now - t.rt); let a = groups.get(b); if (!a) groups.set(b, (a = [])); a.push(t); }
+      J.c.setTransform(d, 0, 0, d, 0, 0);
+      for (const [b, arr] of groups) { styleBucket(J.c, b, d); J.c.beginPath(); for (const t of arr) tracePath(J.c, this.geom(t, J.now)); J.c.stroke(); }
+      // canvas 2D records and rasterises lazily: copying one pixel out makes this chunk rasterise now, not all at the swap
+      if (n !== Infinity) (this.tiny || (this.tiny = canvasOf())).getContext("2d").drawImage(J.c.canvas, 0, 0, 1, 1, 0, 0, 1, 1);
+      return J.i >= J.list.length;
+    }
+    baseLayer(now) {
+      const d = this.o.dpr, cw = Math.round(this.W * d), ch = Math.round(this.g.mainH * d);
+      const fit = (cv) => { if (cv.width !== cw || cv.height !== ch) { cv.width = cw; cv.height = ch; } return cv; };
+      const done = (J, cv) => { this.base = cv; this.baseKey = J.key; this.baseAt = J.now; this.baseTo = J.maxId; };
+      if (!this.base || this.base.width !== cw || this.base.height !== ch || now < this.baseAt || now - this.baseAt > 120000) {
+        const cv = fit(this.base || canvasOf()), J = this.baseStart(cv, now);   // nothing valid to show (first frame, resize, seek)
+        this.baseStep(J, Infinity); done(J, cv); this.job = null;
+      } else if (!this.job && (this.baseKey !== this.lkey || now - this.baseAt > 30000)) {
+        this.back = fit(this.back || canvasOf()); this.job = this.baseStart(this.back, now);
+      }
+      if (this.job && this.baseStep(this.job, 700)) { const J = this.job, old = this.base; this.job = null; done(J, this.back); this.back = old; }
+      // threads that cooled since the last build go straight onto the front layer
+      const T = this.E.trades, c = this.base.getContext("2d", { alpha: false });
       c.setTransform(d, 0, 0, d, 0, 0);
-      if (full) {
-        c.clearRect(0, 0, W, Hm);
-        const groups = new Map();
-        let maxId = 0;
-        for (const t of T) {
-          const age = now - t.rt; if (age < HOT) break;
-          const b = bucket(t, age); let a = groups.get(b); if (!a) groups.set(b, (a = [])); a.push(t); maxId = t.id;
-        }
-        for (const [b, arr] of groups) { styleBucket(c, b); c.beginPath(); for (const t of arr) tracePath(c, this.geom(t, now)); c.stroke(); }
-        this.coolKey = this.lkey; this.coolAt = now; this.coolTo = maxId;
-      } else {
-        let i = T.length - 1;
-        while (i >= 0 && T[i].id > this.coolTo) i--;
-        for (i++; i < T.length; i++) {
-          const t = T[i], age = now - t.rt; if (age < HOT) break;
-          styleBucket(c, bucket(t, age)); c.beginPath(); tracePath(c, this.geom(t, now)); c.stroke(); this.coolTo = t.id;
-        }
+      let i = T.length - 1;
+      while (i >= 0 && T[i].id > this.baseTo) i--;
+      for (i++; i < T.length; i++) {
+        const t = T[i], age = now - t.rt; if (age < HOT) break;
+        styleBucket(c, bucket(t, age), d); c.beginPath(); tracePath(c, this.geom(t, now)); c.stroke(); this.baseTo = t.id;
       }
     }
     web(ctx, now) {
-      const g = this.g, E = this.E;
-      ctx.lineWidth = 0.6;
-      for (const p of [0, 0.25, 0.5, 0.75, 1]) {
-        const y = g.yP(p);
-        ctx.setLineDash(p === 0.5 ? [2, 4] : [1, 6]); ctx.strokeStyle = rgba(INK, p === 0.5 ? 0.2 : 0.11);
-        ctx.beginPath(); ctx.moveTo(g.x0, y); ctx.lineTo(g.arcX(y, g.R) - 8, y); ctx.stroke();
-        tx(ctx, p === 1 ? "UP 1.00" : p === 0 ? "DOWN 0" : p.toFixed(2).replace(/^0/, ""), g.x0 + 3, y - 3, 8.5, rgba(INK, 0.42));
-      }
-      ctx.setLineDash([]);
-      for (let k = -3; k <= 15; k++) {
-        const prog = k / 15, major = k % 5 === 0;
-        ctx.strokeStyle = rgba(INK, k < 0 ? 0.03 : major ? 0.085 : 0.035); ctx.beginPath();
-        for (let y = g.top; y <= g.bottom; y += 8) { const x = g.xW(prog, y); y === g.top ? ctx.moveTo(x, y) : ctx.lineTo(x, y); }
-        ctx.stroke();
-        if (major && k >= 0) tx(ctx, `${k}:00 · ${mmss(k * 20)}`, g.xW(prog, g.bottom), g.bottom + 14, 8.5, rgba(INK, 0.38), "center");
-      }
-      tx(ctx, "до старта", g.xW(-0.125, g.bottom), g.bottom + 14, 8.5, rgba(INK, 0.3), "center");
-      tx(ctx, "момент сделки в окне 15m · 5m →", g.xW(1, g.bottom) - 4, g.bottom + 25, 8, rgba(INK, 0.3), "right");
-      this.coolLayer(now);
-      ctx.drawImage(this.cool, 0, 0, this.W, g.mainH);
-      ctx.save(); ctx.globalCompositeOperation = "lighter";
-      const T = E.trades;
-      for (let i = T.length - 1; i >= 0; i--) {
+      const g = this.g, E = this.E, d = this.o.dpr, T = E.trades, fresh = [];
+      let i0 = T.length;
+      while (i0 > 0 && now - T[i0 - 1].rt < HOT) i0--;
+      // hot threads (last 12 s), oldest first so the newest lie on top; brightness = recency × size
+      for (let i = i0; i < T.length; i++) {
         const t = T[i], age = now - t.rt;
         if (age < 0) continue;
-        if (age >= HOT) break;
-        const h = Math.exp(-age / 4500), G = this.geom(t, now), wb = 0.35 + 0.42 * Math.log10(1 + t.usd), col = t.up ? UP : DN;
-        ctx.strokeStyle = rgba(col, 0.07 + 0.78 * h); ctx.lineWidth = wb + 1.2 * h;
-        ctx.beginPath(); tracePath(ctx, G); ctx.stroke();
-        if (h > 0.15) { ctx.fillStyle = rgba(col, 0.9 * h); ctx.beginPath(); ctx.arc(G[6], G[7], 1 + 2.2 * h * wb, 0, TAU); ctx.fill(); }
-        if (age < 900) { const u = age / 900, [x, y] = pointAt(G, u); ctx.fillStyle = rgba(WHITE, 0.85 * (1 - u)); ctx.beginPath(); ctx.arc(x, y, 1.2 + wb, 0, TAU); ctx.fill(); }
+        const h = Math.exp(-age / 4500), z = szN(t.usd), G = this.geom(t, now), col = t.up ? UP : DN, u = age < t._fl ? fly(age, t) : 1;
+        ctx.strokeStyle = rgba(col, (0.06 + 0.56 * h) * (0.45 + 0.55 * z)); ctx.lineWidth = Math.min(1, 0.5 + 0.3 * z + 0.2 * h) / d;
+        ctx.beginPath(); u < 1 ? tracePart(ctx, G, u) : tracePath(ctx, G); ctx.stroke();   // in flight the thread grows behind its spark
+        if (h > 0.25 && u >= 0.5) { const r = 0.8 + (1 + 2 * z) * h; ctx.fillStyle = rgba(col, 0.85 * h); ctx.fillRect(G[6] - r / 2, G[7] - r / 2, r, r); }
+        if (age < t._fl + 700) fresh.push(t);
       }
-      ctx.restore();
+      // a new fill flies from its wallet to its market as a short tapered spark, then rings the market's edge
+      for (const t of fresh) {
+        const age = now - t.rt, G = t._g, z = szN(t.usd), col = t.up ? UP : DN, tint = t.up ? UPL : DNL;
+        if (age < t._fl) {
+          const u = fly(age, t), P = [];
+          for (let k = 0; k <= 5; k++) P.push(pointAt(G, Math.max(0, u - 0.04 * (1 - k / 5))));
+          const a = 0.55 + 0.45 * z, [hx, hy] = P[5], r = 1.5 + 1.8 * z;
+          ctx.lineWidth = 1 / d;
+          ctx.strokeStyle = rgba(col, 0.5 * a); ctx.beginPath(); ctx.moveTo(P[0][0], P[0][1]); ctx.lineTo(P[1][0], P[1][1]); ctx.lineTo(P[2][0], P[2][1]); ctx.lineTo(P[3][0], P[3][1]); ctx.stroke();
+          ctx.strokeStyle = rgba(tint, 0.95 * a); ctx.beginPath(); ctx.moveTo(P[3][0], P[3][1]); ctx.lineTo(P[4][0], P[4][1]); ctx.lineTo(hx, hy); ctx.stroke();
+          ctx.fillStyle = rgba(col, 0.16 * a); ctx.beginPath(); ctx.arc(hx, hy, r * 2.4, 0, TAU); ctx.fill();
+          ctx.fillStyle = rgba(tint, a); ctx.fillRect(hx - r / 2, hy - r / 2, r, r);
+        } else {
+          const k = (age - t._fl) / 700;
+          ctx.strokeStyle = rgba(col, 0.65 * (1 - k)); ctx.lineWidth = 0.8 / d;
+          ctx.beginPath(); ctx.arc(G[12], G[13], 1.5 + (4 + 7 * z) * k, 0, TAU); ctx.stroke();
+        }
+      }
       for (const W of E.wallets.values()) {
         const age = now - W.last;
         if (age < 0 || age > E.cfg.threadAgeMs) continue;
@@ -216,11 +276,14 @@
         ctx.fillStyle = "rgba(6,6,7,0.78)"; ctx.fillRect(x + 6, ly - 7, w + 6, 10);
         tx(ctx, s, x + 9, ly + 1, 8, rgba(col, 0.95));
       }
-      for (const [tf, lw, dash] of [["5m", 1.05, [5, 3]], ["15m", 1.7, []]]) {
+      // BTC book mid (white) and model (yellow) in the 15m and 5m windows: thin lines, a faint halo on 15m,
+      // and a ripple on the head when the mid moves a tick or the model moves ≥ 1%
+      for (const [tf, lw, dash] of [["5m", 0.8, [4, 3]], ["15m", 1.15, []]]) {
         const m = this.market({ a: "btc", tf, rel: 0 }, now);
         if (!m) continue;
-        const line = (pts, col, a) => {
-          ctx.strokeStyle = rgba(col, a); ctx.lineWidth = lw; ctx.setLineDash(dash); ctx.beginPath();
+        const f = tf === "15m", prog = (now / 1000 - m.start) / m.dur;
+        const line = (pts, col, a, w) => {
+          ctx.strokeStyle = rgba(col, a); ctx.lineWidth = w; ctx.setLineDash(w > 2 ? [] : dash); ctx.beginPath();
           let on = false;
           for (const [t, v] of pts) {
             if (v == null || t > now) { on = false; continue; }
@@ -229,14 +292,22 @@
           }
           ctx.stroke(); ctx.setLineDash([]);
         };
-        line(m.path, INK, tf === "15m" ? 0.95 : 0.65); line(m.fvPath, OURS, tf === "15m" ? 0.95 : 0.65);
-        const prog = (now / 1000 - m.start) / m.dur;
-        ctx.strokeStyle = rgba(OURS, tf === "15m" ? 0.42 : 0.22); ctx.lineWidth = 0.8; ctx.setLineDash([3, 4]); ctx.beginPath();
+        if (f) { line(m.path, INK, 0.06, 4); line(m.fvPath, OURS, 0.07, 4); }
+        line(m.path, INK, f ? 0.9 : 0.55, lw); line(m.fvPath, OURS, f ? 0.95 : 0.6, lw);
+        ctx.strokeStyle = rgba(OURS, f ? 0.32 : 0.18); ctx.lineWidth = 0.6; ctx.setLineDash([2, 5]); ctx.beginPath();
         for (let y = g.top; y <= g.bottom; y += 6) { const x = g.xW(prog, y); y === g.top ? ctx.moveTo(x, y) : ctx.lineTo(x, y); }
         ctx.stroke(); ctx.setLineDash([]);
-        tx(ctx, `сейчас ${tf}`, g.xW(prog, g.top), g.top - (tf === "15m" ? 5 : -6), 8, rgba(OURS, tf === "15m" ? 0.8 : 0.5), "center");
-        if (m.mid != null) { const y = g.yP(m.mid), x = g.xW(prog, y); ctx.beginPath(); ctx.arc(x, y, tf === "15m" ? 3.2 : 2.2, 0, TAU); ctx.fillStyle = rgba(INK, 1); ctx.fill(); }
-        if (m.mod && m.mod.fv != null) { const y = g.yP(m.mod.fv), x = g.xW(prog, y); ctx.beginPath(); ctx.arc(x, y, tf === "15m" ? 3.2 : 2.2, 0, TAU); ctx.fillStyle = rgba(OURS, 1); ctx.fill(); }
+        tx(ctx, `сейчас ${tf}`, g.xW(prog, g.top), g.top - (f ? 5 : -6), 8, rgba(OURS, f ? 0.8 : 0.5), "center");
+        const P = this.pulse[tf] || (this.pulse[tf] = { mid: null, mt: -1e9, fv: null, ft: -1e9 }), fv = m.mod && m.mod.fv;
+        if (m.mid != null && m.mid !== P.mid) { if (P.mid != null) P.mt = now; P.mid = m.mid; }
+        if (fv != null && (P.fv == null || Math.abs(fv - P.fv) >= 0.01)) { if (P.fv != null) P.ft = now; P.fv = fv; }
+        const head = (v, col, at) => {
+          const y = g.yP(v), x = g.xW(prog, y), k = (now - at) / 800, r = f ? 3 : 2.1;
+          ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fillStyle = rgba(col, 1); ctx.fill();
+          if (k >= 0 && k < 1) { ctx.beginPath(); ctx.arc(x, y, r + 10 * k, 0, TAU); ctx.strokeStyle = rgba(col, 0.7 * (1 - k)); ctx.lineWidth = 0.8 / d; ctx.stroke(); }
+        };
+        if (m.mid != null) head(m.mid, INK, P.mt);
+        if (fv != null) head(fv, OURS, P.ft);
       }
     }
     kLabel(m) {
@@ -328,12 +399,32 @@
       return L;
     }
     ring(ctx, now) {
-      const g = this.g;
+      const g = this.g, k = Math.floor(now / 250);
+      if (k !== this.ringK) { this.ringK = k; this.ringBuild(now); }
+      ctx.drawImage(this.ringC, this.rb.x0, 0, this.rb.w, g.mainH);
+      // slot ticks: flare as a fill lands (the end of its flight)
+      for (const s of this.slots) {
+        const m = this.market(s, now), xo = g.arcX(s.yc, g.R), last = this.rec[s.i][0];
+        let c = INK, a = 0.35;
+        if (m) { const out = m.win != null ? m.win : m.rule; if (out != null) { c = out ? DN : UP; a = 0.95; } else if (s.rel === 0) { c = OURS; a = 0.9; } }
+        const age = last ? now - last.rt - (last._fl || FLY) : -1, fl = age >= 0 ? Math.exp(-age / 500) : 0;
+        ctx.fillStyle = rgba(c, a); ctx.fillRect(xo - 7, s.yc - 0.75, 7, 1.5);
+        if (fl > 0.02) { ctx.fillStyle = rgba(last.up ? UP : DN, 0.9 * fl); ctx.fillRect(xo - 7 - 10 * fl, s.yc - 1, 7 + 10 * fl, 2); }
+      }
+    }
+    // the ring's text changes with the 250 ms engine tick, so it is drawn once per tick into its own layer
+    ringBuild(now) {
+      const g = this.g, d = this.o.dpr, rb = this.rb;
+      if (!this.ringC) this.ringC = canvasOf();
+      const cw = Math.round(rb.w * d), ch = Math.round(g.mainH * d);
+      if (this.ringC.width !== cw || this.ringC.height !== ch) { this.ringC.width = cw; this.ringC.height = ch; }
+      const ctx = this.ringC.getContext("2d");
+      ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, cw, ch); ctx.setTransform(d, 0, 0, d, -rb.x0 * d, 0);
       ctx.save();
       ctx.beginPath(); ctx.arc(g.cx, g.cy, g.R, Math.PI * 0.5, Math.PI * 1.5); ctx.arc(g.cx, g.cy, g.Rin, Math.PI * 1.5, Math.PI * 0.5, true); ctx.closePath();
       ctx.fillStyle = "rgba(9,9,11,0.96)"; ctx.fill(); ctx.clip();
       for (const s of this.slots) {
-        ctx.strokeStyle = rgba(INK, s.focus ? 0.22 : 0.08); ctx.lineWidth = 0.6;
+        ctx.strokeStyle = rgba(INK, s.focus ? 0.2 : 0.07); ctx.lineWidth = 0.5;
         ctx.beginPath(); ctx.moveTo(g.arcX(s.y0, g.R), s.y0); ctx.lineTo(g.arcX(s.y0, g.Rin), s.y0); ctx.stroke();
         if (s.focus) { ctx.fillStyle = rgba(OURS, 0.03); ctx.fillRect(g.arcX(s.yc, g.R) - 40, s.y0, g.R - g.Rin + 120, s.h); }
         const lines = this.slotLines(s, now), lh = s.focus ? 9.3 : 8.1, size = s.focus ? 8.3 : 7.6;
@@ -341,14 +432,8 @@
         for (let k = 0; k < n; k++) { const [str, col, a] = lines[k], y = y0 + k * lh; tx(ctx, str, g.arcX(y, g.R) + 12, y, size, rgba(col, a)); }
       }
       ctx.restore();
-      for (const [r, w, a] of [[g.R, 2.4, 0.9], [g.R - 5, 0.6, 0.45], [g.Rin, 1, 0.45], [g.Rin + 4, 0.5, 0.2]]) {
+      for (const [r, w, a] of [[g.R, 1.2, 0.75], [g.R - 5, 0.5, 0.3], [g.Rin, 0.8, 0.35], [g.Rin + 4, 0.5, 0.15]]) {
         ctx.beginPath(); ctx.arc(g.cx, g.cy, r, Math.PI * 0.5, Math.PI * 1.5); ctx.strokeStyle = rgba(INK, a); ctx.lineWidth = w; ctx.stroke();
-      }
-      for (const s of this.slots) {
-        const m = this.market(s, now), xo = g.arcX(s.yc, g.R);
-        let c = INK, a = 0.35;
-        if (m) { const out = m.win != null ? m.win : m.rule; if (out != null) { c = out ? DN : UP; a = 0.95; } else if (s.rel === 0) { c = OURS; a = 0.9; } }
-        ctx.fillStyle = rgba(c, a); ctx.fillRect(xo - 7, s.yc - 0.75, 7, 1.5);
       }
     }
 
@@ -391,12 +476,16 @@
     }
 
     legend(ctx) {
-      const x = this.g.x0 + 6, y = 17;
-      ctx.fillStyle = "rgba(6,6,7,0.84)"; ctx.fillRect(x - 8, y - 13, 760, 44);
-      tx(ctx, "VESPERA · ENGINE LIVE", x, y, 12, rgba(INK, 1), "left", "bold");
-      tx(ctx, "только живые данные Polymarket: rtds сделки и chainlink, clob стаканы, gamma рынки — без прокси и симуляций", x + 178, y, 9.5, rgba(INK, 0.5));
-      tx(ctx, "① нить = реальная сделка: кошелёк → (момент в её окне, цена UP) → её рынок на кольце · бирюза = на UP, оранж = на DOWN · горит ~5 с, толщина = $", x, y + 14, 9, rgba(INK, 0.72));
-      tx(ctx, "② кольцо: рынки up/down 5m и 15m · ③ лучи: стакан BTC по уровням, у остальных — последние сделки · ④ панели ниже", x, y + 27, 9, rgba(INK, 0.72));
+      const x = this.g.x0 + 6, y = 17, L = LEGEND;
+      if (!this.legW) {   // the backing box fits the longest line
+        ctx.font = `9px ${MONO}`; const a = Math.max(ctx.measureText(L[2]).width, ctx.measureText(L[3]).width);
+        ctx.font = `9.5px ${MONO}`; this.legW = Math.max(a, 178 + ctx.measureText(L[1]).width) + 16;
+      }
+      ctx.fillStyle = "rgba(6,6,7,0.84)"; ctx.fillRect(x - 8, y - 13, this.legW, 44);
+      tx(ctx, L[0], x, y, 12, rgba(INK, 1), "left", "bold");
+      tx(ctx, L[1], x + 178, y, 9.5, rgba(INK, 0.5));
+      tx(ctx, L[2], x, y + 14, 9, rgba(INK, 0.72));
+      tx(ctx, L[3], x, y + 27, 9, rgba(INK, 0.72));
     }
 
     // ④ ------------------------------------------------------------------------------------
@@ -481,13 +570,13 @@
       const N = { S: [ix, top], X: [ix, top + gh * 0.2], K: [ix, top + gh * 0.4], sig: [ix, top + gh * 0.6], tau: [ix, top + gh * 0.8], book: [ix, top + gh],
         fv: [fx, top + gh * 0.45], eu: [ox, top + gh * 0.3], ed: [ox, top + gh * 0.62], paper: [ox, top + gh] };
       const routes = { S: [["S", "fv"]], X: [["X", "fv"]], K: [["K", "fv"]], sig: [["sig", "fv"]], tau: [["tau", "fv"]], book: [["book", "eu"], ["book", "ed"]], edge: [["eu", "paper"], ["ed", "paper"]] };
-      ctx.save(); ctx.globalCompositeOperation = "lighter";
+      ctx.save();
       for (const st of E.graph.strands) {
         const age = now - st.rt; if (age < 0 || age > 20000) continue;
         const a = Math.exp(-age / 6000) * Math.min(1, 0.18 + Math.abs(st.c) * 70), off = (hash(st.rt + st.link) - 0.5) * 22;
         for (const [p, q] of routes[st.link] || []) {
           const [x1, y1] = N[p], [x2, y2] = N[q], sx = x1 + 70, ex2 = x2 - 6;
-          ctx.strokeStyle = rgba(st.c >= 0 ? UP : DN, a); ctx.lineWidth = 0.5 + Math.min(2.2, Math.abs(st.c) * 120);
+          ctx.strokeStyle = rgba(st.c >= 0 ? UP : DN, a); ctx.lineWidth = 0.5 + Math.min(1.1, Math.abs(st.c) * 60);
           ctx.beginPath(); ctx.moveTo(sx, y1 - 3); ctx.bezierCurveTo(lerp(sx, ex2, 0.45), y1 - 3 + off, lerp(sx, ex2, 0.6), y2 - 3 - off, ex2, y2 - 3); ctx.stroke();
         }
       }
