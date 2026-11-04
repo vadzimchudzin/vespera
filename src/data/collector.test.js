@@ -81,10 +81,14 @@ async function storeTests() {
     s.writeRaw("clob", t + 1, "{\"b\":2}");
     s.write("meta", t + 2, { kind: "x" });
     s.tick(t + 100);
-    await settle(20);
     const part = path.join(dir, "2026-11-04", "clob-16.jsonl.br.part");
+    // The flush reaches the disk through libuv's thread pool: wait for it (up to 5 s), not for a number of turns.
+    let mid = { lines: 0 };
+    for (const end = Date.now() + 5000; mid.lines < 2 && Date.now() < end;) {
+      await new Promise((r) => setTimeout(r, 10));
+      if (fs.existsSync(part)) mid = await scanFile(part);
+    }
     assert.ok(fs.existsSync(part), "the hour is written to a .part");
-    const mid = await scanFile(part);
     assert.strictEqual(mid.lines, 2, "flushed each tick: readable while written");
     s.write("clob", t + 3000, { c: 3 });   // 17:00:01 → a new hour
     s.tick(t + 3000);
