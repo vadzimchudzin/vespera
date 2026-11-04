@@ -134,17 +134,29 @@
     }
     band(c, now) {
       const g = this.g, U = this.U, V = this.vis, f = this.focusS, rb = this.rb;
-      c.save();
-      c.beginPath(); c.arc(g.cx, g.cy, g.R, Math.PI * 0.5, Math.PI * 1.5); c.arc(g.cx, g.cy, g.Rin, Math.PI * 1.5, Math.PI * 0.5, true); c.closePath();
-      c.fillStyle = "rgba(9,9,11,0.96)"; c.fill(); c.clip();
-      // the two ends: the rest of the ring, rolled up
-      c.strokeStyle = rgba(INK, 0.1); c.lineWidth = 0.5; c.beginPath();
-      for (let k = 0; k < 7; k++) {
-        const e = PORT * (1 - Math.exp(-k * 0.5));
-        for (const y of [g.vt - e, g.vb + e]) { c.moveTo(g.arcX(y, g.R), y); c.lineTo(g.arcX(y, g.Rin), y); }
+      // the band and its two rolled-up ends depend on the canvas size only: one cached bitmap. Everything drawn on it
+      // stays between the two edges, so the band needs no clip (a curved clip costs a mask on every draw).
+      const d = this.o.dpr, bw = Math.round(rb.w * d), bh = Math.round(g.mainH * d);
+      if (!this.base || this.base.width !== bw || this.base.height !== bh || this.baseK !== this.akey) {
+        const cv = this.base || (this.base = canvasOf()); cv.width = bw; cv.height = bh; this.baseK = this.akey;
+        const b = cv.getContext("2d"); b.setTransform(d, 0, 0, d, -rb.x0 * d, 0);
+        b.beginPath(); b.arc(g.cx, g.cy, g.R, Math.PI * 0.5, Math.PI * 1.5); b.arc(g.cx, g.cy, g.Rin, Math.PI * 1.5, Math.PI * 0.5, true); b.closePath();
+        b.fillStyle = "rgba(9,9,11,0.96)"; b.fill(); b.clip();
+        b.strokeStyle = rgba(INK, 0.1); b.lineWidth = 0.5; b.beginPath();
+        for (let k = 0; k < 7; k++) {
+          const e = PORT * (1 - Math.exp(-k * 0.5));
+          for (const y of [g.vt - e, g.vb + e]) { b.moveTo(g.arcX(y, g.R), y); b.lineTo(g.arcX(y, g.Rin), y); }
+        }
+        b.stroke();
       }
-      c.stroke();
-      if (f && f._pl) { c.fillStyle = rgba(OURS, 0.035); c.fillRect(rb.x0, f._pl.y0, rb.w, f._pl.h); }
+      c.save();
+      c.drawImage(this.base, rb.x0, 0, rb.w, g.mainH);
+      if (f && f._pl) {   // the focus slot, between the two edges
+        const p = f._pl, n = 6; c.fillStyle = rgba(OURS, 0.035); c.beginPath();
+        for (let k = 0; k <= n; k++) { const y = p.y0 + (p.h * k) / n; k ? c.lineTo(g.arcX(y, g.R), y) : c.moveTo(g.arcX(y, g.R), y); }
+        for (let k = n; k >= 0; k--) { const y = p.y0 + (p.h * k) / n; c.lineTo(g.arcX(y, g.Rin), y); }
+        c.closePath(); c.fill();
+      }
       // sector colour on the outer edge, one path per run of a sector
       let cur = -1;
       for (const s of V) {

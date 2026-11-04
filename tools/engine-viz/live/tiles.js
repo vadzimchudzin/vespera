@@ -31,7 +31,7 @@
       const rate = (f) => { let a = 0; for (let s = s0 - 10; s < s0; s++) a += val(f, s); return a / 10; };
       const tot = Object.values(E.feeds).reduce((a, f) => a + rate(f), 0);
       tile(ctx, x, y, w, h, "feeds --live", `${tot.toFixed(0)} событий/с`, "ИСТОЧНИКИ · события/с за 60 с · задержка доставки");
-      const rows = [["trades", "rtds", "rtds · сделки"], ["chainlink", "rtds", "rtds · chainlink spot"], ["twap", "rtds", "rtds · twap 60 с"], ["clob", "clob", "clob · книги"], ["gamma", "gamma", `gamma · каталог ${nf(this.U.cat.rows)}`]];
+      const rows = [["trades", "rtds", "rtds · сделки"], ["chainlink", "rtds", "rtds · chainlink spot"], ["twap", "rtds", "rtds · twap 60 с"], ["clob", "clob", "clob · книги"], ["gamma", "gamma", `gamma · каталог ${nf(this.U.cat.rows)}${!this.U.cat.done && this.U.cat.cached ? ` · кэш ${nf(this.U.cat.cached)}` : ""}`]];
       const rh = (h - 62) / rows.length;
       rows.forEach(([k, conn, label], i) => {
         const f = E.feeds[k], st = E.conn[conn], yy = y + 46 + i * rh;
