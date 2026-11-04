@@ -21,6 +21,7 @@ internet access to Polymarket and no keys.
 | `?still&t=s` | draw one frame at time `t` (s after `from`) |
 | `w`, `h`, `dpr` | fixed canvas size |
 | `?record` | live, plus `window.__vizDump()` returns a recording |
+| `?nocache` | live, without the catalog cached in the browser |
 
 `window.__vizDraw(t)` draws the frame at time `t`, which is how videos are
 captured frame by frame.
@@ -50,10 +51,10 @@ only for the markets it recorded.
 | Input | Effect |
 |---|---|
 | drag (left button) | spin the ring; let go with speed and it spins on, slows down and settles on the event at the focus line |
-| wheel | scroll events |
+| wheel | scroll events: a notch moves the ring in 0.12 s, and it settles on an event 0.13 s after the last one |
 | Ctrl/⌘ + wheel, pinch, `+` `−` `0` | zoom out to 0.35× (about 180 slots in view) or in to 1.8× |
 | click an event | bring it to the focus line |
-| click a sector in the list (top right) | jump to the sector's first event |
+| click a sector in the list (top right) | jump to the sector's first event (0.2–1 s, by distance) |
 | click the minimap | jump to that place of the ring |
 | `↑` `↓`, `PgUp` `PgDn` | previous or next event, 12 at a time |
 | `Home` | back to BTC 15m |
@@ -72,13 +73,41 @@ the same way every time.
 | CLOB `wss://ws-subscriptions-clob.polymarket.com/ws/market` | `book`, `price_change`, `last_trade_price`, `tick_size_change`, `market_resolved`, both tokens | book, executable price, official result |
 | Gamma `/events?slug=` | tokens, fee schedule, tick, minimum size, `priceToBeat`, `finalPrice` | market config, K and result cross-checks |
 | Gamma `/events/keyset?closed=false&order=volume24hr` | the catalog: every open event, 100 a page, busiest first (about 210 pages) | ring slots, sectors, order |
-| Gamma `/events?id=…&market_projection=card` | markets, outcomes, prices, tokens of the events in view and of events that trade; 30 a request, 2 in flight | focus rows, card, fill prices |
+| Gamma `/events?id=…&market_projection=card` | markets, outcomes, prices, tokens of the events in view, near the focus, where the ring is going, that trade, and the 1000 busiest; 30 a request, 2 in flight | focus rows, card, fill prices |
 | Gamma `/markets?clob_token_ids=` | the event of a fill that came with its token only | token-only fills |
-| CLOB market channel, the leading market of the event in focus | `book`, `price_change` | focus book rays |
+| CLOB market channel, the leading markets of the event in focus, its two neighbours either side and the last 8 in focus | `book`, `price_change` | focus book rays |
+| CLOB REST `POST /books` | the books of newly watched tokens, at once | the book before the socket's snapshot |
 
 Sockets reconnect with backoff. A socket that stays open but goes silent (RTDS
 15 s, CLOB 30 s) is replaced, and after an RTDS gap the snapshot is fetched
 again. Gamma is polled every 15 s, at most 4 requests at a time.
+
+## Loading
+
+The page asks for what the screen shows, nearest first:
+
+- **Catalog.** The last full catalog is kept in the browser (IndexedDB, up to
+  48 h old), so after a reload the ring is full in about 1 s while a fresh
+  crawl runs (15–45 s). When the crawl ends, cached events it did not see are
+  dropped if they have ended and did not trade.
+- **Details** (markets, prices, tokens). The events in view, also while the
+  ring turns at a readable speed, the newest request first; at rest 40 events
+  either side of the focus; in the background the 1000 busiest events, the
+  oldest request first. Where the ring is going (a jump's target, the wheel's,
+  where a fling will stop) its event and 25 either side are asked for when the
+  move starts. An ask that brought nothing is repeated after 8 s. Gamma returns
+  20 results unless told otherwise, so every request sends `limit`.
+- **Books.** The leading markets of the event in focus, of its two neighbours
+  either side and of the last 8 events in focus stay subscribed, and the
+  target of a move is subscribed on the way, so stepping, turning back or
+  landing shows a live book at once. A new subscription gets its book over
+  REST (about 0.1 s) until the socket's snapshot comes, which can take seconds.
+  A book no longer watched is cleared, so it never shows stale levels.
+
+Measured live in headless Chromium: the ring was full in 8–30 s from a cold
+start (it depends on the network) and in about 1 s after a reload; 0.3 s after
+a drag or wheel scroll all events in view had details and the focus had its
+book; after a sector jump (1 s) both were there by 0.7–1.5 s.
 
 ## Screen
 
@@ -117,9 +146,9 @@ again. Gamma is polled every 15 s, at most 4 requests at a time.
    Fills of events out of view go to the edge marks above and below, with their
    count. The minimap (top right) shows the whole ring with every sector, the
    part in view and the live fills.
-3. **Rays.** For the market in focus: its book level by level, once the ring
-   has rested on it for 0.3 s (BTC 15m and 5m always: the UP book, with yellow
-   marks for what 5 shares would take). A level flashes when it changes. Other
+3. **Rays.** For the market in focus: its book level by level, as soon as the
+   ring stops on it (BTC 15m and 5m always: the UP book, with yellow marks for
+   what 5 shares would take). A level flashes when it changes. Other
    slots show their latest fills.
 4. **Tiles:** feeds (events/s, delivery delay), Chainlink BTC with the TWAP and
    K lines, the model graph (what moved P(UP) in the last 250 ms step), the
@@ -133,10 +162,11 @@ content changes:
 
 | Layer | Redrawn |
 |---|---|
-| Background, grid, trace | wallet → bend halves of the cooled threads every 30 s; bend → ring halves when the ring comes to rest, in a back buffer at 1500 a frame; while the ring moves, only the ring halves of the 700 newest cooled threads |
-| Ring text | 4 times per second at rest; every frame while the ring moves |
+| Background, grid, trace | wallet → bend halves of the cooled threads every 30 s; bend → ring halves when the ring comes to rest, in a back buffer at 600 a frame; while the ring moves, only the ring halves of the 700 newest cooled threads |
+| Motion layers | while the ring moves, what stays put is drawn over 6 frames into a back buffer and swapped in whole: the wallet → bend halves of the landed hot threads, and the ring halves of threads that land deep in a portal (where a slot moves under half a pixel); a layer is dropped when the order or zoom changes, when the ring turned further than it allows, or after 1 s |
+| Ring | the band and its rolled-up ends: one cached bitmap per canvas size, so the band needs no clip; slots and text 4 times per second at rest, every frame while the ring moves |
 | Panels | 8 times per second |
-| Hot threads, sparks, book rays, BTC lines, "now" box, minimap | every frame |
+| Hot threads in flight, sparks, book rays, BTC lines, "now" box, minimap | every frame |
 
 All thread strokes are at most 1 device pixel wide and use normal alpha
 blending, so Skia draws them on its fast hairline path. Colour strings are
@@ -145,18 +175,21 @@ about 45 fills a second, so about 500 hot threads. Merging them into a few
 dozen paths was slower in Skia's software raster (22 ms against 17 ms), so
 each keeps its own stroke.
 
-Measured in headless Chromium with software raster at 1920×1080 on the
-all-markets recording (median per frame, JavaScript + raster):
+Measured in headless Chromium with software raster at 1920×1080, pixel ratio
+1, on the all-markets recording 60 s in (6,453 fills, 17k slots; 150 frames a
+state, JavaScript + raster, median and 95th percentile):
 
-| State | Frame |
-|---|---|
-| crypto-only version of this page, same recording | 4.4 + 12.3 = 17 ms |
-| at rest | 6.1 + 16.9 = 23 ms |
-| zoomed out, about 180 slots in view | 7.3 + 19.4 = 27 ms |
-| dragging | 7.6 + 23.9 = 31 ms |
-| wheel scrolling | 8.9 + 28.7 = 37 ms |
+| State | Before motion layers | Now |
+|---|---|---|
+| at rest | 9.9 ms (p95 14.6) | 6.9 ms (p95 11.2) |
+| zoomed out, about 180 slots in view | 12.3 (17.6) | 7.7 (16.0) |
+| dragging | 18.3 (21.7) | 10.7 (17.9) |
+| wheel scrolling | 19.3 (23.0) | 12.0 (16.5) |
+| fling | 21.3 (25.0) | 12.7 (19.2) |
+| zoomed out, wheel scrolling | 21.5 (33.2) | 14.2 (19.9) |
 
-The hot threads are about 15 ms of the raster. A GPU canvas is much faster.
+The frames are the same as before (PSNR about 58 dB; 2–5 pixels differ). A
+GPU canvas is much faster.
 
 ## Model
 
@@ -228,10 +261,12 @@ The hot threads are about 15 ms of the raster. A GPU canvas is much faster.
 - Paper is taker only and fills against the visible book at the decision
   moment: no latency, no queue position, no partial fills.
 - The CLOB feed carries about 1000–1600 events/s.
-- A book is drawn only for the market in focus (and the engine's markets):
-  books of all 17k events would be a far bigger stream than the page needs.
+- A book is drawn only for the market in focus (and the engine's markets);
+  about a dozen are kept live around it. Books of all 17k events would be a
+  far bigger stream than the page needs.
 - Idle events (no 24 h volume) get thin slots; scroll or zoom to read them.
-- The catalog (about 210 pages) loads in under a minute, busiest events first.
+- The catalog (about 210 pages) loads in 15–45 s, busiest events first; until
+  then the ring shows the cached one (up to 48 h old).
 
 ## Files
 
