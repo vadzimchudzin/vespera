@@ -8,3 +8,5 @@ Thumbs.db
 .idea/
 .vscode/
 coverage/
+
+collector-data/
