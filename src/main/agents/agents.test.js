@@ -7,7 +7,7 @@ const assert = require("assert");
 const M = require("./models");
 const MK = require("./market");
 const { PaperBook, freshBook, walkCost, simulateBuy } = require("./paper");
-const { kellyStake, capacity, haltCheck } = require("./risk");
+const { kellyStake, capacity, haltCheck, MAX_PER_MATCH, matchCount } = require("./risk");
 const SC = require("./scanners");
 const R = require("./roster");
 const B = require("./brain");
@@ -108,14 +108,42 @@ async function main() {
     assert.ok(open.buckets[1].p > 0.6, "most of the mass is in the 14–15 °C bucket");
     assert.strictEqual(open.remainingHours, 11);
     assert.strictEqual(M.weatherProbabilities({ kind: "max", date: "2026-11-04", unit: "C", times, members: members.slice(0, 5), offsetSec: 0, obs: [], now: NOW, buckets }), null);
+    assert.deepStrictEqual(open.buckets.map((b) => b.decided), [false, false, false], "10 °C so far settles nothing of a 14–15 °C day");
+    {
+      // decided: the observations alone settle a bucket, with half a degree of margin for whole-degree reports
+      const wb = [{ lo: -Infinity, hi: 11, market: "a" }, { lo: 12, hi: 13, market: "b" }, { lo: 14, hi: 15, market: "c" }, { lo: 16, hi: Infinity, market: "d" }];
+      const run = (kind, c, over = {}) => M.weatherProbabilities({ kind, date: "2026-11-04", unit: "C", buckets: wb, times, members, offsetSec: 0, obs: [{ t: NOW - 3600000, c }], now: NOW, ...over });
+      const flags = (r) => r.buckets.map((b) => b.decided);
+      assert.deepStrictEqual(flags(run("max", 16.6)), [true, true, true, true], "a 16.6 °C high so far: ≥ 16 is certain, the rest out of reach");
+      assert.deepStrictEqual(flags(run("max", 15.8)), [true, true, false, false], "15.8 °C may still read 15 or 16");
+      assert.deepStrictEqual(flags(run("min", 10.2)), [true, true, true, true], "a 10.2 °C low so far: ≤ 11 is certain");
+      assert.deepStrictEqual(flags(run("min", 12.3)), [false, false, true, true]);
+      // the day is over: the high is the observed 12.2 °C, give or take half a degree, so only "≤ 11" is settled
+      assert.deepStrictEqual(done.buckets.map((b) => b.decided), [true, false, false]);
+    }
 
     const sw = SC.screenWeather([{ event: wxEv, info, result: { buckets: info.buckets.map((b, i) => ({ market: b.market, p: [0.05, 0.8, 0.15][i] })), observed: 50, bias: 0.2, sigma: 0.7, members: 51 } }], 0.02);
     assert.deepStrictEqual(sw.map((c) => c.key), ["wx:w2:yes", "wx:w3:no"]);
     const sure = { ...wxEv.markets[0], bid: 0.995, ask: 0.999 };   // the market already knows: YES at 99.5¢
     assert.strictEqual(SC.screenWeather([{ event: wxEv, info, result: { buckets: [{ market: sure, p: 0 }], observed: 50, bias: 0, sigma: 0.7, members: 51 } }], 0.02).length, 0,
       "never buy a side priced under 3¢");
-    near(sw[0].hint, 0.18);
+    // the model counts 40% against the mid: 0.61 + 0.4 × (0.80 − 0.61) = 0.686 against the 0.62 ask
+    near(sw[0].hint, 0.066);
+    near(sw[0].prob, 0.686);
+    assert.deepStrictEqual(sw[0].shrink, { p: 0.8, w: 0.4, maxGap: 0.25 });
     assert.ok(sw[0].model.startsWith("max KLGA 2026-11-04"));
+    assert.ok(sw[0].model.endsWith("model 0.800 → 0.686 with the market 0.610"), sw[0].model);
+    near(SC.weatherBlend(0.8, 0.61), 0.686);
+    // 25 points from the market is a model error, not an edge: 0.90 against a 0.61 mid is left alone
+    const far = SC.screenWeather([{ event: wxEv, info, result: { buckets: info.buckets.map((b, i) => ({ market: b.market, p: [0.05, 0.9, 0.05][i] })), observed: 50, bias: 0, sigma: 0.7, members: 51 } }], 0.02);
+    assert.deepStrictEqual(far.map((c) => c.key), ["wx:w3:no", "wx:w1:no"], "w2 is 29 points off the market");
+    // ...unless the observations already settle the bucket: then the model's 0 or 1 stands as it is
+    const settled = SC.screenWeather([{ event: wxEv, info, result: { buckets: [{ market: wxEv.markets[2], p: 0, decided: true }], observed: 56, bias: 0, sigma: 0.7, members: 51 } }], 0.02);
+    assert.deepStrictEqual(settled.map((c) => [c.key, c.prob, c.shrink]), [["wx:w3:no", 0.99, null]], "still never quite 100%");
+    assert.ok(settled[0].model.endsWith("p=0.000 by observation"));
+    // a quote-less bucket has no mid to lean on
+    const bare = { ...wxEv.markets[1], bid: 0, ask: 0 };
+    assert.strictEqual(SC.screenWeather([{ event: wxEv, info, result: { buckets: [{ market: bare, p: 0.8 }], observed: 50, bias: 0, sigma: 0.7, members: 51 } }], 0.02).length, 0);
   }
 
   // --- Polymarket data ------------------------------------------------------------------------------------------
@@ -235,6 +263,30 @@ async function main() {
     book.open({ agentId: "a1", type: "t", src: "k", event: ev, market: m, side: "yes", fill: { shares: 80, cost: 40, fees: 0, avg: 0.5 }, now: NOW });
     assert.deepStrictEqual(capacity({ config: cfg, book, equity: 1000, agentId: "a1", event: ev, market: m }), { usd: 10, binding: "market", legUsd: 50 });
     assert.strictEqual(capacity({ config: { ...cfg, sectorMaxPct: 5 }, book, equity: 1000, agentId: "a2", event: ev, market: null }).binding, "sector");
+
+    // one game, two events ("… - More Markets" names its parent; both carry the game id): one per-event limit
+    assert.strictEqual(MK.matchKey({ id: "1230776", gameId: 90122498 }), "game:90122498");
+    assert.strictEqual(MK.matchKey({ id: "1230838", parentEventId: 1230776 }), "ev:1230776");
+    assert.strictEqual(MK.matchKey({ id: "77" }), "ev:77");
+    const game = event({ id: "g1", slug: "ucl-aek1-rma-2026-11-04", gameId: 90122498, markets: [rawMarket("g1a", "AEK", { bid: 0.08, ask: 0.09 })] });
+    const more = event({ id: "g2", slug: "ucl-aek1-rma-2026-11-04-more-markets", gameId: 90122498, parentEventId: 1230776,
+      markets: ["O/U 1.5", "O/U 2.5", "O/U 3.5", "O/U 4.5"].map((label, i) => rawMarket(`g2${i}`, label, { bid: 0.9, ask: 0.91 })) });
+    assert.strictEqual(game.match, more.match);
+    const mb = new PaperBook(freshBook(1000, NOW));
+    mb.open({ agentId: "a5", type: "favorites", src: "k", event: game, market: game.markets[0], side: "no", fill: { shares: 100, cost: 91, fees: 0, avg: 0.91 }, now: NOW });
+    assert.strictEqual(mb.s.positions[0].match, "game:90122498");
+    assert.deepStrictEqual(capacity({ config: cfg, book: mb, equity: 1000, agentId: "a5", event: more, market: more.markets[0] }), { usd: 9, binding: "event", legUsd: 50 },
+      "$91 already in the game leaves $9 of the $100 per event for its other event");
+    const other = event({ id: "g3", gameId: 777, markets: [rawMarket("g3a", "X", { bid: 0.9, ask: 0.91 })] });
+    assert.strictEqual(capacity({ config: cfg, book: mb, equity: 1000, agentId: "a5", event: other, market: other.markets[0] }).binding, "trade");
+    const legacy = new PaperBook(freshBook(1000, NOW));   // a position stored before matches: its own event
+    legacy.open({ agentId: "a5", type: "favorites", src: "k", event: { ...more, match: undefined }, market: more.markets[0], side: "yes", fill: { shares: 10, cost: 9.1, fees: 0, avg: 0.91 }, now: NOW });
+    assert.strictEqual(legacy.s.positions[0].match, "ev:g2");
+    assert.strictEqual(MAX_PER_MATCH, 3);
+    for (const [i, m2] of more.markets.slice(0, 2).entries()) mb.open({ agentId: "a5", type: "favorites", src: `k${i}`, event: more, market: m2, side: "yes", fill: { shares: 1, cost: 0.91, fees: 0, avg: 0.91 }, now: NOW });
+    assert.strictEqual(matchCount(mb, "a5", more, more.markets[2].id), 3, "three markets of the game are held");
+    assert.strictEqual(matchCount(mb, "a5", more, more.markets[0].id), 2, "adding to a market already held is not a new one");
+    assert.strictEqual(matchCount(mb, "a4", more, more.markets[2].id), 0, "the cap is per agent");
     assert.strictEqual(haltCheck({ config: cfg, equity: 960, dayStartEquity: 1000, peakEquity: 1000 }), null);
     assert.strictEqual(haltCheck({ config: cfg, equity: 950, dayStartEquity: 1000, peakEquity: 1000 }).reason, "daily_loss");
     assert.strictEqual(haltCheck({ config: cfg, equity: 840, dayStartEquity: 850, peakEquity: 1000 }).reason, "drawdown");
@@ -333,6 +385,20 @@ async function main() {
     const byPrice = SC.confirmSingle({ market: sm, side: "yes" }, sbooks, opts({ prob: (price) => price + 0.015, minEdge: 0.005, bankroll: 1500 }));
     near(byPrice.prob, 0.535);
     assert.strictEqual(SC.confirmSingle({ market: sm, side: "yes" }, sbooks, opts({ prob: (price) => price + 0.015, minEdge: 0.005 })).skip, "below the book's minimum size");
+
+    // a book it could leave: bids on its side, a spread within 20% of the ask, no walk far up the asks
+    const books1 = (bids, asks) => new Map([[sm.yes, bk(sm.yes, bids, asks)]]);
+    assert.strictEqual(SC.confirmSingle({ market: sm, side: "yes" }, books1([], [[0.52, 1000]]), opts()).skip, "no bids on this side: nobody to sell to");
+    assert.strictEqual(SC.confirmSingle({ market: sm, side: "yes" }, books1([[0.4, 1000]], [[0.52, 1000]]), opts()).skip, "spread 0.400–0.520 is wider than 20% of the price");
+    assert.ok(SC.confirmSingle({ market: sm, side: "yes" }, books1([[0.42, 1000]], [[0.52, 1000]]), opts()).orders, "a 10¢ spread on 52¢ is 19%: fine");
+    const walk = SC.confirmSingle({ market: sm, side: "yes" }, books1([[0.5, 1000]], [[0.52, 5], [0.56, 5], [0.58, 1000]]), opts({ cap: { usd: 25, binding: "trade", legUsd: 50 }, bankroll: 1500 }));
+    assert.ok(walk.orders && walk.orders[0].fill.avg <= 0.572 + 1e-9, "the fill stops 10% above the best ask, not at the model's price");
+    assert.strictEqual(walk.orders[0].fill.shares, 10, "the 58¢ level is out of reach");
+    const cheap = { ...sm, id: "s9" };
+    const lossy = SC.confirmSingle({ market: cheap, side: "yes" }, new Map([[cheap.yes, bk(cheap.yes, [[0.085, 1000]], [[0.1, 1000]])]]), opts({ prob: 0.3 }));
+    assert.ok(lossy.orders, "a 1.5¢ spread on 10¢ is 15%");
+    const lossier = SC.confirmSingle({ market: cheap, side: "yes" }, new Map([[cheap.yes, bk(cheap.yes, [[0.081, 1000]], [[0.1, 5], [0.11, 1000]])]]), opts({ prob: 0.3, bankroll: 1500 }));
+    assert.ok(/^entry at 0\.1\d+ with the bid at 0\.081: −2\d\.\d% at once$/.test(lossier.skip), lossier.skip);
 
     const q = SC.quoteEdge(sm, 0.6);
     assert.strictEqual(q.side, "yes");
