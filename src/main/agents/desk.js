@@ -15,7 +15,7 @@ const M = require("./models");
 const SC = require("./scanners");
 const { Sources } = require("./sources");
 const { PaperBook, freshBook, MAX_OPEN } = require("./paper");
-const { capacity, haltCheck, limitName } = require("./risk");
+const { capacity, haltCheck, limitName, MAX_PER_MATCH, matchCount } = require("./risk");
 const R = require("./roster");
 const { Brain } = require("./brain");
 const { DEFAULT_CONFIG, LIMITS, fail, isRecord, num, dayKey, validateConfig, initialState, validateState } = require("./state");
@@ -763,19 +763,41 @@ class AgentDesk {
     this.dirty = true;
   }
 
+  // The YES mid on the fresh book, else on Gamma's quotes.
+  _mid(c, books) {
+    const book = books.get(c.market.yes);
+    const bid = book?.bids[0]?.[0], ask = book?.asks[0]?.[0];
+    return bid != null && ask != null ? (bid + ask) / 2 : (c.market.bid + c.market.ask) / 2;
+  }
+
   _prob(c, books, agent) {
     if (c.type === "favorites") {
       const bias = num(agent.params.bias) ? agent.params.bias : R.DEFAULT_PARAMS.favorites.bias;
       return (price) => Math.min(0.995, price + bias);
     }
     if (c.shrink) {
-      const book = books.get(c.market.yes);
-      const bid = book?.bids[0]?.[0], ask = book?.asks[0]?.[0];
-      const mid = bid != null && ask != null ? (bid + ask) / 2 : (c.market.bid + c.market.ask) / 2;
+      const mid = this._mid(c, books);
       const yes = mid + c.shrink.w * (c.shrink.p - mid);
       return c.side === "yes" ? yes : 1 - yes;
     }
     return c.prob;
+  }
+
+  // Reasons a single-market candidate is refused before its book is sized: too many markets of its match already,
+  // or (weather) a model too far from the fresh mid.
+  _precheck(c, agent, books, say) {
+    if (matchCount(this.book, agent.id, c.event, c.market.id) >= MAX_PER_MATCH) {
+      return say(`у агента уже ${MAX_PER_MATCH} рынка этого матча`, `the agent already holds ${MAX_PER_MATCH} markets of this match`);
+    }
+    if (c.shrink && num(c.shrink.maxGap)) {
+      const mid = this._mid(c, books);
+      if (Number.isFinite(mid) && Math.abs(c.shrink.p - mid) > c.shrink.maxGap) {
+        const pc = (x) => `${(x * 100).toFixed(0)}%`;
+        return say(`модель ${pc(c.shrink.p)} против рынка ${pc(mid)}: расхождение больше ${pc(c.shrink.maxGap)}, вероятнее ошибка модели`,
+          `model ${pc(c.shrink.p)} vs the market ${pc(mid)}: a gap over ${pc(c.shrink.maxGap)} is likelier a model error`);
+      }
+    }
+    return null;
   }
 
   _execute(candidates, books, now) {
@@ -797,8 +819,10 @@ class AgentDesk {
       const arbitrage = isArb(c);
       const cap = capacity({ config: cfg, book: this.book, equity: this.book.equity(), agentId: agent.id, event: c.event, market: arbitrage ? null : c.market, arbitrage });
       let res;
+      const refused = arbitrage ? null : this._precheck(c, agent, books, say);
       if (cap.usd < 1) res = { skip: say(`лимит «${limitName(cap.binding)}» исчерпан`, `limit "${limitName(cap.binding, true)}" used up`) };
       else if (arbitrage) res = SC.confirmArbitrage(c, books, cfg, cap, say);
+      else if (refused) res = { skip: refused };
       else {
         res = SC.confirmSingle(c, books, { cap, prob: this._prob(c, books, agent), fraction: cfg.kellyFraction, bankroll, say,
           minEdge: c.type === "favorites" ? (num(agent.params.minEdge) ? agent.params.minEdge : R.DEFAULT_PARAMS.favorites.minEdge) : minEdge });
