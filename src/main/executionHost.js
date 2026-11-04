@@ -13,6 +13,7 @@ const { SetupStore, settingsFromEngine, validateSetupSettings } = require("./set
 const { ResearchRunner } = require("./researchRunner");
 const { syncDirectory } = require("./secretStore");
 const { AIAdvisor } = require("./aiAdvisor");
+const { AgentDesk } = require("./agents/desk");
 const QRCode = require("qrcode");
 
 function atomicJson(file, value) {
@@ -41,9 +42,12 @@ function fault(code) {
 }
 
 const PORTABLE_KEYS = new Set([...Object.keys(DEFAULTS), "depositToken", "depositChain"]);
+// The paper agents' desk: independent of the engine, its book and of any setup activation.
+const AGENT_METHODS = new Set(["agentsStatus", "agentsConfigure", "agentsStart", "agentsStop", "agentsKill", "agentsResume",
+  "agentsAgent", "agentsReport", "agentsRing", "agentsReset"]);
 
 class ExecutionHost {
-  constructor({ userDataDir, direct = false, onEvent = () => {}, engineOptions = {} }) {
+  constructor({ userDataDir, direct = false, onEvent = () => {}, engineOptions = {}, agents = true }) {
     this.root = userDataDir;
     this.direct = direct;
     this.onEvent = onEvent;
@@ -72,6 +76,20 @@ class ExecutionHost {
       request: engineOptions.aiRequest,
       direct: this.direct,
     });
+    // Paper agents on Polymarket. Their book sits beside the AI budget at the root, so a transfer never carries it:
+    // the desktop and the server each keep their own.
+    this.agents = agents ? new AgentDesk({
+      root: path.join(userDataDir, "agents"),
+      ai: this.aiAdvisor,
+      net: engineOptions.agentsNet,
+      now: engineOptions.agentsNow,
+      autoTick: engineOptions.agentsAutoTick,
+      locale: () => this.engine?.settings?.locale || "en",
+      onEvent: (evt) => {
+        this.onEvent(evt);
+        try { this.telegramBot?.enqueueEvent(evt); } catch { /* Telegram delivery is isolated from the desk */ }
+      },
+    }) : null;
     this.bridge = new BridgeClient();
     this.telegramContext = { active: false, command: null, serialize: null, epoch: null };
     this.telegramBot = null;
@@ -94,6 +112,7 @@ class ExecutionHost {
       this.research.setupStore = this.setupStore;
       this.research.disposed = false;
     }
+    if (this.agents) this.agents.disposed = false;
     if (this.aiAdvisor) {
       this.aiAdvisor.setupStore = this.setupStore;
       this.aiAdvisor.research = this.research;
@@ -140,6 +159,7 @@ class ExecutionHost {
     this.setTelegramContext({ active: false, command: null });
     this.engine.stop();
     this.research.setResearchContext({ active: false });
+    this.agents?.setContext({ active: false });
     if (!this.idle()) throw fault("execution_busy");
     this.engine.market.stop?.();
     return true;
@@ -148,12 +168,41 @@ class ExecutionHost {
   dispose() {
     this.setTelegramContext({ active: false, command: null });
     this.research.dispose();
+    this.agents?.dispose();
     this.engine.dispose();
     this.unsubscribe?.();
   }
 
+  // The desk follows the same ownership as research: it works only on the side that owns execution.
   setResearchContext(context = {}) {
+    try { this.agents?.setContext({ active: Boolean(context && context.active) }); } catch { /* the desk never blocks research */ }
     return this.research.setResearchContext(context);
+  }
+
+  _agentsCall(method, input = {}) {
+    const desk = this.agents;
+    if (!desk) return { ok: false, reason: "agents_unavailable" };
+    const arg = input && typeof input === "object" && !Array.isArray(input) ? input : {};
+    const by = arg.by === "telegram" ? "telegram" : "ui";
+    try {
+      switch (method) {
+        case "agentsStatus": return desk.status();
+        case "agentsRing": return desk.ring();
+        case "agentsReport": return desk.report({ period: arg.period == null ? "day" : arg.period });
+        case "agentsConfigure": return desk.configure(arg);
+        case "agentsStart": return desk.start({ by });
+        case "agentsStop": return desk.stop({ by });
+        case "agentsKill": return desk.kill({ by });
+        case "agentsResume": return desk.resume({ by });
+        case "agentsAgent": return desk.agent({ id: arg.id, action: arg.action });
+        case "agentsReset": return desk.reset({ capitalUsd: arg.capitalUsd, confirm: arg.confirm });
+        default: throw fault("unknown_method");
+      }
+    } catch (error) {
+      const code = error && typeof error.code === "string" ? error.code : "";
+      if (/^(agents|ai)_[a-z0-9_]{2,60}$/.test(code)) return { ok: false, reason: code };
+      throw error;
+    }
   }
 
   async setTelegramContext({ active = false, command = null, serialize = null, epoch = null } = {}) {
@@ -229,7 +278,7 @@ class ExecutionHost {
     }
     atomicJson(path.join(dir, "journal.jsonl.state.json"), bundle.checkpoint);
     // Validate restored risk and positions before changing the durable pointer.
-    const candidate = new ExecutionHost({ userDataDir: dir, direct: this.direct, engineOptions: this.engineOptions });
+    const candidate = new ExecutionHost({ userDataDir: dir, direct: this.direct, engineOptions: this.engineOptions, agents: false });
     if (!candidate.idle()) {
       candidate.dispose();
       throw fault("transfer_has_position");
@@ -255,6 +304,7 @@ class ExecutionHost {
 
   async call(method, args = []) {
     const e = this.engine;
+    if (AGENT_METHODS.has(method)) return this._agentsCall(method, args[0]);
     if (this._activationRecoveryPending && !["snapshot", "warmChart", "getSettings", "listSetups", "exportSetup", "stop", "inspectPendingOrder", "reconcileFinalSettlement"].includes(method)) {
       return { ok: false, reason: "setup_activation_recovery_pending", state: e.snapshot() };
     }

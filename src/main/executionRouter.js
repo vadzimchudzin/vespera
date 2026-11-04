@@ -6,6 +6,9 @@ const { SettingsStore } = require("./settingsStore");
 const { ExecutionHost, fault } = require("./executionHost");
 const { RemoteClient, normalizeServerUrl } = require("./remoteClient");
 
+// Read-only views of the agents' desk: never queued behind a command, and on a server read with a plain GET.
+const AGENT_VIEWS = Object.freeze({ agentsStatus: "status", agentsRing: "ring", agentsReport: "report" });
+
 class ExecutionRouter {
   constructor({ userDataDir, onEvent = () => {}, host, clientFactory = (value) => new RemoteClient(value), pollMs = 2000 }) {
     this.onEvent = onEvent;
@@ -218,6 +221,10 @@ class ExecutionRouter {
         await this.poll();
         return this._decorate(this.remoteState || this.host.engine.snapshot());
       }
+      if (AGENT_VIEWS[method]) {
+        const period = method === "agentsReport" ? `&period=${encodeURIComponent(String(args[0]?.period || "day"))}` : "";
+        return this.client().request(`/v1/agents?view=${AGENT_VIEWS[method]}${period}`);
+      }
       const result = await this.client().request("/v1/command", {
         method, args, deviceId: this.connection.value.deviceId, requestId: crypto.randomUUID(),
       });
@@ -233,7 +240,7 @@ class ExecutionRouter {
   }
 
   dispatch(method, args = []) {
-    if (["aiModels", "aiRecommend", "aiLocalPull"].includes(method)) return this.call(method, args);
+    if (["aiModels", "aiRecommend", "aiLocalPull"].includes(method) || AGENT_VIEWS[method]) return this.call(method, args);
     return this._serial(() => this.call(method, args));
   }
   dispose() {
