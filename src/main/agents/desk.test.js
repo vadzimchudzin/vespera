@@ -354,6 +354,39 @@ async function main() {
     off.dispose();
   }
 
+  // --- one match is one bet: at most three markets of it per agent; a weather model far from the fresh mid ---------
+  {
+    const clock = { t: NOW };
+    const { desk } = makeDesk(world(), { clock });
+    const say = (ru, en) => en;
+    const fav = { id: "a3", params: {} };
+    const ev = (id, match) => ({ id, slug: id, title: `Event ${id}`, sector: "sports", match });
+    const mk = (id) => ({ id, conditionId: cid(id), yes: `${id}y`, no: `${id}n`, outcomes: ["Yes", "No"], label: id, endDate: iso(NOW + DAY), bid: 0.5, ask: 0.52 });
+    const fill = { shares: 10, cost: 5, fees: 0, avg: 0.5 };
+    const hold = (e, m, side = "yes") => desk.book.open({ agentId: "a3", type: "favorites", src: "x", event: ev(e, "game:7"), market: mk(m), side, fill, now: NOW });
+    hold("g1", "m1");
+    hold("g1", "m1", "no");   // both sides of one market are still one market
+    hold("g1", "m2");
+    const books = new Map();
+    const c = { type: "favorites", event: ev("g2", "game:7"), market: mk("m4"), side: "yes" };
+    assert.strictEqual(desk._precheck(c, fav, books, say), null, "two markets held: a third is allowed");
+    hold("g2", "m3");   // the same match under Polymarket's second event
+    assert.strictEqual(desk._precheck(c, fav, books, say), "the agent already holds 3 markets of this match");
+    assert.strictEqual(desk._precheck({ ...c, market: mk("m1") }, fav, books, say), null, "adding to a market already held is no new market");
+    assert.strictEqual(desk._precheck({ ...c, event: ev("g3", "game:8") }, fav, books, say), null, "another match");
+    assert.strictEqual(desk._precheck(c, { id: "a4", params: {} }, books, say), null, "the cap is per agent");
+
+    const wc = { type: "weather", event: ev("w1", "ev:w1"), market: mk("t1"), side: "yes", shrink: { p: 0.9, w: 0.4, maxGap: 0.25 } };
+    books.set("t1y", { bids: [[0.6, 100]], asks: [[0.62, 100]] });
+    assert.strictEqual(desk._precheck(wc, fav, books, say), "model 90% vs the market 61%: a gap over 25% is likelier a model error");
+    books.set("t1y", { bids: [[0.7, 100]], asks: [[0.72, 100]] });
+    assert.strictEqual(desk._precheck(wc, fav, books, say), null);
+    books.delete("t1y");   // no fresh book: Gamma's quotes (0.50/0.52) decide
+    assert.ok(/vs the market 51%/.test(desk._precheck(wc, fav, books, say)));
+    assert.strictEqual(desk._precheck({ ...wc, shrink: null }, fav, books, say), null, "a decided bucket is exempt");
+    desk.dispose();
+  }
+
   for (const root of roots) fs.rmSync(root, { recursive: true, force: true });
   console.log("agents desk tests ok");
 }
