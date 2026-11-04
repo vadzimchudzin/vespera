@@ -62,6 +62,26 @@ or candle data is sent in the model prompt. This is still an approximate replay,
 not evidence that a model is profitable outside this sample.
 No claim that AI increases profit is made.
 
+## Paper agents
+
+The paper agents desk ([AGENTS](AGENTS.md)) may ask short JSON questions with the
+same OpenRouter key, model and per-request maximum: whether a market resolving
+within 72 hours is already decided, a probability for a market resolving in
+2–60 days, and roster suggestions that the desk's rules can only narrow. A question
+carries market text, prices and news headlines only — no keys, account state or
+journals. The local model is not used for agents (`ai_agents_openrouter_only`):
+a price per token is what bounds each question.
+
+Each question reserves its worst-case charge (17,408 input tokens plus the output
+cap at the model's OpenRouter price, sent as `max_price`) before it is sent; above
+the advisor's per-request maximum it is refused with `ai_budget_exceeded`. The
+desk has its own daily cap inside the advisor's daily budget (Agents → Settings →
+AI daily budget, $1 by default) and asks at most every 30 minutes. Its questions
+do not delay the user's own recommendation requests. Without AI, the arbitrage,
+model and maker agents keep working. A forecast is shrunk towards the market price
+before it is traded; every agent with probabilities of its own is scored by Brier
+against the market and paused when it trails.
+
 References: [OpenRouter structured outputs](https://openrouter.ai/docs/guides/features/structured-outputs),
 [usage accounting](https://openrouter.ai/docs/guides/guides/usage-accounting),
 [Ollama pull API](https://docs.ollama.com/api/pull),

@@ -42,6 +42,21 @@ The server remains the executor in Zero Mode when the desktop is closed.
 Disconnection never authorizes local takeover. Telegram cannot activate an absent
 desktop or create another engine. Switching execution remains a desktop operation.
 
+## Paper agents
+
+`/agents` shows the paper agents desk ([AGENTS](AGENTS.md)) with Status, Stop,
+Start and Report buttons; the menu has an **Agents** button too. `/agents_report`
+sends the day's report, `/agents_stop` is the emergency stop (no new paper trades,
+open positions are held to resolution), `/agents_start` clears a manual stop or
+starts the desk. Automatic halts — the daily loss and the drawdown from the peak —
+are cleared only in the app (Agents → Clear halt); Telegram answers with that
+instruction. The desk never trades real money, so none of these need a confirmation.
+
+Approved users receive halts, the daily report (at 06:00 UTC by default) and, while
+"Trades to Telegram" is on, a digest of paper trades every 60 minutes (0 sends each
+trade). The commands act on the desk of the current executor: the server in Zero
+Mode, otherwise this computer; each keeps its own paper book.
+
 ## Delivery and limits
 
 Updates are durably marked before handling commands. Replayed updates never
