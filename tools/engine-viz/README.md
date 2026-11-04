@@ -1,10 +1,13 @@
-# Engine Live: real-time screen for Polymarket crypto Up/Down
+# Engine Live: all of Polymarket in real time, crypto Up/Down engine
 
-A live screen for the Polymarket crypto Up/Down 5m and 15m markets (BTC, ETH,
-SOL, XRP, DOGE, HYPE, BNB). It is the M7 "Engine" screen of
-`docs/V2MONEY_PLAN.md`. Every pixel comes from live public Polymarket feeds:
-there is no simulation, demo signal, proxy price, or estimated start price.
-The page never places orders. Its paper test only reads the real book.
+A live screen of every open Polymarket event, around the M7 "Engine" of
+`docs/V2MONEY_PLAN.md` for the crypto Up/Down 5m and 15m markets (BTC, ETH,
+SOL, XRP, DOGE, HYPE, BNB). The ring holds all open events (about 21k in the
+Gamma catalog, about 17k slots), grouped by sector, and spins like a wheel
+under the mouse. Every fill of every market is drawn as it happens. Every pixel
+comes from live public Polymarket feeds: there is no simulation, demo signal,
+proxy price, or estimated start price. The page never places orders. Its paper
+test only reads the real book.
 
 ## Run
 
@@ -25,12 +28,38 @@ captured frame by frame.
 Record from Node 22+ (built-in `WebSocket` and `fetch`, no npm packages):
 
 ```bash
-node tools/engine-viz/live/record.mjs 840 rec.js 300   # 14 min; books kept for the last 300 s
+node tools/engine-viz/live/record.mjs 660 rec.js 240        # 11 min; books kept for the last 240 s
+node tools/engine-viz/live/record.mjs --cut rec.js.raw.jsonl rec.js 240   # cut the raw file again
 ```
 
-The recorder stores every event with its arrival time. Replay feeds them
-through the same engine on the same 250 ms clock, so a replay is the live run,
-frame for frame.
+The recorder writes every event with its arrival time to `<out>.raw.jsonl`
+(books make that about 0.6 MB/s), asking for what the page would ask for over
+a session: the details of the 1000 busiest events and of every event that
+trades, the events of token-only fills, and the books of the leading market of
+the 40 busiest events outside crypto Up/Down. The cut keeps everything but
+books from the start, so the first replay frame already carries minutes of
+trace. Books are kept only for the last part, starting from their real state
+at the cut (rebuilt by the engine). Level changes are merged per token in
+100 ms, and token and condition ids are shortened: 11 minutes give a 36 MB
+file. Replay feeds the events through the same engine on the same 250 ms
+clock, so a replay is the live run, frame for frame. A replay shows a book
+only for the markets it recorded.
+
+## Ring controls
+
+| Input | Effect |
+|---|---|
+| drag (left button) | spin the ring; let go with speed and it spins on, slows down and settles on the event at the focus line |
+| wheel | scroll events |
+| Ctrl/⌘ + wheel, pinch, `+` `−` `0` | zoom out to 0.35× (about 180 slots in view) or in to 1.8× |
+| click an event | bring it to the focus line |
+| click a sector in the list (top right) | jump to the sector's first event |
+| click the minimap | jump to that place of the ring |
+| `↑` `↓`, `PgUp` `PgDn` | previous or next event, 12 at a time |
+| `Home` | back to BTC 15m |
+
+The ring's clock is the frame time, so a replay captured frame by frame spins
+the same way every time.
 
 ## Sources
 
@@ -42,6 +71,10 @@ frame for frame.
 | RTDS filtered subscribe, once per asset | about 1 min of history | K after a reload |
 | CLOB `wss://ws-subscriptions-clob.polymarket.com/ws/market` | `book`, `price_change`, `last_trade_price`, `tick_size_change`, `market_resolved`, both tokens | book, executable price, official result |
 | Gamma `/events?slug=` | tokens, fee schedule, tick, minimum size, `priceToBeat`, `finalPrice` | market config, K and result cross-checks |
+| Gamma `/events/keyset?closed=false&order=volume24hr` | the catalog: every open event, 100 a page, busiest first (about 210 pages) | ring slots, sectors, order |
+| Gamma `/events?id=…&market_projection=card` | markets, outcomes, prices, tokens of the events in view and of events that trade; 30 a request, 2 in flight | focus rows, card, fill prices |
+| Gamma `/markets?clob_token_ids=` | the event of a fill that came with its token only | token-only fills |
+| CLOB market channel, the leading market of the event in focus | `book`, `price_change` | focus book rays |
 
 Sockets reconnect with backoff. A socket that stays open but goes silent (RTDS
 15 s, CLOB 30 s) is replaced, and after an RTDS gap the snapshot is fetched
@@ -49,24 +82,45 @@ again. Gamma is polled every 15 s, at most 4 requests at a time.
 
 ## Screen
 
-1. **Threads.** One thread is one real fill. It runs from the wallet's node on
-   the left, bends at (moment in its window, UP price) and ends at its market
-   on the ring. Teal = exposure to UP (buy UP or sell DOWN), orange = to DOWN.
+1. **Threads.** One thread is one real fill, of any market. It runs from the
+   wallet's node on the left, bends at (time to the event's end, YES/UP price)
+   and ends at its event on the ring. The time axis is logarithmic from years
+   to an hour; its last part is the 15 minutes of the crypto windows. Teal = exposure to UP (buy UP or sell DOWN), orange = to DOWN.
    Threads are hairlines, and brightness = dollar size. A new fill flies to its
    market as a small spark (about 1300 px/s) and its thread grows behind it. On
    arrival a ripple marks the market's edge and the slot's tick flares. The
-   thread then cools over about 12 s into the 16-minute trace. RTDS delivers
+   thread then cools over about 12 s into the trace: the last 16 minutes, at
+   most 14,000 fills (about 5 minutes with all markets). Some RTDS fills
+   carry only the token: the page looks up its event (Gamma), and the fill
+   joins its event when the details arrive, usually within 1–2 s. RTDS delivers
    fills in batches, so sparks often leave in waves. White and yellow lines are
    the BTC book mid and the model in the 5m and 15m windows. Their heads ripple
    when the mid moves a tick or the model moves 1% or more. Dashed lines mark
    "now".
-2. **Ring.** Seven assets × 5m and 15m, plus BTC previous and next windows.
-   Each slot shows τ, book, model, edge both ways, σ60, K, S − K, flow, the
-   paper position, and the reason when it stays out. Ended windows show the
-   result by rule and the official one.
-3. **Rays.** For BTC 15m and 5m: the UP book level by level. A level flashes
-   when it changes; yellow marks show what 5 shares would take. Other slots
-   show their latest fills.
+2. **Ring.** Every open event, in sectors: КРИПТО, ПОЛИТИКА, ГЕОПОЛИТИКА,
+   ФИНАНСЫ, ТЕХ · AI, КУЛЬТУРА, ПОГОДА, КИБЕРСПОРТ, СПОРТ, ПРОЧЕЕ. The sector
+   comes from the Gamma tags; the first match wins, in the order crypto,
+   esports, sports, politics, geopolitics, finance, tech, culture, weather.
+   Up/Down windows of one asset and timeframe (1h, 4h, daily…) share one slot.
+   Inside a sector the engine's slots come first, then series, then events by
+   24 h volume plus this session's fills, as the site sorts them. The order is
+   redone only when the ring changes, and a quiet event that trades is promoted
+   at most every 5 s, so the ring does not twitch with every fill. Events with
+   fills or at least $100 of 24 h volume get a full slot; events with no volume
+   get 0.15 of one, and runs of them are drawn as faint dashes with a count.
+   Near the focus line the slots grow (a fisheye); the slot at the line is
+   open: its markets with prices, its latest fills, and a card with sector,
+   end, volume and markets. The engine slots keep their full rows: seven assets
+   × 5m and 15m, plus BTC previous and next windows, with τ, book, model, edge
+   both ways, σ60, K, S − K, flow, the paper position, and the reason when it
+   stays out; ended windows show the result by rule and the official one.
+   Fills of events out of view go to the edge marks above and below, with their
+   count. The minimap (top right) shows the whole ring with every sector, the
+   part in view and the live fills.
+3. **Rays.** For the market in focus: its book level by level, once the ring
+   has rested on it for 0.3 s (BTC 15m and 5m always: the UP book, with yellow
+   marks for what 5 shares would take). A level flashes when it changes. Other
+   slots show their latest fills.
 4. **Tiles:** feeds (events/s, delivery delay), Chainlink BTC with the TWAP and
    K lines, the model graph (what moved P(UP) in the last 250 ms step), the
    book, top wallets, and the paper test.
@@ -79,21 +133,30 @@ content changes:
 
 | Layer | Redrawn |
 |---|---|
-| Background, grid, 16-minute trace | every 30 s and when the BTC slots roll, in a back buffer at 700 threads per frame; threads that cool in between are added directly |
-| Ring text | every 250 ms (the engine tick) |
+| Background, grid, trace | wallet → bend halves of the cooled threads every 30 s; bend → ring halves when the ring comes to rest, in a back buffer at 1500 a frame; while the ring moves, only the ring halves of the 700 newest cooled threads |
+| Ring text | 4 times per second at rest; every frame while the ring moves |
 | Panels | 8 times per second |
-| Hot threads, sparks, book rays, BTC lines, "now" box | every frame |
+| Hot threads, sparks, book rays, BTC lines, "now" box, minimap | every frame |
 
 All thread strokes are at most 1 device pixel wide and use normal alpha
-blending, so Skia draws them on its fast hairline path. With additive
-(`lighter`) blending, the 250 or so hot threads cost about 30 ms per frame in
-software raster; now they cost about 3 ms. Colour strings are cached per alpha
-step, so strokes do not allocate.
+blending, so Skia draws them on its fast hairline path. Colour strings are
+cached per alpha step, so strokes do not allocate. With all markets there are
+about 45 fills a second, so about 500 hot threads. Merging them into a few
+dozen paths was slower in Skia's software raster (22 ms against 17 ms), so
+each keeps its own stroke.
 
 Measured in headless Chromium with software raster at 1920×1080 on the
-recording: a frame took 43–47 ms before (8–10 ms of JavaScript and 35–37 ms of
-raster) and takes about 8 ms now (3–4 ms and 4–5 ms). A GPU canvas is faster
-still.
+all-markets recording (median per frame, JavaScript + raster):
+
+| State | Frame |
+|---|---|
+| crypto-only version of this page, same recording | 4.4 + 12.3 = 17 ms |
+| at rest | 6.1 + 16.9 = 23 ms |
+| zoomed out, about 180 slots in view | 7.3 + 19.4 = 27 ms |
+| dragging | 7.6 + 23.9 = 31 ms |
+| wheel scrolling | 8.9 + 28.7 = 37 ms |
+
+The hot threads are about 15 ms of the raster. A GPU canvas is much faster.
 
 ## Model
 
@@ -143,6 +206,18 @@ still.
   highly correlated sample, so it shows no edge rather than proving there is
   none.
 
+## Checked on the all-markets recording (4 Nov 2026)
+
+- 11 minutes, 08:07–08:18 UTC: 29,892 fills (about 45 a second) on the ring,
+  20,937 events in the catalog, 17,192 slots.
+- Token-only fills: 182 tokens in 11 minutes; their events were found through
+  Gamma and the fills joined them.
+- Inactive placeholder markets ("Person A", "Other") are hidden, as on the
+  site: 3,215 of them in the 1,282 events with details.
+- Book snapshots at the cut: 75 (35 engine tokens, 40 others). Several
+  election markets had one-sided books (for example the House 2026 YES at
+  0.999 with no asks), and the CLOB REST `/book` showed the same.
+
 ## Limits
 
 - K is exact only for windows the page saw start (or within the ~1 min
@@ -153,6 +228,10 @@ still.
 - Paper is taker only and fills against the visible book at the decision
   moment: no latency, no queue position, no partial fills.
 - The CLOB feed carries about 1000–1600 events/s.
+- A book is drawn only for the market in focus (and the engine's markets):
+  books of all 17k events would be a far bigger stream than the page needs.
+- Idle events (no 24 h volume) get thin slots; scroll or zoom to read them.
+- The catalog (about 210 pages) loads in under a minute, busiest events first.
 
 ## Files
 
@@ -160,6 +239,9 @@ still.
 |---|---|
 | `index.html` | page: live, replay and still modes |
 | `live/core.js` | engine: event clock, books, K and results, model, paper |
+| `live/universe.js` | all events: catalog, sectors, ring order, details, token-only fills, focus books |
 | `live/feeds.js` | RTDS, CLOB and Gamma connections (browser and Node) |
-| `live/render.js` | canvas renderer |
+| `live/render.js` | canvas renderer: frame, input and ring motion, threads and their layers |
+| `live/ring.js` | renderer: ring band, engine rows, focus book and card, minimap, sector list |
+| `live/tiles.js` | renderer: panels under the ring |
 | `live/record.mjs` | recorder for replay and video |
