@@ -25,17 +25,25 @@ const selected = filters.length ? files.filter((file) => filters.some((word) => 
 const env = { ...process.env, NO_PROXY: "127.0.0.1,localhost,::1", no_proxy: "127.0.0.1,localhost,::1" };
 for (const key of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy", "NODE_USE_ENV_PROXY"]) delete env[key];
 
+// On GitHub Actions a failing file is also reported as an error annotation, so its output can be read on the PR
+// and through the checks API without access to the raw logs.
+const annotate = process.env.GITHUB_ACTIONS === "true";
+const escapeData = (text) => text.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+const escapeProperty = (text) => escapeData(text).replace(/:/g, "%3A").replace(/,/g, "%2C");
+
 const failed = [];
 const started = Date.now();
 for (const file of selected) {
   const begin = Date.now();
   const result = spawnSync(process.execPath, [path.join(root, file)], { cwd: root, env, encoding: "utf8", timeout: 180_000 });
   const ok = result.status === 0;
-  console.log(`${ok ? "ok  " : "FAIL"} ${file} (${((Date.now() - begin) / 1000).toFixed(1)}s)`);
+  const why = ok ? "" : result.error ? String(result.error.code || result.error.message) : result.signal ? `killed by ${result.signal}` : `exit ${result.status}`;
+  console.log(`${ok ? "ok  " : "FAIL"} ${file} (${((Date.now() - begin) / 1000).toFixed(1)}s${ok ? "" : `, ${why}`})`);
   if (!ok) {
     failed.push(file);
     const out = `${result.stdout || ""}${result.stderr || ""}`.trim().split("\n").slice(-25).join("\n");
     console.log(out.replace(/^/gm, "     | "));
+    if (annotate) console.log(`::error title=${escapeProperty(`${file} failed (${why})`)}::${escapeData(out || why)}`);
   }
 }
 console.log(`\n${selected.length - failed.length}/${selected.length} test files passed in ${((Date.now() - started) / 1000).toFixed(0)}s`);
