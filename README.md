@@ -31,6 +31,14 @@ locks. Requests have budget/time/token caps and structured-response validation;
 validate a candidate in the approximate Paper lab before considering it.
 See [AI configuration and limitations](docs/AI.md).
 
+**Paper agents.** The Agents panel runs eight paper agents across Polymarket:
+bundle and ladder arbitrage, crypto levels, daily weather, favourites, near-resolution
+and forecast checks through the AI advisor, and a shadow maker. Fills walk real CLOB
+books with taker fees; Kelly sizing, per-trade/market/event/sector/agent limits and
+daily-loss/drawdown halts apply; no real money and no signing — live mode is closed
+until an edge certificate exists. Telegram: `/agents`, `/agents_report`,
+`/agents_stop`, `/agents_start`. See [Agents](docs/AGENTS.md) (in Russian).
+
 **Research lab.** Backtest an exact saved setup and compare up to ten independent
 forward Paper books, sharing feeds by market/timeframe. Balance, series and results
 are separate from account trades. Stored datasets/fingerprints identify the replay;
