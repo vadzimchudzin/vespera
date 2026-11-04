@@ -7,6 +7,8 @@ const { ExecutionRouter } = require("./executionRouter");
 
 let win;
 let router;
+let ringWin = null;
+let ringTimer = null;
 
 if (!app.requestSingleInstanceLock()) app.exit(0);
 
@@ -28,6 +30,43 @@ function createWindow() {
     event.preventDefault();
     if (safeExternal(url)) shell.openExternal(url);
   });
+  win.on("closed", () => { if (ringWin && !ringWin.isDestroyed()) ringWin.close(); });
+}
+
+// The ring (tools/engine-viz) in its own window: the live Polymarket picture plus a read-only feed of the agents'
+// paper positions. It never gets the main preload, so it cannot reach the engine, settings or keys.
+function openRing() {
+  if (ringWin && !ringWin.isDestroyed()) {
+    if (ringWin.isMinimized()) ringWin.restore();
+    ringWin.show();
+    ringWin.focus();
+    return { ok: true };
+  }
+  ringWin = new BrowserWindow({
+    width: 1600, height: 960, minWidth: 960, minHeight: 600, backgroundColor: "#060607", title: "Vespera · Ring",
+    autoHideMenuBar: true, icon: path.join(__dirname, "../../build/icon.png"),
+    webPreferences: { preload: path.join(__dirname, "ringPreload.js"), contextIsolation: true, nodeIntegration: false, sandbox: true },
+  });
+  const page = ringWin;
+  page.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  page.webContents.on("will-navigate", (event, url) => { if (url !== page.webContents.getURL()) event.preventDefault(); });
+  page.loadFile(path.join(__dirname, "../../tools/engine-viz/index.html"));
+  let busy = false;
+  const push = async () => {
+    if (busy || page.isDestroyed()) return;
+    busy = true;
+    try {
+      const data = await router.dispatch("agentsRing");
+      if (!page.isDestroyed()) page.webContents.send("ring:agents", data);
+    } catch { /* the ring keeps its last picture */ } finally { busy = false; }
+  };
+  page.webContents.on("did-finish-load", push);
+  clearInterval(ringTimer);
+  ringTimer = setInterval(push, 3000);
+  page.on("closed", () => {
+    if (ringWin === page) { clearInterval(ringTimer); ringTimer = null; ringWin = null; }
+  });
+  return { ok: true };
 }
 
 app.whenReady().then(() => {
@@ -79,6 +118,9 @@ const ROUTES = {
   "telegram:status": "telegramStatus", "telegram:configure": "telegramConfigure",
   "telegram:pair": "telegramPair", "telegram:test": "telegramTest", "telegram:disconnect": "telegramDisconnect",
   "deposit:assets": "depositAssets", "deposit:address": "depositAddress", "deposit:status": "depositStatus",
+  "agents:status": "agentsStatus", "agents:configure": "agentsConfigure", "agents:start": "agentsStart",
+  "agents:stop": "agentsStop", "agents:kill": "agentsKill", "agents:resume": "agentsResume",
+  "agents:agent": "agentsAgent", "agents:report": "agentsReport", "agents:ring": "agentsRing", "agents:reset": "agentsReset",
 };
 for (const [channel, method] of Object.entries(ROUTES)) {
   ipcMain.handle(channel, (_e, ...args) => router.dispatch(method, args));
@@ -119,6 +161,7 @@ ipcMain.handle("setups:export", async (_e, input) => {
   fs.writeFileSync(pick.filePath, result.json, { encoding: "utf8", mode: 0o600 });
   return { ok: true };
 });
+ipcMain.handle("ring:open", () => openRing());
 ipcMain.handle("execution:get", async () => { await router.poll(); return router.execution(); });
 ipcMain.handle("execution:configure", async (_e, patch) => {
   try { return await router.configure(patch); }
