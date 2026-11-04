@@ -39,6 +39,13 @@ daily-loss/drawdown halts apply; no real money and no signing — live mode is c
 until an edge certificate exists. Telegram: `/agents`, `/agents_report`,
 `/agents_stop`, `/agents_start`. See [Agents](docs/AGENTS.md) (in Russian).
 
+**Data collector (V2).** `npm run collect` records Polymarket CLOB books, Chainlink
+price and TWAP-60, fills, Binance and each Up/Down window's terms and official result
+for BTC/ETH/SOL/XRP × 5m–1d into hourly brotli files (about 2–2.6 GB a day);
+`npm run collect -- check today` verifies a day and rebuilds the window results from
+the data. A separate program for an always-on machine; not part of the app package.
+See [Collector](docs/COLLECTOR.md) (in Russian).
+
 **Research lab.** Backtest an exact saved setup and compare up to ten independent
 forward Paper books, sharing feeds by market/timeframe. Balance, series and results
 are separate from account trades. Stored datasets/fingerprints identify the replay;
