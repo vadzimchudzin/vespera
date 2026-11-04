@@ -109,7 +109,7 @@ async function main() {
     assert.deepStrictEqual(s.positions.map((p) => [p.agentId, p.group, p.outcome, p.shares]).sort(), [["a1", "g1", "Yes", 100], ["a1", "g1", "Yes", 100], ["a1", "g1", "Yes", 100]]);
     assert.strictEqual(s.agents.find((a) => a.id === "a1").trades, 1);
     assert.ok(events.some((e) => e.type === "agents" && e.payload.openPositions === 3));
-    assert.strictEqual(fs.statSync(path.join(root, "desk.json")).mode & 0o777, 0o600);
+    if (process.platform !== "win32") assert.strictEqual(fs.statSync(path.join(root, "desk.json")).mode & 0o777, 0o600);
     const ring = desk.ring();
     assert.deepStrictEqual([ring.open, ring.events.length, ring.events[0].slug, ring.events[0].n, ring.events[0].agents, ring.events[0].cost], [3, 1, "who-wins", 3, ["a1"], 93]);
 

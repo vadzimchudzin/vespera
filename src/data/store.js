@@ -37,7 +37,8 @@ const parseName = (name) => {
 };
 
 function fsyncPath(file) {
-  const fd = fs.openSync(file, "r");
+  // r+, not r: Windows flushes only a handle opened for writing (EPERM on a read-only one).
+  const fd = fs.openSync(file, "r+");
   try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
 }
 
