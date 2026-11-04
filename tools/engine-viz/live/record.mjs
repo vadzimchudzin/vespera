@@ -62,9 +62,9 @@ async function cut(src, out, repS) {
   // token-only fills whose event never came during the recording: fetched now, put at the start
   const extra = [], miss = [...orph].filter((t) => !known.has(t)), slugs = new Set();
   const get = async (u) => { try { const r = await fetch(u); return r.ok ? r.json() : []; } catch (e) { return []; } };
-  for (let i = 0; i < miss.length; i += 20) for (const m of await get(`${GAMMA}/markets?${miss.slice(i, i + 20).map((t) => `clob_token_ids=${t}`).join("&")}`)) for (const e of m.events || []) if (e.slug) slugs.add(e.slug);
+  for (let i = 0; i < miss.length; i += 20) for (const m of await get(`${GAMMA}/markets?${miss.slice(i, i + 20).map((t) => `clob_token_ids=${t}`).join("&")}&limit=20`)) for (const e of m.events || []) if (e.slug) slugs.add(e.slug);
   const L = [...slugs];
-  for (let i = 0; i < L.length; i += 30) for (const e of await get(`${GAMMA}/events?${L.slice(i, i + 30).map((s) => `slug=${encodeURIComponent(s)}`).join("&")}&market_projection=card`)) extra.push(Object.assign({ k: "evd", mk: (e.markets || []).map(mrow) }, row(e), { rt: tFirst }));
+  for (let i = 0; i < L.length; i += 30) for (const e of await get(`${GAMMA}/events?${L.slice(i, i + 30).map((s) => `slug=${encodeURIComponent(s)}`).join("&")}&market_projection=card&limit=30`)) extra.push(Object.assign({ k: "evd", mk: (e.markets || []).map(mrow) }, row(e), { rt: tFirst }));
   for (const t of engTok) gen.delete(t);
   const keepTok = (t) => up.has(t) || gen.has(t), cutAt = tLast - repS * 1000;
   process.stderr.write(`span ${((tLast - tFirst) / 1000).toFixed(0)} s · books from −${repS} s · ${up.size} engine tokens, ${gen.size} other books · ${miss.length} unresolved fill tokens → ${extra.length} events\n`);

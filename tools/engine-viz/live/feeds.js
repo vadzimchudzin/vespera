@@ -8,10 +8,11 @@
 (function (global) {
   "use strict";
   const RTDS = "wss://ws-live-data.polymarket.com", CLOB = "wss://ws-subscriptions-clob.polymarket.com/ws/market";
-  const GAMMA = "https://gamma-api.polymarket.com";
+  const GAMMA = "https://gamma-api.polymarket.com", CLOBR = "https://clob.polymarket.com";
   const ASSETS = ["btc", "eth", "sol", "xrp", "doge", "hype", "bnb"], TFS = [["15m", 900], ["5m", 300]];
   const sym = (s) => String(s || "").split("/")[0].toLowerCase();
   const J = (s) => { try { return typeof s === "string" ? JSON.parse(s) : s; } catch (e) { return null; } };
+  const lv = (a) => (a || []).map((l) => [+l.price, +l.size]);
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const sec = (iso) => { const t = Date.parse(iso || ""); return isFinite(t) ? Math.round(t / 1000) : null; };
   async function getJSON(url) { const r = await fetch(url); if (!r.ok) throw new Error(`${r.status}`); return r.json(); }
@@ -60,7 +61,7 @@
     constructor(emit, opts = {}) {
       this.out = emit; this.assets = opts.assets || ASSETS; this.watch = new Set(opts.watch || []);
       this.meta = new Map(); this.subs = new Set(); this.alive = true; this.clob = null;
-      this.catalog = opts.catalog !== false; this.asked = new Set(); this.dq = []; this.dBusy = 0; this.gsubs = new Set();
+      this.catalog = opts.catalog !== false; this.cache = opts.cache || null; this.asked = new Set(); this.dq = []; this.lq = []; this.dBusy = 0; this.gsubs = new Set(); this.wsBook = new Set();
       this.rAsked = new Set(); this.rq = []; this.rBusy = false;
     }
     emit(e) { e.rt = Date.now(); this.out(e); }
@@ -82,40 +83,53 @@
     stop() { this.alive = false; [this.rtds, this.clob, this.snap].forEach((s) => s && s.close()); }
 
     // The catalog: every open event, 100 a page, busiest (24 h volume) first, so the ring fills with what matters first.
-    // About 210 pages for ~21k events; keyset pages have no depth limit (offset paging stops at ~2500).
+    // About 210 pages for ~21k events; keyset pages have no depth limit (offset paging stops at ~2500). With a cache
+    // (the page keeps the last full catalog in IndexedDB) the whole ring is there at once and the crawl refreshes it.
     async crawl() {
       let cur = "", n = 0, wait = 1000;
+      const fresh = this.cache ? [] : null;
+      if (this.cache) {
+        try {
+          const c = await this.cache.load();
+          if (c && c.rows && c.rows.length && Date.now() - c.at < 48 * 3600e3) this.emit({ k: "cat", n: -1, rows: c.rows, cached: true, at: c.at, done: false });
+        } catch (e) {}
+      }
       while (this.alive) {
         try {
           const d = await getJSON(`${GAMMA}/events/keyset?closed=false&include_markets=false&order=volume24hr&ascending=false&limit=100${cur ? `&after_cursor=${encodeURIComponent(cur)}` : ""}`);
           const rows = (d.events || []).map(row);
           cur = d.next_cursor || "";
+          if (fresh) for (const r of rows) fresh.push(r);
           this.emit({ k: "cat", n: n++, rows, done: !cur || !rows.length });
           this.status("catalog", cur && rows.length ? "loading" : "done"); wait = 1000;
-          if (!cur || !rows.length) return;
+          if (!cur || !rows.length) { if (fresh && fresh.length > 1000) Promise.resolve().then(() => this.cache.save(fresh)).catch(() => {}); return; }
         } catch (e) { this.status("catalog", "error"); await sleep(wait); wait = Math.min(wait * 2, 30000); }
       }
     }
     // Event details (markets, prices, tokens) for events the screen shows or that just traded. items: {id} or {slug}.
-    // Card projection: no descriptions; at most 30 events a request, 2 requests in flight.
-    details(items) {
+    // Card projection: no descriptions; at most 30 events a request, 2 requests in flight. What the screen asks for goes
+    // newest first (after a fast spin the events in view come before those it passed; the oldest 150 are dropped and
+    // can be asked again); low = background (the busiest events, so they are ready before the ring gets there).
+    details(items, low) {
       for (const it of items) {
         const key = it.id ? `id=${encodeURIComponent(it.id)}` : it.slug ? `slug=${encodeURIComponent(it.slug)}` : null;
-        if (!key || this.asked.has(key)) continue;
-        this.asked.add(key); this.dq.push(key);
+        if (!key) continue;
+        if (this.asked.has(key)) { const i = low ? -1 : this.lq.indexOf(key); if (i >= 0) { this.lq.splice(i, 1); this.dq.push(key); } continue; }
+        this.asked.add(key); (low ? this.lq : this.dq).push(key);
       }
-      while (this.dBusy < 2 && this.dq.length) this.detailBatch();
+      if (this.dq.length > 150) for (const k of this.dq.splice(0, this.dq.length - 150)) this.asked.delete(k);
+      while (this.dBusy < 2 && (this.dq.length || this.lq.length)) this.detailBatch();
     }
     async detailBatch() {
-      const keys = this.dq.splice(0, 30);
+      const keys = this.dq.length ? this.dq.splice(-30) : this.lq.splice(0, 30);
       this.dBusy++;
       try {
-        const evs = await getJSON(`${GAMMA}/events?${keys.join("&")}&market_projection=card`);
+        const evs = await getJSON(`${GAMMA}/events?${keys.join("&")}&market_projection=card&limit=${keys.length}`);   // Gamma returns 20 unless told
         for (const e of evs || []) this.emit(Object.assign({ k: "evd", mk: (e.markets || []).map(mrow) }, row(e)));
         this.status("details", "open");
       } catch (err) { keys.forEach((k) => this.asked.delete(k)); this.status("details", "error"); await sleep(3000); }
       this.dBusy--;
-      if (this.dq.length && this.alive) this.detailBatch();
+      if ((this.dq.length || this.lq.length) && this.alive) this.detailBatch();
     }
     // Some RTDS fills carry the token only: token → its event (Gamma markets), then that event's details as usual
     resolve(toks) {
@@ -126,7 +140,7 @@
       const toks = this.rq.splice(0, 20);
       this.rBusy = true;
       try {
-        const ms = await getJSON(`${GAMMA}/markets?${toks.map((t) => `clob_token_ids=${t}`).join("&")}`), slugs = new Set();
+        const ms = await getJSON(`${GAMMA}/markets?${toks.map((t) => `clob_token_ids=${t}`).join("&")}&limit=${toks.length}`), slugs = new Set();
         for (const m of ms || []) for (const e of m.events || []) if (e.slug) slugs.add(e.slug);
         if (slugs.size) this.details([...slugs].map((slug) => ({ slug })));
       } catch (err) { toks.forEach((t) => this.rAsked.delete(t)); await sleep(3000); }
@@ -134,11 +148,27 @@
       if (this.rq.length && this.alive) this.resolveBatch();
     }
     // Books for tokens outside the crypto engine (the market in focus): the set replaces the previous one.
-    books(toks) {
+    books(toks) {   // returns the tokens no longer watched (their books stop updating)
       const want = new Set((toks || []).filter(Boolean)), add = [], drop = [];
       for (const t of want) if (!this.gsubs.has(t)) { this.gsubs.add(t); if (!this.subs.has(t)) add.push(t); }
-      for (const t of [...this.gsubs]) if (!want.has(t)) { this.gsubs.delete(t); if (!this.subs.has(t)) drop.push(t); }
+      for (const t of [...this.gsubs]) if (!want.has(t)) { this.gsubs.delete(t); this.wsBook.delete(t); if (!this.subs.has(t)) drop.push(t); }
       this.clobSync(add, drop);
+      if (add.length) this.restBooks(add);
+      return drop;
+    }
+    // the socket's snapshot of a new subscription can come late (at times seconds late): the REST books of the new
+    // tokens (one request, ~0.1 s) stand in until it does; a snapshot the socket already sent is not replaced
+    async restBooks(toks) {
+      for (let i = 0; i < toks.length; i += 20) {
+        try {
+          const r = await fetch(`${CLOBR}/books`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(toks.slice(i, i + 20).map((t) => ({ token_id: t }))) });
+          if (!r.ok) continue;
+          for (const x of (await r.json()) || []) {
+            const t = x && x.asset_id;
+            if (t && this.gsubs.has(t) && !this.wsBook.has(t)) this.emit({ k: "book", tok: t, ts: +x.timestamp || null, bids: lv(x.bids), asks: lv(x.asks) });
+          }
+        } catch (e) {}
+      }
     }
     clobSync(add, drop) {
       const all = new Set([...this.subs, ...this.gsubs]);
@@ -187,9 +217,9 @@
       const d = J(raw);
       if (!d) return;
       for (const x of Array.isArray(d) ? d : [d]) {
-        const ts = +x.timestamp || null, lv = (a) => (a || []).map((l) => [+l.price, +l.size]);
+        const ts = +x.timestamp || null;
         switch (x.event_type) {
-          case "book": this.emit({ k: "book", tok: x.asset_id, ts, bids: lv(x.bids), asks: lv(x.asks) }); break;
+          case "book": if (this.gsubs.has(x.asset_id)) this.wsBook.add(x.asset_id); this.emit({ k: "book", tok: x.asset_id, ts, bids: lv(x.bids), asks: lv(x.asks) }); break;
           case "price_change": {
             const ch = (x.price_changes || []).map((c) => [c.asset_id, +c.price, +c.size, c.side === "BUY" ? "b" : "a"]);
             if (ch.length) this.emit({ k: "pc", ts, ch });

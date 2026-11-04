@@ -49,14 +49,26 @@
     const paper = load(PK, []);
     const eng = new VesperaCore.Engine({ kStore, paper, onPaper: (p) => save(PK, p.slice(-500)) });
     const rec = q.has("record") ? [] : null;
-    const feeds = new VesperaFeeds.Feeds((e) => { eng.push(e); if (rec) rec.push(e); }, { watch: paper.filter((p) => !p.final).map((p) => p.slug) }).start();
-    // the ring asks for what it shows: details (markets, prices) of the events in view, the book of the market in focus
+    // the last full catalog stays in IndexedDB, so the whole ring is there at once on the next start
+    const idb = (mode, fn) => new Promise((ok, no) => {
+      const r = indexedDB.open("vespera-engine-live", 1);
+      r.onupgradeneeded = () => r.result.createObjectStore("kv"); r.onerror = () => no(r.error);
+      r.onsuccess = () => { const db = r.result, t = db.transaction("kv", mode), x = fn(t.objectStore("kv")); t.oncomplete = () => { db.close(); ok(x && x.result); }; t.onerror = () => { db.close(); no(t.error); }; };
+    });
+    const cache = typeof indexedDB === "undefined" || q.has("nocache") ? null
+      : { load: () => idb("readonly", (st) => st.get("catalog")), save: (rows) => idb("readwrite", (st) => st.put({ at: Date.now(), rows }, "catalog")) };
+    const feeds = new VesperaFeeds.Feeds((e) => { eng.push(e); if (rec) rec.push(e); }, { watch: paper.filter((p) => !p.final).map((p) => p.slug), cache }).start();
+    // the ring asks for what it shows: details (markets, prices) of the events in view and near the focus, the busiest
+    // events in the background, the books of the market in focus and its neighbours. A book no longer watched is
+    // cleared, so it never shows stale levels (it comes back with a fresh snapshot).
     let fk = "";
     setInterval(() => {
       const need = eng.uni.takeNeeds(); if (need.length) feeds.details(need);
+      const low = eng.uni.takeLow(); if (low.length) feeds.details(low, true);
       const toks = eng.uni.takeToks(); if (toks.length) feeds.resolve(toks);
-      const k = eng.uni.focusToks.join(","); if (k !== fk) { fk = k; feeds.books(eng.uni.focusToks); }
-    }, 500);
+      const k = eng.uni.focusToks.join(",");
+      if (k !== fk) { fk = k; for (const t of feeds.books(eng.uni.focusToks)) { const b = eng.uni.book(t); if (b) { b.bids.clear(); b.asks.clear(); b.bookRt = 0; b.bookN++; } } }
+    }, 100);
     if (rec) window.__vizDump = () => `window.VESPERA_REC = ${JSON.stringify({ t0: rec.length ? rec[0].rt : Date.now(), t1: Date.now(), events: rec })};\n`;
     const R = VesperaRender.mount(canvas, eng, Object.assign(opts, { mode: rec ? "record" : "live" }));
     window.__E = eng; window.__R = R;

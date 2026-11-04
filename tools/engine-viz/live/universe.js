@@ -56,7 +56,7 @@
       this.slots = new Map();   // key → slot; key = "ev:<event slug>", "ser:<asset>:<tf>", "eng:<asset>:<tf>:<rel>"
       this.byId = new Map(); this.sec = SECTORS.map((s) => ({ ...s, eng: [], ser: [], ev: [], n: 0, c0: 0, c1: 0, hits: new Float64Array(60), hitAt: 0 }));
       this.ring = []; this.len = 0; this.v = 0; this.dirty = true; this.relAt = -1e9; this.promo = [];
-      this.cat = { rows: 0, pages: 0, done: false }; this.needs = []; this.books = new Map(); this.focusToks = [];
+      this.cat = { rows: 0, pages: 0, done: false, cached: 0 }; this.needs = []; this.low = []; this.books = new Map(); this.focusToks = [];
       this.tokEv = new Map(); this.orphans = []; this.tokNeeds = [];   // token → {slot, market, outcome}; fills waiting for theirs
       for (const a of ["eth", "sol", "xrp"]) for (const tf of ["15m", "5m"]) this.eng(a, tf, 0, 1.3);
       for (const tf of ["15m", "5m"]) for (const rel of [-1, 0, 1]) this.eng("btc", tf, rel, rel ? 1.1 : 3.2);
@@ -86,9 +86,30 @@
     weight(s) { return s.kind !== "ev" ? s.w : s.n > 0 || s.v24 >= 100 ? 1 : s.v24 > 0 ? 0.5 : 0.15; }
 
     // ---- catalog and details ------------------------------------------------------------------
+    // A cached catalog (n = −1) fills the ring at once; the crawl then refreshes every row. Details of the busiest 1000
+    // events are fetched in the background. When the crawl is done, cached events it did not see and whose end has
+    // passed are dropped (closed meanwhile), unless they traded in this session.
     onCatalog(e) {
-      this.cat.pages++; this.cat.rows += e.rows.length; if (e.done) this.cat.done = true;
-      for (const r of e.rows) this.row(r);
+      if (e.cached) this.cat.cached = e.rows.length;
+      else { this.cat.pages++; this.cat.rows += e.rows.length; if (e.done) this.cat.done = true; }
+      const pre = e.cached ? 1000 : e.n < 10 ? Infinity : 0;
+      let k = 0;
+      for (const r of e.rows) {
+        const s = this.row(r);
+        if (!s || s.kind !== "ev") continue;
+        s.cg = e.cached ? 0 : 1;
+        if (k++ < pre && !s.det) { s.det = 1; s.detAt = 0; s.detLow = true; this.low.push({ id: s.id }); }
+      }
+      if (e.done && !e.cached && this.cat.cached) {
+        const t = Date.now() / 1000;
+        for (const s of [...this.slots.values()]) if (s.kind === "ev" && s.cg === 0 && !s.n && s.end != null && s.end < t) this.drop(s);
+      }
+    }
+    drop(s) {
+      const a = this.sec[s.sec][s.kind], i = a.indexOf(s);
+      if (i >= 0) a.splice(i, 1);
+      this.slots.delete(s.key); if (s.id && this.byId.get(s.id) === s) this.byId.delete(s.id);
+      this.dirty = true;
     }
     row(r) {
       const ser = series(r.s);
@@ -137,8 +158,15 @@
       s.lead = [...s.mk.values()].filter((m) => !m.x).sort((a, b) => b.usd - a.usd || b.v - a.v); s.leadN = s.n;
       return s.lead;
     }
-    want(s) { if (s.kind === "ev" && !s.det && (s.id || s.slug)) { s.det = 1; this.needs.push(s.id ? { id: s.id } : { slug: s.slug }); } }
+    // details for a slot: asked once; asked again (first in line) when the screen shows it while it waits in the
+    // background queue, or 8 s after an ask that brought nothing (a request dropped by a fast spin)
+    want(s, now = 0) {
+      if (s.kind !== "ev" || s.det === 2 || !(s.id || s.slug)) return;
+      if (s.det === 1 && !s.detLow && !(now - s.detAt > 8000)) return;
+      s.det = 1; s.detAt = now; s.detLow = false; this.needs.push(s.id ? { id: s.id } : { slug: s.slug });
+    }
     takeNeeds() { const n = this.needs; this.needs = []; return n; }
+    takeLow() { const n = this.low; this.low = []; return n; }
     takeToks() { const t = [...new Set(this.tokNeeds)]; this.tokNeeds = []; return t; }
 
     // ---- trades -------------------------------------------------------------------------------
