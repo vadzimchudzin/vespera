@@ -27,8 +27,9 @@
 
   // ---- formatting -----------------------------------------------------------------------------------------------
   const grouped = (s) => s.replace(/\B(?=(\d{3})+(?!\d))/g, "\u202f");
-  const usd = (x, d = 2) => { const v = Number(x) || 0; return `${v < 0 ? "−" : ""}$${grouped(Math.abs(v).toFixed(d))}`; };
-  const signed = (x) => { const v = Number(x) || 0; return `${v > 0.004 ? "+" : v < -0.004 ? "−" : ""}$${grouped(Math.abs(v).toFixed(2))}`; };
+  // U+2060 (word joiner) keeps a sign on the same line as its amount: "−" and "$" are both break opportunities.
+  const usd = (x, d = 2) => { const v = Number(x) || 0; return `${v < 0 ? "−\u2060" : ""}$${grouped(Math.abs(v).toFixed(d))}`; };
+  const signed = (x) => { const v = Number(x) || 0; return `${v > 0.004 ? "+\u2060" : v < -0.004 ? "−\u2060" : ""}$${grouped(Math.abs(v).toFixed(2))}`; };
   const pct = (x, d = 1) => { const v = (Number(x) || 0) * 100, t = Math.abs(v).toFixed(d); return `${v < 0 && Number(t) !== 0 ? "−" : ""}${t}%`; };
   const tone = (x) => (Number(x) > 0.004 ? "pos" : Number(x) < -0.004 ? "neg" : "");
   const cents = (p) => (p == null || !Number.isFinite(Number(p)) ? "—" : `${(Number(p) * 100).toFixed(1)}¢`);
