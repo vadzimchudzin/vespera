@@ -2,6 +2,7 @@
 
 const https = require("https");
 const crypto = require("crypto");
+const { statusText: agentsStatusText, dailyText: agentsDailyText, alertText: agentsAlertText } = require("./agents/report");
 
 const REQUEST_TIMEOUT_MS = 12_000;
 const LONG_POLL_SECONDS = 8;
@@ -321,14 +322,18 @@ class TelegramBot {
     return crypto.createHash("sha256").update(JSON.stringify(values)).digest("hex");
   }
 
+  _locale() {
+    return this.host?.engine?.settings?.locale || this.host?.store?.value?.locale || "en";
+  }
+
   _menuKeyboard(userId) {
-    const locale = this.host?.engine?.settings?.locale || this.host?.store?.value?.locale || "en";
-    const ru = locale === "ru";
+    const ru = this._locale() === "ru";
     const button = (label, action) => ({ text: label, callback_data: `action:${action}` });
     const rows = [
       [button(ru ? "Статус" : "Status", "status"), button(ru ? "Баланс" : "Balance", "balance")],
       [button(ru ? "Старт" : "Start", "start"), button(ru ? "Стоп" : "Stop", "stop")],
       [button(ru ? "Новая серия" : "New series", "new"), button(ru ? "Стратегия" : "Strategy", "strategy")],
+      [button(ru ? "Агенты" : "Agents", "agents")],
       [button(ru ? "Настройки" : "Settings", "settings"), ...(this._root(this._config()) === userId ? [button(ru ? "Админка" : "Admin", "admin")] : [])],
     ];
     return rows;
@@ -356,7 +361,11 @@ class TelegramBot {
     if (name === "/mode") return this._mode(chatId, params[0]);
     if (name === "/strategy") return this._strategy(chatId, params[0]);
     if (name === "/settings") return this._settings(chatId, params);
-    return this._reply(chatId, "Commands: /menu /status /balance /start /stop /new /mode paper|auto /strategy [id] /settings field=value");
+    if (name === "/agents") return this._agents(chatId, "status");
+    if (name === "/agents_stop") return this._agents(chatId, "stop");
+    if (name === "/agents_start") return this._agents(chatId, "start");
+    if (name === "/agents_report") return this._agents(chatId, "report");
+    return this._reply(chatId, "Commands: /menu /status /balance /start /stop /new /mode paper|auto /strategy [id] /settings field=value · paper agents: /agents /agents_report /agents_stop /agents_start");
   }
 
   async _pair(userId, chatId, code) {
@@ -449,7 +458,15 @@ class TelegramBot {
       await this._adminCommand(action === "approve" ? "/approve" : "/deny", [target], chatId, config);
       return;
     }
-    const actionMatch = /^action:(status|balance|start|stop|new|strategy|settings|admin|requests|users)$/.exec(data);
+    const agentsMatch = /^agents:(status|stop|start|report)$/.exec(data);
+    if (agentsMatch) {
+      await this._agents(chatId, agentsMatch[1]);
+      if (callbackId) {
+        try { await telegramApi(this._config().token, "answerCallbackQuery", { callback_query_id: callbackId }, REQUEST_TIMEOUT_MS, this.transport); } catch { /* not part of command success */ }
+      }
+      return;
+    }
+    const actionMatch = /^action:(status|balance|start|stop|new|strategy|settings|agents|admin|requests|users)$/.exec(data);
     if (actionMatch) {
       const action = actionMatch[1];
       if (["admin", "requests", "users"].includes(action) && root !== userId) return this._reply(chatId, "Only the root administrator can manage access.");
@@ -460,6 +477,7 @@ class TelegramBot {
       if (action === "new") return this._newSeries(chatId, userId);
       if (action === "strategy") return this._strategy(chatId);
       if (action === "settings") return this._settings(chatId, []);
+      if (action === "agents") return this._agents(chatId, "status");
       if (action === "admin") return this._reply(chatId, "Administrator tools", [
         [{ text: "Requests", callback_data: "action:requests" }, { text: "Approved users", callback_data: "action:users" }],
         [{ text: "Status", callback_data: "action:status" }],
@@ -503,6 +521,51 @@ class TelegramBot {
   async _serverOnly(chatId) {
     await this._reply(chatId, "Trading control is available only while the server or desktop is the active execution owner. Telegram never takes over a standby engine.");
     return false;
+  }
+
+  _agentsKeyboard() {
+    const ru = this._locale() === "ru";
+    return [
+      [{ text: ru ? "Обновить" : "Refresh", callback_data: "agents:status" }, { text: ru ? "Отчёт за сутки" : "Daily report", callback_data: "agents:report" }],
+      [{ text: ru ? "Старт" : "Start", callback_data: "agents:start" }, { text: ru ? "Аварийный стоп" : "Emergency stop", callback_data: "agents:stop" }],
+    ];
+  }
+
+  // The paper agents' desk of the execution owner. Telegram can stop it at once and clear its own manual stop; the
+  // automatic stops (daily loss, drawdown) are cleared only in the app.
+  async _agents(chatId, action = "status") {
+    if (!this._requireServer()) return this._serverOnly(chatId);
+    const locale = this._locale();
+    const ru = locale === "ru";
+    const clip = (text) => (text.length > 3900 ? `${text.slice(0, 3899)}…` : text);
+    const refused = (reason) => {
+      if (reason === "agents_halt_desktop_only") return ru ? "Этот стоп снимается только в приложении: «Агенты» → «Снять стоп»." : "Only the app can clear this halt: Agents → Clear halt.";
+      return ru ? `Агенты: отказ — ${reason || "agents_error"}.` : `Agents: refused — ${reason || "agents_error"}.`;
+    };
+    try {
+      if (action === "report") {
+        const report = await this._call("agentsReport", [{ period: "day" }]);
+        if (report?.ok === false) return this._reply(chatId, refused(report.reason));
+        return this._reply(chatId, clip(agentsDailyText(report, locale)), this._agentsKeyboard());
+      }
+      if (action === "stop") {
+        const result = await this._call("agentsKill", [{ by: "telegram" }]);
+        if (result?.ok === false) return this._reply(chatId, refused(result.reason));
+        const head = ru ? "Аварийный стоп принят: новых сделок нет, открытые бумажные позиции ведутся до итога." : "Emergency stop accepted: no new trades; open paper positions are held to resolution.";
+        return this._reply(chatId, clip(`${head}\n\n${agentsStatusText(result, locale)}`), this._agentsKeyboard());
+      }
+      if (action === "start") {
+        const current = await this._call("agentsStatus");
+        if (current?.ok === false || current?.error) return this._reply(chatId, clip(agentsStatusText(current, locale)));
+        const result = await this._call(current.halt ? "agentsResume" : "agentsStart", [{ by: "telegram" }]);
+        if (result?.ok === false) return this._reply(chatId, refused(result.reason));
+        return this._reply(chatId, clip(agentsStatusText(result, locale)), this._agentsKeyboard());
+      }
+      const status = await this._call("agentsStatus");
+      return this._reply(chatId, clip(agentsStatusText(status, locale)), status?.ok === false || status?.error ? undefined : this._agentsKeyboard());
+    } catch (error) {
+      return this._reply(chatId, refused(error?.code || "agents_error"));
+    }
   }
 
   async _status(chatId, balanceOnly = false) {
@@ -629,13 +692,14 @@ class TelegramBot {
   }
 
   enqueueEvent(event) {
-    if (!event || !["signal", "order", "settled", "halt", "status"].includes(event.type)) return;
+    if (!event || !["signal", "order", "settled", "halt", "status", "agents_alert"].includes(event.type)) return;
     const config = this._config();
     if (!config.enabled || !this._hasOwner()) return;
     const recipients = [...new Set([...config.admins, ...config.users])];
     if (!recipients.length) return;
     let text = null;
     const payload = event.payload && typeof event.payload === "object" ? event.payload : {};
+    if (event.type === "agents_alert") text = agentsAlertText(payload, this._locale());
     if (event.type === "signal") text = `Opening signal: ${payload.signal || payload.side || "?"} · $${payload.size ?? "?"}${payload.paper ? " · Paper" : ""}`;
     if (event.type === "order") text = `Order update: ${payload.side || "?"} · $${payload.sizeUsd || "?"} · ${payload.status || payload.orderStatus || "unknown status"}${payload.price ? ` @ ${payload.price}` : ""}${payload.feeUsd ? ` · fee $${payload.feeUsd}` : ""}`;
     if (event.type === "settled") text = `Settlement: ${payload.side || "?"} · ${payload.status || "unknown"} · net P&L $${payload.pnl ?? payload.netPnl ?? "?"} · fee $${payload.feeUsd ?? "?"}`;
