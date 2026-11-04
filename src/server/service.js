@@ -21,6 +21,8 @@ const METHODS = new Set([
   "deriveKeys", "setStrategy", "resetPaper", "getSettings", "saveSettings", "exportCsv", "depositAssets",
   "depositAddress", "depositStatus",
   "telegramStatus", "telegramConfigure", "telegramPair", "telegramTest", "telegramDisconnect",
+  "agentsStatus", "agentsConfigure", "agentsStart", "agentsStop", "agentsKill", "agentsResume", "agentsAgent",
+  "agentsReport", "agentsRing", "agentsReset",
 ]);
 const SECRET_KEYS = /^(api.?key|api.?secret|api.?passphrase|private.?key|proxy.?url|server.?token|telegram.?token|token|authorization|credentials|bundle)$/i;
 
@@ -33,11 +35,14 @@ const DEFINITE_REFUSALS = new Set([
   "ai_recommendation_not_found", "ai_recommendation_exists", "ai_setup_ref_invalid", "setup_not_found",
   "ai_local_url_denied", "ai_local_hardware_insufficient",
 ]);
-// Research and setup methods only touch virtual books and the setup library, never the venue.
+// Research, setup and agents methods only touch virtual books and the setup library, never the venue.
 const VIRTUAL_METHODS = new Set([
   "runBacktest", "startPaperRuns", "stopPaperRun", "researchStatus", "researchReport", "exportResearch",
   "listSetups", "saveSetup", "applySetup", "copySetup", "importSetup", "exportSetup",
+  "agentsStatus", "agentsConfigure", "agentsStart", "agentsStop", "agentsKill", "agentsResume", "agentsAgent",
+  "agentsReport", "agentsRing", "agentsReset",
 ]);
+const AGENT_VIEWS = Object.freeze({ status: "agentsStatus", ring: "agentsRing", report: "agentsReport" });
 function isDefiniteRefusal(method, error) {
   const code = error && error.code;
   if (typeof code !== "string") return false;
@@ -432,6 +437,17 @@ function createService({ userDataDir, token, host, hostFactory, now = Date.now, 
         const state = await activeHost.call("snapshot");
         refreshRedactions();
         return send(res, 200, { state: clean(state, 0, redactions), execution: executionStatus(state) });
+      }
+      if (req.method === "GET" && url.pathname === "/v1/agents") {
+        // the paper agents' views, polled by the desktop panel and the ring window without touching the command ledger
+        const view = url.searchParams.get("view") || "status";
+        const period = url.searchParams.get("period") || "day";
+        if (!Object.hasOwn(AGENT_VIEWS, view)) throw new ServiceError("invalid_view");
+        if (!["day", "week", "all"].includes(period)) throw new ServiceError("invalid_period");
+        if (owner.owner !== "server") return send(res, 200, { ok: false, reason: "not_server_owner" });
+        const result = await activeHost.call(AGENT_VIEWS[view], [view === "report" ? { period } : {}]);
+        refreshRedactions();
+        return send(res, 200, clean(result, 0, redactions));
       }
       if (req.method === "GET" && url.pathname === "/v1/events") {
         const after = url.searchParams.get("after") || "0";
