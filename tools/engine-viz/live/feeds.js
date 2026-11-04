@@ -1,8 +1,9 @@
 /* Vespera Engine Live — feeds. Public Polymarket sources only; runs in a browser (file:// or http) and in Node >= 22.
- *  RTDS  wss://ws-live-data.polymarket.com  activity/trades + Chainlink spot and 60 s TWAP for every symbol
+ *  RTDS  wss://ws-live-data.polymarket.com  activity/trades (every fill on every market) + Chainlink spot and 60 s TWAP
  *        (unfiltered topics stream all symbols; a filtered subscribe returns ~1 min of history, used once at start)
  *  CLOB  wss://ws-subscriptions-clob.polymarket.com/ws/market  books, level changes, last trades, resolutions
- *  Gamma https://gamma-api.polymarket.com  tokens, fees, tick, min size, priceToBeat, official outcome
+ *  Gamma https://gamma-api.polymarket.com  the catalog of open events (keyset pages, busiest first), event details
+ *        (markets, prices, tokens) on request; for crypto Up/Down: tokens, fees, tick, min size, priceToBeat, outcome
  * Each message becomes one normalized event with rt = Date.now() at receipt; see core.js for the schema. */
 (function (global) {
   "use strict";
@@ -12,6 +13,17 @@
   const sym = (s) => String(s || "").split("/")[0].toLowerCase();
   const J = (s) => { try { return typeof s === "string" ? JSON.parse(s) : s; } catch (e) { return null; } };
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const sec = (iso) => { const t = Date.parse(iso || ""); return isFinite(t) ? Math.round(t / 1000) : null; };
+  async function getJSON(url) { const r = await fetch(url); if (!r.ok) throw new Error(`${r.status}`); return r.json(); }
+  // one catalog row: id, slug, title, 24 h volume, end (s), market count, tags (lower case, "|"-joined)
+  const row = (e) => ({ id: String(e.id), s: e.slug || "", t: e.title || "", v: +e.volume24hr || 0, e: sec(e.endDate), n: +e.cumulativeMarkets || null,
+    g: (e.tags || []).map((x) => String(x.label || "").toLowerCase()).filter(Boolean).join("|") });
+  const mrow = (m) => {
+    const o = J(m.outcomes) || [], p = (J(m.outcomePrices) || []).map(Number), tk = J(m.clobTokenIds) || [];
+    return { c: m.conditionId, q: m.groupItemTitle || m.question || "", o: [o[0] || "Yes", o[1] || "No"], p: [isFinite(p[0]) ? p[0] : null, isFinite(p[1]) ? p[1] : null],
+      bb: m.bestBid == null ? null : +m.bestBid, ba: m.bestAsk == null ? null : +m.bestAsk, l: m.lastTradePrice == null ? null : +m.lastTradePrice,
+      tk: [tk[0] || null, tk[1] || null], v: +m.volume || 0, x: !!m.closed || m.active === false };   // inactive: placeholders the site hides
+  };
 
   // WebSocket with text PING keep-alive, capped exponential reconnect, and an idle watchdog: a socket that stays
   // open but goes silent for h.idle ms is dropped and replaced (a silent socket never fires onclose by itself).
@@ -48,6 +60,8 @@
     constructor(emit, opts = {}) {
       this.out = emit; this.assets = opts.assets || ASSETS; this.watch = new Set(opts.watch || []);
       this.meta = new Map(); this.subs = new Set(); this.alive = true; this.clob = null;
+      this.catalog = opts.catalog !== false; this.asked = new Set(); this.dq = []; this.dBusy = 0; this.gsubs = new Set();
+      this.rAsked = new Set(); this.rq = []; this.rBusy = false;
     }
     emit(e) { e.rt = Date.now(); this.out(e); }
     status(name, st) { this.emit({ k: "feed", name, st }); }
@@ -62,9 +76,81 @@
         },
       }, st);
       this.loop();
+      if (this.catalog) this.crawl();
       return this;
     }
     stop() { this.alive = false; [this.rtds, this.clob, this.snap].forEach((s) => s && s.close()); }
+
+    // The catalog: every open event, 100 a page, busiest (24 h volume) first, so the ring fills with what matters first.
+    // About 210 pages for ~21k events; keyset pages have no depth limit (offset paging stops at ~2500).
+    async crawl() {
+      let cur = "", n = 0, wait = 1000;
+      while (this.alive) {
+        try {
+          const d = await getJSON(`${GAMMA}/events/keyset?closed=false&include_markets=false&order=volume24hr&ascending=false&limit=100${cur ? `&after_cursor=${encodeURIComponent(cur)}` : ""}`);
+          const rows = (d.events || []).map(row);
+          cur = d.next_cursor || "";
+          this.emit({ k: "cat", n: n++, rows, done: !cur || !rows.length });
+          this.status("catalog", cur && rows.length ? "loading" : "done"); wait = 1000;
+          if (!cur || !rows.length) return;
+        } catch (e) { this.status("catalog", "error"); await sleep(wait); wait = Math.min(wait * 2, 30000); }
+      }
+    }
+    // Event details (markets, prices, tokens) for events the screen shows or that just traded. items: {id} or {slug}.
+    // Card projection: no descriptions; at most 30 events a request, 2 requests in flight.
+    details(items) {
+      for (const it of items) {
+        const key = it.id ? `id=${encodeURIComponent(it.id)}` : it.slug ? `slug=${encodeURIComponent(it.slug)}` : null;
+        if (!key || this.asked.has(key)) continue;
+        this.asked.add(key); this.dq.push(key);
+      }
+      while (this.dBusy < 2 && this.dq.length) this.detailBatch();
+    }
+    async detailBatch() {
+      const keys = this.dq.splice(0, 30);
+      this.dBusy++;
+      try {
+        const evs = await getJSON(`${GAMMA}/events?${keys.join("&")}&market_projection=card`);
+        for (const e of evs || []) this.emit(Object.assign({ k: "evd", mk: (e.markets || []).map(mrow) }, row(e)));
+        this.status("details", "open");
+      } catch (err) { keys.forEach((k) => this.asked.delete(k)); this.status("details", "error"); await sleep(3000); }
+      this.dBusy--;
+      if (this.dq.length && this.alive) this.detailBatch();
+    }
+    // Some RTDS fills carry the token only: token → its event (Gamma markets), then that event's details as usual
+    resolve(toks) {
+      for (const t of toks || []) if (t && !this.rAsked.has(t)) { this.rAsked.add(t); this.rq.push(t); }
+      if (!this.rBusy && this.rq.length) this.resolveBatch();
+    }
+    async resolveBatch() {
+      const toks = this.rq.splice(0, 20);
+      this.rBusy = true;
+      try {
+        const ms = await getJSON(`${GAMMA}/markets?${toks.map((t) => `clob_token_ids=${t}`).join("&")}`), slugs = new Set();
+        for (const m of ms || []) for (const e of m.events || []) if (e.slug) slugs.add(e.slug);
+        if (slugs.size) this.details([...slugs].map((slug) => ({ slug })));
+      } catch (err) { toks.forEach((t) => this.rAsked.delete(t)); await sleep(3000); }
+      this.rBusy = false;
+      if (this.rq.length && this.alive) this.resolveBatch();
+    }
+    // Books for tokens outside the crypto engine (the market in focus): the set replaces the previous one.
+    books(toks) {
+      const want = new Set((toks || []).filter(Boolean)), add = [], drop = [];
+      for (const t of want) if (!this.gsubs.has(t)) { this.gsubs.add(t); if (!this.subs.has(t)) add.push(t); }
+      for (const t of [...this.gsubs]) if (!want.has(t)) { this.gsubs.delete(t); if (!this.subs.has(t)) drop.push(t); }
+      this.clobSync(add, drop);
+    }
+    clobSync(add, drop) {
+      const all = new Set([...this.subs, ...this.gsubs]);
+      if (!this.clob && all.size) {
+        this.clob = socket(CLOB, "clob", { ping: 10000, idle: 30000, message: (s) => this.onClob(s),
+          open: (send) => send({ assets_ids: [...this.subs, ...this.gsubs].filter((t, i, a) => a.indexOf(t) === i), type: "market", custom_feature_enabled: true }) },
+          (n, s) => this.status(n, s));
+      } else if (this.clob) {
+        if (add.length) this.clob.send({ assets_ids: add, operation: "subscribe", custom_feature_enabled: true });
+        if (drop.length) this.clob.send({ assets_ids: drop, operation: "unsubscribe" });
+      }
+    }
 
     // History for K and σ: one filtered subscribe per symbol returns its recent points, then the socket closes.
     snapshot() {
@@ -88,9 +174,10 @@
       const d = J(raw), p = d && d.payload;
       if (!p) return;
       if (d.topic === "activity") {
+        // every fill on every market; ev = event slug (the ring slot), cond/tok = market and outcome token
         const slug = p.slug || p.eventSlug || "";
-        if (!/-updown-|-up-or-down-/.test(slug)) return;
-        this.emit({ k: "trade", slug, ts: +p.timestamp, out: p.outcome, side: p.side, price: +p.price, size: +p.size,
+        this.emit({ k: "trade", slug, ev: p.eventSlug || "", cond: p.conditionId || "", tok: p.asset || "", oi: p.outcomeIndex == null ? null : +p.outcomeIndex,
+          q: p.title || "", ts: +p.timestamp, out: p.outcome, side: p.side, price: +p.price, size: +p.size,
           w: String(p.proxyWallet || "").toLowerCase(), name: p.name || p.pseudonym || "", fee: p.fee == null ? null : +p.fee });
       } else if ((d.topic === "crypto_prices_chainlink" || d.topic === "crypto_prices_twap_sixty") && p.symbol && p.value != null) {
         this.emit({ k: d.topic === "crypto_prices_twap_sixty" ? "tw" : "cl", sym: sym(p.symbol), ts: +p.timestamp, v: +p.value });
@@ -149,13 +236,7 @@
           if (!keep && this.subs.has(t)) { this.subs.delete(t); drop.push(t); }
         });
       }
-      if (!this.clob && this.subs.size) {
-        this.clob = socket(CLOB, "clob", { ping: 10000, idle: 30000, message: (s) => this.onClob(s),
-          open: (send) => send({ assets_ids: [...this.subs], type: "market", custom_feature_enabled: true }) }, (n, s) => this.status(n, s));
-      } else if (this.clob) {
-        if (add.length) this.clob.send({ assets_ids: add, operation: "subscribe", custom_feature_enabled: true });
-        if (drop.length) this.clob.send({ assets_ids: drop, operation: "unsubscribe" });
-      }
+      this.clobSync(add, drop.filter((t) => !this.gsubs.has(t)));
       for (const [slug, m] of this.meta) if (m.end < now - 7200 && !this.watch.has(slug)) this.meta.delete(slug);
     }
     async fetchMarket(slug) {
@@ -178,7 +259,7 @@
     }
   }
 
-  const api = { Feeds, ASSETS };
+  const api = { Feeds, ASSETS, row: (e) => row(e), mrow: (m) => mrow(m) };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   global.VesperaFeeds = api;
 })(typeof window !== "undefined" ? window : globalThis);

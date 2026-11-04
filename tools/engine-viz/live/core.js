@@ -10,11 +10,12 @@
  *  - taker fee in USDC = shares × rate × p × (1 − p), rate 0.07 (feeSchedule; equals the fee on RTDS trades). */
 (function (global) {
   "use strict";
+  const UNI = global.VesperaUniverse || (typeof require === "function" ? require("./universe.js") : null);
   const CFG = {
     tickMs: 250,          // model clock; replays use the same grid, so a replay is deterministic
     edgeMin: 0.03,        // paper entry: edge after fee >= 3 probability points
     spreadMax: 0.05, minElapsed: 0.1, minTau: 30, markoutS: 30,
-    sigmaWinS: 3600, sigmaH: 60, sigmaSpanS: 300, seriesS: 3900, threadsMax: 12000, threadAgeMs: 16 * 60e3,
+    sigmaWinS: 3600, sigmaH: 60, sigmaSpanS: 300, seriesS: 3900, threadsMax: 14000, threadAgeMs: 16 * 60e3,
   };
   const TF = { "5m": 300, "15m": 900 };
   const fmtPx = (v) => (v == null ? "—" : v >= 100 ? v.toFixed(2) : v >= 1 ? v.toFixed(4) : v.toFixed(5));
@@ -79,6 +80,7 @@
       this.paper = (opts.paper || []).slice();
       this.focusM = null;
       this.graph = { strands: [], prev: null, sig: [] };
+      this.uni = new UNI.Universe();
     }
 
     // ---- clock ---------------------------------------------------------------------------
@@ -104,6 +106,8 @@
         case "res": this.feed("clob", e.rt); return this.onResolved(e);
         case "tick": { const t = this.byTok.get(e.tok); if (t) t.m.tick = e.tick; return; }
         case "mkt": this.feed("gamma", e.rt); return this.onMeta(e);
+        case "cat": this.feed("gamma", e.rt); return this.uni.onCatalog(e);
+        case "evd": this.feed("gamma", e.rt); return this.uni.onDetails(e);
         case "feed": this.conn[e.name] = e.st; if (e.st !== "open" || e.name !== "snap") this.note(e.rt, `${e.name}: ${e.st}`); return;
         default:
       }
@@ -161,19 +165,24 @@
       if (e.win != null && m.win == null) this.official(m, e.win, "gamma", e.rt);
     }
 
-    // ---- trades: every fill on a crypto Up/Down market becomes one thread ------------------
+    // ---- trades: every fill on every market becomes one thread ---------------------------------
+    // p = price of outcome 0 (UP / YES / the first team), up = exposure to outcome 0 (buy it or sell outcome 1)
     onTrade(e) {
-      const info = parseSlug(e.slug);
-      if (!info || !(e.price > 0) || !(e.size > 0)) return;
-      const start = info.start != null ? info.start : e.ts - (e.ts % 3600), up = (e.out === "Up") === (e.side === "BUY");
-      const T = { id: ++this.nTrades, rt: e.rt, ts: e.ts, slug: e.slug, a: info.asset, tf: info.tf, st: start, dur: info.dur,
-        prog: Math.max(-0.25, Math.min(1, (e.ts - start) / info.dur)), p: e.out === "Up" ? e.price : 1 - e.price, up,
-        usd: e.price * e.size, w: e.w, name: e.name, side: e.side, out: e.out, price: e.price, size: e.size, fee: e.fee };
+      if (!(e.price > 0) || !(e.size > 0)) return;
+      const info = parseSlug(e.slug), zero = info ? e.out === "Up" : e.oi != null ? e.oi === 0 : e.out === "Yes";
+      const T = { id: ++this.nTrades, rt: e.rt, ts: e.ts, slug: e.slug, ev: e.ev || "", cond: e.cond || "", tok: e.tok || "", oi: e.oi, q: e.q || "",
+        p: zero ? e.price : 1 - e.price, up: zero === (e.side === "BUY"), usd: e.price * e.size, w: e.w, name: e.name, side: e.side, out: e.out,
+        price: e.price, size: e.size, fee: e.fee, s: null };
+      if (info) {
+        const start = info.start != null ? info.start : e.ts - (e.ts % 3600);
+        Object.assign(T, { a: info.asset, tf: info.tf, st: start, dur: info.dur, end: start + info.dur, prog: Math.max(-0.25, Math.min(1, (e.ts - start) / info.dur)) });
+      }
+      T.s = this.uni.onTrade(T);
       this.trades.push(T);
       const W = this.wallets.get(e.w) || { w: e.w, name: e.name, usd: 0, n: 0, net: 0, fee: 0, last: 0, first: e.rt };
-      W.usd += T.usd; W.n++; W.net += up ? T.usd : -T.usd; W.last = e.rt; if (e.name) W.name = e.name; if (e.fee) W.fee += e.fee;
+      W.usd += T.usd; W.n++; W.net += T.up ? T.usd : -T.usd; W.last = e.rt; if (e.name) W.name = e.name; if (e.fee) W.fee += e.fee;
       this.wallets.set(e.w, W);
-      const m = info.start != null && TF[info.tf] ? this.market(e.slug) : null;
+      const m = info && info.start != null && TF[info.tf] ? this.market(e.slug) : null;
       if (m) { m.n++; m.usd += T.usd; m.wal.add(e.w); m.last = T; m.recent.push(T); if (m.recent.length > 48) m.recent.shift(); }
     }
 
@@ -243,7 +252,7 @@
     // ---- order book (UP token; the DOWN book is its mirror) -------------------------------
     onBook(e) {
       const t = this.byTok.get(e.tok);
-      if (!t) return;
+      if (!t) { this.uni.onBook(e); return; }
       const m = t.m, old = [m.bids, m.asks], up = (l) => l.map(([p, s]) => [Math.round(p * 1e4), s]);
       const dn = (l) => l.map(([p, s]) => [Math.round((1 - p) * 1e4), s]);
       m.bids = new Map(t.i === 0 ? up(e.bids) : dn(e.asks));
@@ -258,7 +267,7 @@
       const touched = new Set();
       for (const [tok, p, s, side] of e.ch) {
         const t = this.byTok.get(tok);
-        if (!t) continue;
+        if (!t) { this.uni.onLevel(tok, p, s, side, e.rt); continue; }
         const m = t.m, sd = t.i === 0 ? side : side === "b" ? "a" : "b", book = sd === "b" ? m.bids : m.asks;
         const k = Math.round((t.i === 0 ? p : 1 - p) * 1e4);
         if (s > 0) { if (book.get(k) === s) continue; book.set(k, s); } else if (!book.delete(k)) continue;
@@ -406,6 +415,7 @@
       while (i < T.length && (T[i].rt < cut || T.length - i > this.cfg.threadsMax)) i++;
       if (i) T.splice(0, i);
       for (const m of this.mk.values()) for (const [k, t] of m.lvl) if (t < now - 15000) m.lvl.delete(k);
+      this.uni.prune(now);
       const gs = this.graph.strands; while (gs.length && gs[0].rt < now - 60000) gs.shift();
       if (now % 60000) return;
       for (const [slug, m] of this.mk) if (m.end < now / 1000 - 3600) {
