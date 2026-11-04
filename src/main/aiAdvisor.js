@@ -370,6 +370,55 @@ class AIAdvisor {
     return { ...identity, digest: model.digest, sizeBytes: model.size };
   }
 
+  // --- the agents desk -------------------------------------------------------------------------------------------
+  // The desk's paper agents ask short JSON questions through the same key, model and budget as the recommendations:
+  // OpenRouter only (a price per token is what bounds each question), within maxRequestUsd and the daily budget.
+  agentsAvailable() {
+    const config = this.state.config;
+    if (!config.enabled) return { ok: false, reason: "ai_disabled" };
+    if (config.provider !== "openrouter") return { ok: false, reason: "ai_agents_openrouter_only" };
+    if (!this._hasKey()) return { ok: false, reason: "ai_key_missing" };
+    return { ok: true, reason: null, model: config.model };
+  }
+
+  async _agentPricing(config) {
+    const hit = this._agentModel;
+    if (hit && hit.model === config.model && this.now() - hit.at < 3600000) return hit.pricing;
+    const response = await this._request("https://openrouter.ai/api/v1/models", null, { method: "GET", timeoutMs: config.timeoutMs, maxBytes: 10 * 1024 * 1024 });
+    if (!Array.isArray(response.data)) throw fail("ai_models_invalid");
+    const rows = response.data.filter((row) => isRecord(row) && row.id === config.model && isRecord(row.pricing))
+      .map((row) => ({ id: row.id, pricing: { prompt: parsePrice(row.pricing.prompt), completion: parsePrice(row.pricing.completion) },
+        contextLength: Number.isInteger(Number(row.context_length)) ? Number(row.context_length) : null }));
+    const pricing = this._findModelPricing(rows, config.model);
+    this._agentModel = { model: config.model, at: this.now(), pricing };
+    return pricing;
+  }
+
+  async agentQuery({ system, prompt, maxTokens } = {}) {
+    const ready = this.agentsAvailable();
+    if (!ready.ok) throw fail(ready.reason);
+    if (typeof system !== "string" || !system || Buffer.byteLength(system) > 4096 || typeof prompt !== "string" || !prompt) throw fail("ai_prompt_invalid");
+    if (Buffer.byteLength(prompt) > MAX_PROMPT_BYTES) throw fail("ai_prompt_too_large");
+    const config = { ...this.state.config };
+    const tokens = Math.min(1024, Math.max(64, Math.floor(Number(maxTokens)) || 300));
+    const pricing = await this._agentPricing(config);
+    const worstCost = MAX_INPUT_TOKENS * pricing.pricing.prompt + tokens * pricing.pricing.completion;
+    if (!Number.isFinite(worstCost) || worstCost < 0 || worstCost > config.maxRequestUsd) throw fail("ai_budget_exceeded");
+    const lastRequestAt = this.state.lastRequestAt;
+    const reservation = this._reserve(worstCost);
+    this.state.lastRequestAt = lastRequestAt;   // the desk's questions never hold up the user's own recommendation
+    this._persist();
+    const result = await this._request("https://openrouter.ai/api/v1/chat/completions", {
+      model: config.model, messages: [{ role: "system", content: system }, { role: "user", content: prompt }],
+      max_tokens: tokens, response_format: { type: "json_object" },
+      provider: { max_price: { prompt: pricing.pricing.prompt * 1e6, completion: pricing.pricing.completion * 1e6 }, require_parameters: true },
+    }, { timeoutMs: config.timeoutMs, headers: { authorization: `Bearer ${this.secretStore.value.apiKey}`, "content-type": "application/json" } });
+    const settled = this._settle(reservation, result.usage, tokens, MAX_INPUT_TOKENS);
+    const content = result.choices?.[0]?.message?.content;
+    if (typeof content !== "string" || Buffer.byteLength(content) > MAX_RESPONSE_BYTES) throw fail("ai_response_invalid");
+    return { content, costUsd: settled ? Number(result.usage.cost.toFixed(6)) : reservation.amountUsd, model: config.model };
+  }
+
   async recommend({ id, version } = {}) {
     if (this.busy) throw fail("ai_busy");
     const config = { ...this.state.config };
