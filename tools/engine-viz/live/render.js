@@ -92,7 +92,7 @@
   // The ring is a tape of slots (20 px × weight at zoom 1) bent along the arc. P = tape coordinate at the focus line.
   // A fisheye swells the slots near the focus (FK = extra px, FS = its width); past the visible window the tape is
   // squeezed into PORT px at each end of the arc.
-  const FS = 16, FK = 4.5 * FS * Math.sqrt(Math.PI) / 2, PORT = 18, ZMIN = 0.35, ZMAX = 1.8;
+  const FS = 16, FK = 4.5 * FS * Math.sqrt(Math.PI) / 2, PORT = 18, ZMIN = 0.35, ZMAX = 1.8, MK = 6;
   const LOGT = Math.log10((2 * 365.25 * 86400) / 900);
   const TICKS = [[0, "итог"], [300, "5:00"], [600, "10:00"], [900, "15:00"], [3600, "1 ч"], [21600, "6 ч"], [86400, "1 д"], [604800, "1 нед"],
     [2592000, "1 мес"], [15778800, "6 мес"], [31557600, "1 год"], [63115200, "2 года"]];
@@ -131,7 +131,8 @@
       this.A = null; this.B = null; this.backA = null; this.backB = null; this.job = null; this.tiny = null; this.ringC = null;
       this.ui = { P: 0, z: 1, zt: 1, v: 0, anim: null, drag: null, last: 0, restAt: -1e9, anchor: null, lv: -1, snapAt: null };
       this.focusS = null; this.bookS = null; this.bookAt = 0; this.bookFor = null; this.fTok = null; this.vis = []; this.rkey = "";
-      this.portal = [0, 0]; this.rec = new Map(); this.recAt = -Infinity; this.moving = false;
+      this.lru = []; this.nb = []; this.watchK = ""; this.nbS = null;
+      this.portal = [0, 0]; this.rec = new Map(); this.recAt = -Infinity; this.moving = false; this.ml = {}; this.spd = 0; this.pPrev = null;
       this.resize();
       if (canvas.addEventListener && !this.o.noInput) this.bind();
     }
@@ -143,7 +144,8 @@
       const g = this.g, x0 = Math.floor(g.cx - g.R - 4), x1 = Math.min(W, Math.ceil(Math.max(g.arcX(0, g.Rin), g.arcX(g.mainH, g.Rin)) + 4));
       this.rb = { x0, w: x1 - x0 };
       this.mm = { cx: W - 66, cy: 70, r: 44 }; this.sl = { x: W - 66 - 44 - 26 - 176, y: 14, w: 176, rh: 11 };
-      this.aAt = -1e9; this.bKey = null; this.job = null; this.ringK = null; this.tileK = null; this.legW = 0; this.A = null;
+      this.aAt = -1e9; this.bKey = null; this.job = null; this.ringK = null; this.tileK = null; this.legW = 0; this.A = null; this.ml = {}; this.base = null;
+      this.lw = Math.min(W, Math.ceil(Math.max(g.arcX(0, g.R), g.arcX(g.mainH, g.R))) + 4);   // threads end on the outer edge of the band
     }
 
     // ---- input: drag to spin (with inertia), wheel to scroll, Ctrl+wheel to zoom, click to focus -------------------------
@@ -183,7 +185,8 @@
       if (D.moved < 4) { this.click(x, y); return true; }
       const a = D.s[0], b = D.s[D.s.length - 1], dt = (b[0] - a[0]) / 1000;
       u.v = dt > 0.008 && t - b[0] < 90 ? Math.max(-80000, Math.min(80000, (b[1] - a[1]) / dt)) : 0;
-      if (!u.v) u.snapAt = u.last;
+      if (!u.v) { u.snapAt = u.last; this.prefetch(u.P); }
+      else this.prefetch(u.P + (u.v - Math.sign(u.v) * Math.min(Math.abs(u.v), 50 / u.z)) * 0.6);   // v decays with τ = 0.6 s
       return true;
     }
     hitUI(x, y) { const m = this.mm; return (x - m.cx) ** 2 + (y - m.cy) ** 2 <= (m.r + 12) ** 2 || !!this.secHit(x, y); }
@@ -208,7 +211,17 @@
       const u = this.ui, L = this.U.len || 1;
       let d = c - u.P; d = (((d + L / 2) % L) + L) % L - L / 2;
       const dist = Math.abs(d) * u.z;
-      u.anim = { from: u.P, to: u.P + d, t0: u.last, dur: ms || Math.min(1700, 280 + 170 * Math.log2(1 + dist / 300)), slot }; u.v = 0; u.snapAt = null;
+      u.anim = { from: u.P, to: u.P + d, t0: u.last, dur: ms || Math.min(1000, 200 + 120 * Math.log2(1 + dist / 300)), slot }; u.v = 0; u.snapAt = null;
+      this.prefetch(u.P + d);
+    }
+    // where the ring is going (a jump's target, the wheel's, where a fling will stop): its events are asked for before
+    // it gets there, the target first
+    prefetch(c) {
+      const U = this.U, R = U.ring, n = R.length, s = U.at(c);
+      if (!s || s === this.pfS) return;
+      this.pfS = s;
+      for (let k = 25; k >= 1; k--) for (const x of [R[(s.i + k) % n], R[(((s.i - k) % n) + n) % n]]) U.want(x, this.ui.last);
+      U.want(s, this.ui.last);
     }
     gotoSlot(s) { if (s) this.goto(s.c + s.h / 2, null, s); }
     gotoSector(S) { this.gotoSlot(this.U.ring[S.i0]); }
@@ -219,7 +232,8 @@
       const u = this.ui;
       if (zoom) { this.zoomTo(u.zt * Math.exp(-dy * 0.0022)); return; }
       const to = (u.anim && !u.anim.snap ? u.anim.to : u.P) + (dy * 0.8) / u.z;
-      u.anim = { from: u.P, to, t0: u.last, dur: 230, wheel: true }; u.v = 0; u.snapAt = null;
+      u.anim = { from: u.P, to, t0: u.last, dur: 120, wheel: true }; u.v = 0; u.snapAt = null;
+      this.prefetch(to);
     }
     key(k) {
       const R = this.U.ring, n = R.length, f = this.focusS, step = { ArrowDown: 1, ArrowUp: -1, PageDown: 12, PageUp: -12 }[k];
@@ -247,7 +261,7 @@
       if (!u.drag && u.anim) {
         const A = u.anim, k = Math.max(0, Math.min(1, (now - A.t0) / A.dur));
         u.P = A.from + (A.to - A.from) * (A.wheel ? 1 - (1 - k) ** 3 : ease(k)); moving = true;
-        if (k >= 1) { u.anim = null; if (!A.snap) u.snapAt = now + (A.wheel ? 220 : 0); }
+        if (k >= 1) { u.anim = null; if (!A.snap) u.snapAt = now + (A.wheel ? 130 : 0); }
       } else if (!u.drag && u.v) {
         u.P += u.v * dt; u.v *= Math.exp(-dt / 0.6); moving = true;
         if (Math.abs(u.v) * u.z < 50) { u.v = 0; u.snapAt = now; }
@@ -255,7 +269,7 @@
       if (!u.drag && !u.anim && !u.v && u.snapAt != null && now >= u.snapAt) {   // settle on the slot in focus
         u.snapAt = null;
         const s = U.at(u.P);
-        if (s) { const L = U.len; let d = s.c + s.h / 2 - u.P; d = (((d + L / 2) % L) + L) % L - L / 2; if (Math.abs(d) > 0.05) { u.anim = { from: u.P, to: u.P + d, t0: now, dur: 240, snap: true }; moving = true; } }
+        if (s) { const L = U.len; let d = s.c + s.h / 2 - u.P; d = (((d + L / 2) % L) + L) % L - L / 2; if (Math.abs(d) > 0.05) { u.anim = { from: u.P, to: u.P + d, t0: now, dur: 160, snap: true }; moving = true; } }
       }
       const L = U.len || 1;
       if (u.P < 0 || u.P >= L) { const np = ((u.P % L) + L) % L, sh = np - u.P; u.P = np; if (u.drag) u.drag.cg += sh; if (u.anim) { u.anim.from += sh; u.anim.to += sh; } }
@@ -264,6 +278,8 @@
       if (f) u.anchor = { s: f, off: u.P - f.c, sec: f.sec };
       this.focusS = f;
       this.moving = now - u.restAt < 120 && now >= u.restAt;
+      const dp = this.pPrev == null ? 0 : Math.abs(this.wrapP(u.P - this.pPrev)) * u.z; this.pPrev = u.P;
+      this.spd = Math.max(dp, this.spd * 0.85);
       this.rkey = `${U.v}|${u.P.toFixed(2)}|${u.z.toFixed(4)}|${this.akey}|${Math.floor(now / 300000)}`;
     }
     // screen y of a tape offset d (tape px from the focus line), and back
@@ -281,7 +297,8 @@
       for (let k = 0; k < 48; k++) { const m = (lo + hi) / 2; if (this.ry(m) < y) lo = m; else hi = m; }
       return (lo + hi) / 2;
     }
-    wrapD(c) { const L = this.U.len || 1; const d = c - this.ui.P; return (((d + L / 2) % L) + L) % L - L / 2; }
+    wrapD(c) { return this.wrapP(c - this.ui.P); }
+    wrapP(d) { const L = this.U.len || 1; return (((d + L / 2) % L) + L) % L - L / 2; }
     place(s) {
       if (s._pk === this.rkey) return s._pl;
       const d0 = this.wrapD(s.c), y0 = this.ry(d0), y1 = this.ry(d0 + s.h), p = s._pl || (s._pl = {});
@@ -349,15 +366,28 @@
       }
       return out;
     }
-    // the market in focus: its details are fetched, and its book (outcome-0 token) is watched once it stays 0.3 s
+    // What the screen shows is fetched as it comes into view: details of the events in view (also while the ring turns
+    // at a readable speed) and, at rest, of 40 events either side; the book (outcome-0 token) of the market in focus once
+    // it stays 0.12 s. The books of its two neighbours either side and of the last 8 markets in focus stay watched, so
+    // stepping or turning back to them shows a live book at once.
     focusWork(now) {
-      const U = this.U, f = this.focusS;
-      if (!f) return;
-      if (!this.moving) for (const s of this.vis) if (s.kind === "ev" && !s.det && s._pl.h >= 6.5) U.want(s);
+      const U = this.U, f = this.focusS, R = U.ring, n = R.length, rest = !this.moving;
+      if (!f || !n) return;
+      if (rest || this.spd < 40) for (const s of this.vis) if (s.kind === "ev" && s.det !== 2 && s._pl.h >= 6.5) U.want(s, now);
+      if (rest && f !== this.nbS) {
+        this.nbS = f;
+        for (let k = 1; k <= 40; k++) for (const s of [R[(f.i + k) % n], R[(((f.i - k) % n) + n) % n]]) if (s.kind === "ev" && s.det !== 2) U.want(s, now);
+      }
+      // the book of where the ring is going (see prefetch) is asked for on the way, so it is there when the ring stops
+      const tokOf = (s) => { const m = s && s.kind === "ev" ? U.leads(s)[0] : null; return m && m.tk[0] ? m.tk[0] : null; }, pt = tokOf(this.pfS);
       if (f !== this.bookS) { this.bookS = f; this.bookAt = now; }
-      if (now - this.bookAt < 300 && now >= this.bookAt) return;
-      const m = f.kind === "ev" ? U.leads(f)[0] : null, tok = m && m.tk[0] ? m.tk[0] : null;
-      if (this.bookFor !== f || this.fTok !== tok) { this.bookFor = f; this.fTok = tok; U.watch(tok ? [tok] : []); }
+      if (now - this.bookAt >= 120 || now < this.bookAt) {
+        const tok = tokOf(f);
+        if (this.bookFor !== f || this.fTok !== tok) { this.bookFor = f; this.fTok = tok; if (tok) this.lru = [tok, ...this.lru.filter((t) => t !== tok)].slice(0, 8); }
+        if (rest) { const nb = []; for (const k of [-2, -1, 1, 2]) { const t = tokOf(R[(((f.i + k) % n) + n) % n]); if (t) nb.push(t); } this.nb = nb; this.pfS = null; }
+      }
+      const want = [...new Set([...(pt ? [pt] : []), ...this.lru, ...this.nb])], key = want.join(",");
+      if (key !== this.watchK) { this.watchK = key; U.watch(want); }
     }
 
     draw(now) {
@@ -398,8 +428,8 @@
     }
     // Layer A: background, grid and the wallet → bend half of every cooled thread; it does not move with the ring.
     // Layer B: A plus the bend → ring halves for one ring position. While the ring moves the frame shows A plus the ring
-    // halves of the newest cooled threads; when it rests, B is rebuilt in a back buffer, 1500 halves a frame. Both are
-    // rebuilt every 30 s as the trace ages.
+    // halves of the newest cooled threads; when it rests, B is rebuilt in a back buffer, 600 halves a frame (about 4 ms
+    // of software raster, so coming to rest does not stall a frame). Both are rebuilt every 30 s as the trace ages.
     newJob(kind, cv, now) {
       const d = this.o.dpr, c = cv.getContext("2d", { alpha: false }), list = [], lim = kind === "A" ? Infinity : this.aTo;
       if (kind === "A") { c.setTransform(d, 0, 0, d, 0, 0); c.fillStyle = "#060607"; c.fillRect(0, 0, this.W, this.g.mainH); this.grid(c); }
@@ -438,7 +468,7 @@
       if (!this.job && !this.moving && (this.bKey !== this.rkey || this.bOld)) { this.backB = fit(this.backB); this.job = this.newJob("B", this.backB, now); }
       const J = this.job;
       if (J && J.kind === "B" && (J.key !== this.rkey || this.moving)) this.job = null;   // the ring moved: start again when it rests
-      else if (J && this.step(J, this.o.sync ? Infinity : 1500, now)) {
+      else if (J && this.step(J, this.o.sync ? Infinity : 600, now)) {
         this.job = null;
         if (J.kind === "A") { J.c.setTransform(d, 0, 0, d, 0, 0); const last = catchUp(J.c, J.maxId, Infinity, false); const old = this.A; this.A = J.cv; this.backA = old; this.aAt = J.now; this.aTo = Math.max(J.maxId, last); this.bOld = true; }
         else { J.c.setTransform(d, 0, 0, d, 0, 0); catchUp(J.c, J.maxId, this.aTo, true); const old = this.B; this.B = J.cv; this.backB = old; this.bKey = J.key; this.bOld = false; }
@@ -456,26 +486,96 @@
         this.aTo = t.id;
       }
     }
-    transientB(ctx, now) {   // ring halves of the newest cooled threads while B does not match the ring
-      const T = this.E.trades, d = this.o.dpr, groups = new Map();
+    // ---- motion layers ------------------------------------------------------------------------------------------------
+    // What stays put while the ring turns is drawn over MK frames into a back buffer and swapped in whole: "hot" = the
+    // wallet → bend halves of the landed hot threads, with their bend → ring halves when these land deep in a portal;
+    // "deep" = the ring halves of the newest cooled threads that land deep in a portal (used while B does not match the
+    // ring). The frame then draws only what moves. A layer is dropped when the order or zoom changes, when the ring turned
+    // further than the layer allows, or when it is older than its ttl (its threads would cool or fade).
+    reach() { return 4 * MK * Math.max(this.spd, 8); }   // screen px the ring may turn while a layer is in use
+    // A squeezed slot moves 0.02·e^(−depth/900) px per px the ring turns: "deep" = it moves under half a pixel over D px.
+    deep(T, now, D) {
+      const s = this.slotOf(T, now);
+      if (!s) return false;
+      const g = this.g, z = this.ui.z, L = this.U.len || 1, d0 = this.wrapD(s.c), m = 900 * Math.log(Math.max(1, (0.02 * D) / 0.5));
+      if (Math.abs(d0) + s.h + D / z > L / 2) return false;   // on the far side a slot can switch ends
+      const yl = (dd) => { const x = dd * z; return g.yF + x + FK * erf(x / FS); };
+      return yl(d0 + s.h) < g.vt - m || yl(d0) > g.vb + m;
+    }
+    mlayer(name, now, make, chunk) {
+      const d = this.o.dpr, cw = Math.round(this.lw * d), ch = Math.round(this.g.mainH * d), u = this.ui;
+      const L = this.ml[name] || (this.ml[name] = { vis: null, job: null, spare: null });
+      const ok = (J) => J.v === this.U.v && Math.abs(u.z / J.z - 1) < 0.02 && Math.abs(this.wrapP(u.P - J.P)) * u.z <= J.D / 2 && now >= J.now && now - J.now < J.ttl;
+      if (L.job && !ok(L.job)) { L.spare = L.spare || L.job.cv; L.job = null; }
+      if (!L.job) {
+        const cv = L.spare || canvasOf(); L.spare = null;
+        if (cv.width !== cw || cv.height !== ch) { cv.width = cw; cv.height = ch; }
+        const c = cv.getContext("2d"); c.setTransform(1, 0, 0, 1, 0, 0); c.clearRect(0, 0, cw, ch);
+        L.job = Object.assign({ cv, c, i: 0, has: new Map(), now, v: this.U.v, z: u.z, P: u.P, D: this.reach(), ttl: 1000 }, make(now));
+        L.job.n = this.o.sync ? Infinity : Math.max(24, Math.ceil(L.job.list.length / MK));
+      }
+      const J = L.job, end = Math.min(J.list.length, J.i + J.n);
+      J.c.setTransform(d, 0, 0, d, 0, 0); chunk(J, J.i, end, now); J.i = end;
+      if (J.i >= J.list.length) { if (L.vis) L.spare = L.vis.cv; L.vis = J; L.job = null; }
+      return L.vis && ok(L.vis) ? L.vis : null;
+    }
+    hotList(now) {   // landed hot threads that will not cool while the layer is in use, oldest first
+      const T = this.E.trades, list = [];
       let i = T.length - 1;
       while (i >= 0 && now - T[i].rt < HOT) i--;
-      for (let k = 0; i >= 0 && k < 700; i--, k++) { const t = T[i], b = bucket(t, now - t.rt); let a = groups.get(b); if (!a) groups.set(b, (a = [])); a.push(t); }
+      for (i++; i < T.length; i++) { const t = T[i], age = now - t.rt; if (age >= 0 && t._fl != null && age >= t._fl && age < HOT - 700) list.push(t); }
+      return { list, ttl: 600 };
+    }
+    hotChunk(J, a, b, now) {
+      const c = J.c, d = this.o.dpr;
+      for (let k = a; k < b; k++) {
+        const t = J.list[k], G = this.geom(t, now);
+        if (!G) continue;
+        const h = Math.exp(-(now - t.rt) / 4500), z = szN(t.usd), deep = this.deep(t, now, J.D);
+        c.strokeStyle = rgba(t.up ? UP : DN, (0.06 + 0.56 * h) * (0.45 + 0.55 * z)); c.lineWidth = Math.min(1, 0.5 + 0.3 * z + 0.2 * h) / d;
+        c.beginPath(); deep ? tracePath(c, G) : traceA(c, G); c.stroke();
+        J.has.set(t, deep ? 2 : 1);
+      }
+    }
+    coolList(now) {   // the newest cooled threads, as transientB takes them
+      const T = this.E.trades, list = [];
+      let i = T.length - 1;
+      while (i >= 0 && now - T[i].rt < HOT) i--;
+      for (let k = 0; i >= 0 && k < 700; i--, k++) list.push(T[i]);
+      return { list };
+    }
+    coolChunk(J, a, b, now) {
+      const c = J.c, d = this.o.dpr, groups = new Map();
+      for (let k = a; k < b; k++) { const t = J.list[k]; if (!this.deep(t, now, J.D) || !this.geom(t, now)) continue; const q = bucket(t, now - t.rt); let r = groups.get(q); if (!r) groups.set(q, (r = [])); r.push(t); }
+      for (const [q, arr] of groups) { styleBucket(c, q, d); c.beginPath(); for (const t of arr) { traceB(c, this.geom(t, now)); J.has.set(t, 1); } c.stroke(); }
+    }
+    transientB(ctx, now) {   // ring halves of the newest cooled threads while B does not match the ring
+      const T = this.E.trades, d = this.o.dpr, groups = new Map();
+      const DL = this.mlayer("deep", now, (t0) => this.coolList(t0), (J, a, b, t1) => this.coolChunk(J, a, b, t1));
+      if (DL) ctx.drawImage(DL.cv, 0, 0, this.lw, this.g.mainH);
+      let i = T.length - 1;
+      while (i >= 0 && now - T[i].rt < HOT) i--;
+      for (let k = 0; i >= 0 && k < 700; i--, k++) { const t = T[i]; if (DL && DL.has.has(t)) continue; const b = bucket(t, now - t.rt); let a = groups.get(b); if (!a) groups.set(b, (a = [])); a.push(t); }
       for (const [b, arr] of groups) { styleBucket(ctx, b, d); ctx.beginPath(); for (const t of arr) { const G = this.geom(t, now); if (G) traceB(ctx, G); } ctx.stroke(); }
     }
     web(ctx, now) {
       const g = this.g, E = this.E, d = this.o.dpr, T = E.trades, fresh = [];
       let i0 = T.length, up = 0, dn = 0;
       while (i0 > 0 && now - T[i0 - 1].rt < HOT) i0--;
-      // hot threads (last 12 s), oldest first so the newest lie on top; brightness = recency × size
+      // hot threads (last 12 s), oldest first so the newest lie on top; brightness = recency × size. The motion layer
+      // holds what of them stays put while the ring turns; the frame draws the rest.
+      const HL = this.mlayer("hot", now, (t0) => this.hotList(t0), (J, a, b, t1) => this.hotChunk(J, a, b, t1));
+      if (HL) ctx.drawImage(HL.cv, 0, 0, this.lw, g.mainH);
       for (let i = i0; i < T.length; i++) {
         const t = T[i], age = now - t.rt;
         if (age < 0) continue;
         const G = this.geom(t, now);
         if (!G) continue;
-        const h = Math.exp(-age / 4500), z = szN(t.usd), col = t.up ? UP : DN, u = age < t._fl ? fly(age, t) : 1;
-        ctx.strokeStyle = rgba(col, (0.06 + 0.56 * h) * (0.45 + 0.55 * z)); ctx.lineWidth = Math.min(1, 0.5 + 0.3 * z + 0.2 * h) / d;
-        ctx.beginPath(); u < 1 ? tracePart(ctx, G, u) : tracePath(ctx, G); ctx.stroke();   // in flight the thread grows behind its spark
+        const h = Math.exp(-age / 4500), z = szN(t.usd), col = t.up ? UP : DN, u = age < t._fl ? fly(age, t) : 1, inL = HL ? HL.has.get(t) : 0;
+        if (inL !== 2) {
+          ctx.strokeStyle = rgba(col, (0.06 + 0.56 * h) * (0.45 + 0.55 * z)); ctx.lineWidth = Math.min(1, 0.5 + 0.3 * z + 0.2 * h) / d;
+          ctx.beginPath(); u < 1 ? tracePart(ctx, G, u) : inL ? traceB(ctx, G) : tracePath(ctx, G); ctx.stroke();   // in flight the thread grows behind its spark
+        }
         if (h > 0.25 && u >= 0.5) { const r = 0.8 + (1 + 2 * z) * h; ctx.fillStyle = rgba(col, 0.85 * h); ctx.fillRect(G[6] - r / 2, G[7] - r / 2, r, r); }
         if (age < t._fl + 700) fresh.push(t);
         if (age < 10000) { if (G[13] < g.vt) up++; else if (G[13] > g.vb) dn++; }
@@ -502,7 +602,8 @@
       for (const W of E.wallets.values()) {
         const age = now - W.last;
         if (age < 0 || age > E.cfg.threadAgeMs) continue;
-        const h = Math.exp(-age / 4500), y = g.top + hash(W.w) * (g.bottom - g.top), x = 8 + 16 * hash(W.w, 99), r = 0.9 + 0.45 * Math.log10(1 + W.usd) + 1.6 * h;
+        if (W._wk !== this.akey) { W._wk = this.akey; W._y = g.top + hash(W.w) * (g.bottom - g.top); W._x = 8 + 16 * hash(W.w, 99); }
+        const h = Math.exp(-age / 4500), y = W._y, x = W._x, r = 0.9 + 0.45 * Math.log10(1 + W.usd) + 1.6 * h;
         ctx.fillStyle = rgba(W.net >= 0 ? UP : DN, 0.3 + 0.65 * h); ctx.fillRect(x - r / 2, y - r / 2, r, r);
       }
       // top wallets: labels pushed apart so none overlap; a thin leader shows where the node really is
