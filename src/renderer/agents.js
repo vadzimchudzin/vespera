@@ -47,6 +47,7 @@
     arb_bundle: ["Арбитраж наборов", "Bundle arbitrage"], arb_ladder: ["Арбитраж лесенок", "Ladder arbitrage"],
     crypto_levels: ["Крипто-уровни", "Crypto levels"], weather: ["Погода", "Weather"], favorites: ["Фавориты", "Favourites"],
     resolution: ["Близкий итог", "Near resolution"], forecast: ["Прогнозист", "Forecaster"], maker: ["Мейкер (тень)", "Maker (shadow)"],
+    latency: ["Латентный арбитраж", "Latency arbitrage"], lp_rewards: ["LP с наградами", "LP with rewards"],
   };
   const typeName = (t) => (TYPES[t] ? pick(TYPES[t]) : String(t || "?"));
   const HALTS = { manual: ["ручная остановка", "manual stop"], daily_loss: ["дневной убыток", "daily loss"], drawdown: ["просадка от пика", "drawdown from the peak"] };
@@ -62,6 +63,7 @@
     brier_worse_than_market: ["прогнозы хуже рынка (Brier)", "forecasts worse than the market (Brier)"],
     retest_after_72h: ["повторная проверка через 72 ч", "retest after 72 h"], ai_plan: ["по плану ИИ", "on the AI's plan"],
     manual: ["вручную", "by hand"], initial: ["стартовый состав", "the starting roster"],
+    replaced_by_lp: ["заменён агентом «LP с наградами»", "replaced by LP with rewards"],
   };
   const noteText = (n) => { const v = /^variant_of_(a\d+)$/.exec(n || ""); return v ? say(`вариант ${v[1]}`, `a variant of ${v[1]}`) : NOTES[n] ? pick(NOTES[n]) : String(n || ""); };
   const REASONS = {
@@ -75,6 +77,11 @@
     agents_store_unwritable: ["Не удаётся записать файл агентов.", "The agents' file cannot be written."],
     agents_agent_not_found: ["Агент не найден.", "Agent not found."], agents_agent_not_active: ["Агент уже не в работе.", "The agent is not active."],
     agents_agent_not_paused: ["Агент не на паузе.", "The agent is not paused."],
+    agents_lane_no_websocket: ["Нет WebSocket для быстрой полосы.", "No WebSocket for the fast lane."],
+    agents_lane_no_markets: ["Нет подходящих рынков с наградами; новая попытка через 10 минут.", "No suitable reward markets; another try in 10 minutes."],
+    agents_lane_universe_failed: ["Не удалось собрать рынки с наградами; новая попытка через 10 минут.", "Could not build the reward markets; another try in 10 minutes."],
+    agents_lane_poll_failed: ["Сбой опроса стаканов; полоса продолжает.", "A book poll failed; the lane goes on."],
+    agents_lane_store_failed: ["Не удаётся записать счёт полосы.", "The lane's ledger cannot be written."],
     not_server_owner: ["Сервер сейчас не ведёт исполнение.", "The server does not own execution now."],
     handoff_pending: ["Идёт передача между компьютером и сервером.", "A handoff between the desktop and the server is in progress."],
     remote_unavailable: ["Сервер недоступен.", "The server is unavailable."],
@@ -102,6 +109,11 @@
       case "roster": return `${say("Состав", "Roster")} · ${who}: ${OPS[r.op] ? pick(OPS[r.op]) : r.op}${r.reason ? ` — ${noteText(r.reason)}` : ""}`;
       case "ai": return `${say("ИИ", "AI")} · ${r.task}${r.answered != null ? `: ${r.answered}/${r.asked}` : ""}${Array.isArray(r.applied) && r.applied.length ? `: ${r.applied.join(", ")}` : ""} · ${usd(r.costUsd, 4)}`;
       case "ai_error": return `${say("ИИ: ошибка", "AI error")} ${r.code || ""}`;
+      case "lane":
+        if (r.op === "start") return `${who}: ${say("запущен", "started")}`;
+        if (r.op === "stop") return `${who}: ${say("остановлен", "stopped")}`;
+        if (r.op === "day_stop") return `${who}: ${say(`дневной лимит убытка ${signed(r.limit)} — пауза до конца суток UTC`, `daily loss limit ${signed(r.limit)} — paused until the UTC day ends`)}`;
+        return `${who} · ${say("за час", "the hour")}: ${signed(r.pnl)} · ${say("сделок", "trades")} ${r.trades ?? 0}`;
       default: return String(r.kind || "");
     }
   }
@@ -214,7 +226,10 @@
       a.about ? h("div", { class: "ag-about" }, a.about) : null,
       h("div", { class: "ag-stats" }, stat("P&L", signed(a.pnl), tone(a.pnl)), stat(say("сделок", "trades"), a.trades),
         stat(say("закрыто", "settled"), `${a.settled} (${a.wins} ✓)`), stat(say("открыто", "open"), `${a.open} · ${usd(a.exposure)}`),
-        a.brier != null ? stat("Brier", `${a.brier.toFixed(3)} · ${say("рынок", "market")} ${a.marketBrier != null ? a.marketBrier.toFixed(3) : "—"}`) : null))));
+        a.brier != null ? stat("Brier", `${a.brier.toFixed(3)} · ${say("рынок", "market")} ${a.marketBrier != null ? a.marketBrier.toFixed(3) : "—"}`) : null,
+        a.lane ? stat(say("за сутки", "today"), signed(a.lane.dayPnl), tone(a.lane.dayPnl)) : null,
+        a.lane ? stat(say("полоса", "lane"), a.lane.error ? reason(a.lane.error) : a.lane.dayStopped ? say("дневной лимит", "daily limit")
+          : a.lane.running ? say("работает", "running") : say("ждёт старта стола", "waits for the desk")) : null))));
   }
 
   function positionsEl(s) {

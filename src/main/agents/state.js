@@ -14,7 +14,7 @@ const DEFAULT_CONFIG = Object.freeze({
   mode: "paper", capitalUsd: 1000, perTradeUsd: 25, perMarketUsd: 50, perEventUsd: 100,
   sectorMaxPct: 30, exposureMaxPct: 80, dailyLossPct: 5, drawdownPct: 15,
   kellyFraction: 0.25, minEdgePct: 2, arbMinPct: 0.5, arbMinUsd: 0.1,
-  maxAgents: 8, agentCapitalPct: 15,
+  maxAgents: 9, agentCapitalPct: 15,
   aiEnabled: true, aiDailyUsd: 1, aiEveryMin: 30,
   topEvents: 300, refreshMin: 30,
   notifyTrades: true, digestMin: 60, reportHourUtc: 6,

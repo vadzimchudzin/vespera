@@ -19,3 +19,11 @@ and paper3 (d) over the same period, to isolate the effect of re-quote speed. Sa
 Motivation (from the first 30 min, same 300 markets): 60 s re-quote variants net ~0 (MTM losses mostly from stale quotes
 crossed by the book), 10 s variants net positive. lp/paper5 = paper_lp4.js with POLL_MS=3000 on the same paper4 universe,
 variants g and h unchanged (robust median over ~1 min, 10-min vol filter). Same pass criterion.
+
+## Addendum C (frozen 2026-11-05 16:16 UTC, at the start of the run): news shield
+- Variant `hs` = `h` + shield. Shock = an RTDS taker trade in the market at >= 0.5*v from the last scoring mid, or one-sided
+  taker volume >= 3x our quote size within 30 s. On a shock: pull our quotes in that market and in every universe market of
+  the same event, effective 250 ms later (trades inside 250 ms still fill), no quotes and no rewards for 5 min.
+- Run: 3 s re-quote, fresh top-300 universe (built 16:15 UTC), variants g, h, hs side by side.
+- Hypothesis: hs net (pessimistic rewards + MTM) per day > h on the same markets. Test after >= 24 h: paired difference
+  by market, t > 2, and hs net > 0. Report shocks per day, share of time pulled and rewards given up.

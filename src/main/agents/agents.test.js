@@ -470,7 +470,17 @@ async function main() {
   {
     const roster = R.defaultRoster(NOW);
     assert.deepStrictEqual(roster.map((a) => a.type), Object.keys(R.TYPES));
-    assert.strictEqual(R.nextId(roster), "a9");
+    assert.strictEqual(R.nextId(roster), "a11");
+    assert.deepStrictEqual(roster.slice(7).map((a) => [a.id, a.type, a.status, a.note]),
+      [["a8", "maker", "retired", "replaced_by_lp"], ["a9", "latency", "active", null], ["a10", "lp_rewards", "active", null]], "LP with rewards replaces the shadow maker");
+    assert.strictEqual(R.ensureLanes(roster, NOW), false);
+    // a roster saved before the fast lanes: they join with the next ids and the shadow maker retires
+    const old = Object.keys(R.TYPES).filter((t) => !R.LANE_TYPES.includes(t)).map((type, i) => ({ ...R.defaultRoster(NOW)[i], status: "active", note: null, pausedAt: null }));
+    assert.deepStrictEqual(old.map((a) => a.type).slice(-1), ["maker"]);
+    assert.strictEqual(R.ensureLanes(old, NOW + 1), true);
+    assert.deepStrictEqual(old.slice(7).map((a) => [a.id, a.type, a.status, a.note]),
+      [["a8", "maker", "retired", "replaced_by_lp"], ["a9", "latency", "active", null], ["a10", "lp_rewards", "active", null]]);
+    assert.strictEqual(R.ensureLanes(old, NOW + 2), false, "once");
     const loss = { a1: { pnl: -50, settled: 3 } };   // 30% of the agent's $150
     const acts = R.evaluateRoster(roster, loss, cfg, NOW);
     assert.deepStrictEqual(acts, [{ op: "pause", agentId: "a1", reason: "loss_30" }]);
@@ -491,9 +501,10 @@ async function main() {
     assert.deepStrictEqual(R.evaluateRoster(manual, {}, cfg, NOW), [], "a manual pause is never lifted by the rules");
 
     const roster2 = R.defaultRoster(NOW);
-    const spawn = R.evaluateRoster(roster2, { a5: { pnl: 10, settled: 25 } }, { ...cfg, maxAgents: 9 }, NOW);
+    assert.deepStrictEqual(R.evaluateRoster(roster2, { a5: { pnl: 10, settled: 25 } }, cfg, NOW), [], "nine agents fill the nine default slots");
+    const spawn = R.evaluateRoster(roster2, { a5: { pnl: 10, settled: 25 } }, { ...cfg, maxAgents: 10 }, NOW);
     assert.deepStrictEqual(spawn, [{ op: "spawn", type: "favorites", params: R.VARIANTS.favorites, reason: "variant_of_a5" }]);
-    assert.strictEqual(R.applyRoster(roster2, spawn[0], NOW).id, "a9");
+    assert.strictEqual(R.applyRoster(roster2, spawn[0], NOW).id, "a11");
     assert.strictEqual(R.allowSuggestion({ op: "pause", agent: "a2" }, roster2, cfg, NOW).ok, true);
     assert.strictEqual(R.allowSuggestion({ op: "resume", agent: "a2" }, roster2, cfg, NOW).reason, "not_paused");
     assert.strictEqual(R.allowSuggestion({ op: "spawn", agent: "favorites" }, roster2, cfg, NOW).reason, "no_slot");

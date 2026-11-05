@@ -90,7 +90,7 @@ async function main() {
     const { desk, alerts, events, root } = makeDesk(w, { clock });
     let s = desk.status();
     assert.deepStrictEqual([s.ok, s.mode, s.running, s.equity, s.agents.length, s.agents[0].capital, s.ai.available, s.ai.reason],
-      [true, "paper", false, 1000, 8, 150, false, "ai_unavailable"]);
+      [true, "paper", false, 1000, 10, 150, false, "ai_unavailable"]);
     assert.ok(!fs.existsSync(root), "nothing is written before a command or a tick");
     assert.strictEqual(desk.idle(), true);
     assert.strictEqual(await desk.tick(), true);

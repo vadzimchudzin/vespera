@@ -25,6 +25,7 @@ const REASONS = {
   retest_after_72h: ["повторная проверка через 72 ч", "retest after 72 h"],
   ai_plan: ["по плану ИИ", "on the AI's plan"],
   manual: ["вручную", "by hand"],
+  replaced_by_lp: ["заменён агентом «LP с наградами»", "replaced by LP with rewards"],
 };
 const reasonText = (reason, locale) => {
   if (REASONS[reason]) return say(locale, ...REASONS[reason]);

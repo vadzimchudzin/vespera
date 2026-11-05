@@ -27,7 +27,15 @@ const TYPES = Object.freeze({
   maker: { kind: "shadow", ai: false, ru: "Мейкер (тень)", en: "Maker (shadow)",
     about: { ru: "Виртуальные заявки у лучшей цены на рынках с наградами; исполнение засчитывается только при проходе цены сквозь заявку. Награды не считаются.",
       en: "Virtual quotes at the best price on reward markets; a fill counts only when the price trades through the quote. Rewards are not counted." } },
+  latency: { kind: "fast", ai: false, ru: "Латентный арбитраж", en: "Latency arbitrage",
+    about: { ru: "Скачок BTC на Binance больше 2 б.п. за 1 с: покупка стороны скачка в Up/Down 5m по лучшему ask через 150 мс, продажа по bid через 10 с, обе комиссии. Правило заморожено и прошло проверку вне выборки.",
+      en: "A Binance BTC jump of more than 2 bps within 1 s: buys the jump side of the Up/Down 5m market at the best ask 150 ms later and sells at the bid 10 s later, both fees paid. The rule is frozen and passed an out-of-sample test." } },
+  lp_rewards: { kind: "fast", ai: false, ru: "LP с наградами", en: "LP with rewards",
+    about: { ru: "Двусторонние заявки на рынках с наградами, перекотировка каждые несколько секунд, новостной щит снимает заявки при резком движении. Награды по формуле Polymarket с осторожной долей, исполнения по сделкам и пересечению стакана.",
+      en: "Two-sided quotes on reward markets re-quoted every few seconds; a news shield pulls them on a sharp move. Rewards by Polymarket's formula with a cautious share; fills from trades and book crossings." } },
 });
+// Types that run in their own fast lane (lanes.js) rather than on the one-minute tick.
+const LANE_TYPES = Object.freeze(["latency", "lp_rewards"]);
 
 const DEFAULT_PARAMS = Object.freeze({
   favorites: { minPrice: 0.9, maxPrice: 0.98, maxDays: 7, bias: 0.015, minEdge: 0.005 },
@@ -50,8 +58,27 @@ const BRIER_TYPES = new Set(["crypto_levels", "weather", "resolution", "forecast
 function agentFrom(type, id, now, params = DEFAULT_PARAMS[type] || {}, note = null) {
   return { id, type, status: "active", params: { ...params }, createdAt: now, pausedAt: null, pauses: 0, note };
 }
+// The shadow maker (no rewards, fills only on a trade-through) gave way to LP with rewards: it keeps its id and its
+// open positions settle, but it no longer quotes.
+function retireShadowMaker(agent, now) {
+  Object.assign(agent, { status: "retired", pausedAt: now, note: "replaced_by_lp" });
+}
 function defaultRoster(now) {
-  return Object.keys(TYPES).map((type, i) => agentFrom(type, `a${i + 1}`, now));
+  const roster = Object.keys(TYPES).map((type, i) => agentFrom(type, `a${i + 1}`, now));
+  for (const a of roster) if (a.type === "maker") retireShadowMaker(a, now);
+  return roster;
+}
+// A roster saved before the fast lanes existed gets one agent of each lane type, and its shadow maker retires;
+// true when it changed.
+function ensureLanes(roster, now) {
+  let changed = false;
+  for (const type of LANE_TYPES) {
+    if (roster.some((a) => a.type === type)) continue;
+    roster.push(agentFrom(type, nextId(roster), now));
+    if (type === "lp_rewards") for (const a of roster) if (a.type === "maker" && a.status !== "retired") retireShadowMaker(a, now);
+    changed = true;
+  }
+  return changed;
 }
 function nextId(roster) {
   return `a${roster.reduce((max, a) => Math.max(max, Number(a.id.slice(1)) || 0), 0) + 1}`;
@@ -128,4 +155,4 @@ function applyRoster(roster, action, now) {
   return agent;
 }
 
-module.exports = { TYPES, DEFAULT_PARAMS, VARIANTS, STATUSES, defaultRoster, evaluateRoster, allowSuggestion, applyRoster, nextId };
+module.exports = { TYPES, DEFAULT_PARAMS, VARIANTS, STATUSES, LANE_TYPES, defaultRoster, evaluateRoster, allowSuggestion, applyRoster, nextId, ensureLanes };

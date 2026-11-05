@@ -18,6 +18,7 @@ const { PaperBook, freshBook, MAX_OPEN } = require("./paper");
 const { capacity, haltCheck, limitName, MAX_PER_MATCH, matchCount } = require("./risk");
 const R = require("./roster");
 const { Brain } = require("./brain");
+const { createLanes } = require("./lanes");
 const { DEFAULT_CONFIG, LIMITS, fail, isRecord, num, dayKey, validateConfig, initialState, validateState } = require("./state");
 
 const TICK_MS = 60000;
@@ -66,7 +67,7 @@ async function eachLimit(items, limit, work) {
 }
 
 class AgentDesk {
-  constructor({ root, ai = null, net = null, now = () => Date.now(), onEvent = () => {}, locale = () => "en", tickMs = TICK_MS, autoTick = true } = {}) {
+  constructor({ root, ai = null, net = null, now = () => Date.now(), onEvent = () => {}, locale = () => "en", tickMs = TICK_MS, autoTick = true, lanes } = {}) {
     if (!root) throw new TypeError("root is required");
     this.root = path.resolve(root);
     this.file = path.join(this.root, "desk.json");
@@ -98,6 +99,11 @@ class AgentDesk {
     this.emittedAt = 0;
     this.error = null;
     this._load();
+    // The fast lanes (latency arbitrage, LP with rewards) trade on their own sockets and timers. They run only while
+    // the desk ticks by itself (active, auto-tick), runs, is not halted and has an active agent of their type.
+    this.lanes = lanes === undefined
+      ? createLanes({ root: path.join(this.root, "lanes"), net: this.net, now, onEvent: (row) => this._laneEvent(row) })
+      : lanes || {};
   }
 
   say(ru, en) { return this.locale() === "ru" ? ru : en; }
@@ -116,6 +122,7 @@ class AgentDesk {
     // a damaged store is never written over: the desk shows the error and waits for a confirmed reset
     if (!this.state) this.state = initialState(DEFAULT_CONFIG, this.now());
     if (this.error) this.state.running = false;
+    else if (R.ensureLanes(this.state.roster, this.now())) this.dirty = true;   // a desk saved before the fast lanes
     this.book = new PaperBook(this.state.book);
     this.tail = this._readTail();
   }
@@ -180,6 +187,55 @@ class AgentDesk {
 
   _sourceError(name, error) { this.sourceErrors[name] = { code: codeOf(error, "agents_source_unavailable"), at: this.now() }; }
 
+  // --- fast lanes -------------------------------------------------------------------------------------------------
+  _laneOf(type) { return this.lanes && Object.prototype.hasOwnProperty.call(this.lanes, type) ? this.lanes[type] : null; }
+
+  // The agent a lane books to: the first of its type that is not retired, else the first of its type.
+  _laneAgent(type) {
+    const of = this.state.roster.filter((a) => a.type === type);
+    return of.find((a) => a.status !== "retired") || of[0] || null;
+  }
+
+  _laneStatus() {
+    const out = {};
+    for (const [type, lane] of Object.entries(this.lanes || {})) {
+      try { out[type] = lane.status(); } catch { out[type] = { type, running: false, error: "agents_lane_status_failed", pnl: 0, dayPnl: 0, trades: 0, settled: 0, wins: 0, open: 0, exposure: 0 }; }
+    }
+    return out;
+  }
+
+  // The paper book plus what the lanes made: the equity behind the P&L, the limits and the stops.
+  _equity(lanes = this._laneStatus()) {
+    return this.book.equity() + sum(Object.values(lanes), (l) => (Number.isFinite(l.pnl) ? l.pnl : 0));
+  }
+
+  _laneEvent(row) {
+    const agent = this._laneAgent(row.lane);
+    this._journal({ kind: "lane", op: "hour", agentId: agent ? agent.id : null, type: row.lane, ...row });
+  }
+
+  // Starts each lane whose agent is active while the desk works, stops the rest; restart applies new limits.
+  _lanesSync({ restart = false } = {}) {
+    if (!this.lanes) return;
+    const st = this.state, cfg = st.config;
+    const on = this.active && this.autoTick && !this.disposed && !this.error && st.running && !st.halt;
+    for (const [type, lane] of Object.entries(this.lanes)) {
+      const agent = st.roster.find((a) => a.type === type && a.status === "active");
+      try {
+        if (lane.running && (restart || !on || !agent)) {
+          lane.stop();
+          this._journal({ kind: "lane", op: "stop", agentId: agent ? agent.id : this._laneAgent(type)?.id || null, type });
+        }
+        if (on && agent && !lane.running) {
+          lane.start({ capitalUsd: (cfg.agentCapitalPct / 100) * cfg.capitalUsd, perTradeUsd: cfg.perTradeUsd, perMarketUsd: cfg.perMarketUsd, params: { ...agent.params } });
+          if (lane.running) this._journal({ kind: "lane", op: "start", agentId: agent.id, type });
+        }
+      } catch (error) { this._sourceError(`lane_${type}`, error); }
+    }
+  }
+
+  _laneTrades() { return sum(Object.values(this._laneStatus()), (l) => l.trades || 0); }
+
   // --- views ------------------------------------------------------------------------------------------------------
   _stats() {
     const st = this.state, b = st.book, out = {};
@@ -194,6 +250,18 @@ class AgentDesk {
         open: open.length, exposure: r2(sum(open, (p) => p.cost + p.fees)),
         brier: br && br.n ? r4(br.sum / br.n) : null, marketBrier: br && br.n ? r4(br.market / br.n) : null, brierN: br ? br.n : 0,
       };
+    }
+    const lanes = this._laneStatus();
+    for (const [type, l] of Object.entries(lanes)) {
+      const agent = this._laneAgent(type);
+      if (!agent || !out[agent.id]) continue;
+      const o = out[agent.id];
+      Object.assign(o, {
+        pnl: r2(o.pnl + l.pnl), realized: r2(o.realized + (l.realized || 0)), unrealized: r2(o.unrealized + (l.unrealized || 0)),
+        trades: o.trades + (l.trades || 0), settled: o.settled + (l.settled || 0), wins: o.wins + (l.wins || 0),
+        open: o.open + (l.open || 0), exposure: r2(o.exposure + (l.exposure || 0)),
+        lane: { running: Boolean(l.running), error: l.error || null, dayPnl: l.dayPnl || 0, dayStopped: Boolean(l.dayStopped) },
+      });
     }
     return out;
   }
@@ -217,13 +285,14 @@ class AgentDesk {
   }
 
   _brief() {
-    const st = this.state, b = st.book, equity = this.book.equity();
+    const st = this.state, b = st.book, lanes = this._laneStatus(), equity = this._equity(lanes);
     return {
       ok: true, mode: "paper", running: st.running, active: this.active, halt: st.halt ? { ...st.halt } : null, error: this.error,
       equity: r2(equity), cash: r2(b.cash), startCapital: b.startCapital, pnl: r2(equity - b.startCapital), pnlPct: r4((equity - b.startCapital) / b.startCapital),
       dayPnl: r2(equity - b.dayStartEquity), peakEquity: r2(b.peakEquity), drawdownPct: b.peakEquity > 0 ? r4(Math.max(0, 1 - equity / b.peakEquity)) : 0,
-      exposure: r2(this.book.exposure()), openPositions: b.positions.length, trades: b.trades, feesPaid: r2(b.feesPaid),
-      settled: sum(Object.values(st.counts), (c) => c.settled),
+      exposure: r2(this.book.exposure() + sum(Object.values(lanes), (l) => l.exposure || 0)), openPositions: b.positions.length,
+      trades: b.trades + sum(Object.values(lanes), (l) => l.trades || 0), feesPaid: r2(b.feesPaid + sum(Object.values(lanes), (l) => l.fees || 0)),
+      settled: sum(Object.values(st.counts), (c) => c.settled) + sum(Object.values(lanes), (l) => l.settled || 0),
       lastTickAt: this.lastTickAt, universe: { events: this.universe.length, markets: sum(this.universe, (ev) => ev.markets.length), at: this.universeAt || null },
       ai: this._aiStatus(),
     };
@@ -249,7 +318,7 @@ class AgentDesk {
           status: a.status, note: a.note, params: { ...a.params }, createdAt: a.createdAt, pausedAt: a.pausedAt, capital, ...stats[a.id],
         })),
         positions: this._positionsView(200), candidates: this.candidates.slice(0, 40), journal: this.tail.slice(-60).reverse(),
-        sources: { ...this.sourceErrors },
+        sources: { ...this.sourceErrors }, lanes: this._laneStatus(),
       };
     } catch (error) {
       return { ok: false, reason: codeOf(error, "agents_status_failed") };
@@ -283,9 +352,19 @@ class AgentDesk {
     const closed = b.closed.filter((p) => p.closedAt >= from);
     const opened = [...b.positions, ...b.closed].filter((p) => p.openedAt >= from);
     const tradesOf = (id) => new Set(opened.filter((p) => p.agentId === id).map((p) => p.group || p.id)).size;   // a bundle is one trade
+    const laneRows = {};
+    for (const [type, lane] of Object.entries(this.lanes || {})) {
+      const agent = this._laneAgent(type);
+      if (agent && typeof lane.period === "function") { try { laneRows[agent.id] = lane.period(from, now); } catch { /* the report goes on without it */ } }
+    }
     const agents = st.roster.map((a) => {
       const mine = closed.filter((p) => p.agentId === a.id);
-      const s = stats[a.id];
+      const s = stats[a.id], ln = laneRows[a.id];
+      if (ln && period !== "all") {
+        return { id: a.id, type: a.type, status: a.status, trades: tradesOf(a.id) + ln.trades, settled: mine.length + ln.settled,
+          wins: mine.filter((p) => p.pnl > 0).length + ln.wins, realized: r2(sum(mine, (p) => p.pnl) + ln.pnl),
+          fees: r2(sum(opened.filter((p) => p.agentId === a.id), (p) => p.fees) + ln.fees), brier: s.brier, marketBrier: s.marketBrier, open: s.open };
+      }
       return period === "all"
         ? { id: a.id, type: a.type, status: a.status, trades: s.trades, settled: s.settled, wins: s.wins, realized: s.realized, fees: null, brier: s.brier, marketBrier: s.marketBrier, open: s.open }
         : { id: a.id, type: a.type, status: a.status, trades: tradesOf(a.id), settled: mine.length, wins: mine.filter((p) => p.pnl > 0).length,
@@ -293,9 +372,10 @@ class AgentDesk {
     });
     const totals = {
       trades: sum(agents, (a) => a.trades), settled: sum(agents, (a) => a.settled), wins: sum(agents, (a) => a.wins),
-      realized: r2(sum(agents, (a) => a.realized)), fees: period === "all" ? r2(b.feesPaid) : r2(sum(agents, (a) => a.fees || 0)),
+      realized: r2(sum(agents, (a) => a.realized)),
+      fees: period === "all" ? r2(b.feesPaid + sum(Object.values(this._laneStatus()), (l) => l.fees || 0)) : r2(sum(agents, (a) => a.fees || 0)),
     };
-    const equity = this.book.equity();
+    const equity = this._equity();
     return {
       ok: true, period, from, to: now, equity: r2(equity), startCapital: b.startCapital, pnl: r2(equity - b.startCapital), totals, agents,
       ai: { calls: st.ai.calls, spentUsd: r4(st.ai.spentUsd) }, halt: st.halt ? { ...st.halt } : null,
@@ -315,13 +395,14 @@ class AgentDesk {
     const st = this.state;
     const next = validateConfig(patch, st.config);
     if (next.capitalUsd !== st.config.capitalUsd) {
-      if (st.book.trades > 0 || st.book.positions.length) throw fail("agents_reset_required");
+      if (st.book.trades > 0 || st.book.positions.length || this._laneTrades() > 0) throw fail("agents_reset_required");
       st.book = freshBook(next.capitalUsd, this.now());
       this.book = new PaperBook(st.book);
     }
     const changed = Object.keys(next).filter((key) => next[key] !== st.config[key]);
     st.config = next;
     if (changed.length) this._journal({ kind: "config", changed });
+    if (changed.some((key) => ["capitalUsd", "agentCapitalPct", "perTradeUsd", "perMarketUsd"].includes(key))) this._lanesSync({ restart: true });
     this._save(true);
     this._emit(true);
     return this.status();
@@ -338,6 +419,7 @@ class AgentDesk {
       this._save(true);
       this._kick();
     }
+    this._lanesSync();
     this._emit(true);
     return this.status();
   }
@@ -350,6 +432,7 @@ class AgentDesk {
       this._journal({ kind: "stop", by: who(by) });
       this._save(true);
     }
+    this._lanesSync();
     this._emit(true);
     return this.status();
   }
@@ -364,6 +447,7 @@ class AgentDesk {
       this._journal({ kind: "halt", reason: "manual", by: who(by) });
       this._alert({ kind: "halt", halt: { ...st.halt } });
     }
+    this._lanesSync();
     this._save(true);
     this._emit(true);
     return this.status();
@@ -376,7 +460,7 @@ class AgentDesk {
     const st = this.state, from = who(by);
     if (st.halt) {
       if (from === "telegram" && st.halt.reason !== "manual") throw fail("agents_halt_desktop_only");
-      const equity = this.book.equity();
+      const equity = this._equity();
       if (st.halt.reason === "drawdown") st.book.peakEquity = equity;
       if (st.halt.reason === "daily_loss") st.book.dayStartEquity = equity;
       this._journal({ kind: "halt_clear", reason: st.halt.reason, by: from });
@@ -388,6 +472,7 @@ class AgentDesk {
     }
     this._save(true);
     this._kick();
+    this._lanesSync();
     this._emit(true);
     return this.status();
   }
@@ -404,6 +489,7 @@ class AgentDesk {
       Object.assign(agent, { status: "active", pausedAt: null, note: "manual" });
     } else throw fail("agents_action_invalid");
     this._journal({ kind: "roster", op: action, agentId: agent.id, type: agent.type, reason: "manual", by: "ui" });
+    this._lanesSync();
     this._save(true);
     this._emit(true);
     return this.status();
@@ -421,6 +507,9 @@ class AgentDesk {
       this.error = null;
     }
     this.epoch += 1;
+    for (const [type, lane] of Object.entries(this.lanes || {})) {
+      try { lane.reset(); } catch (error) { this._sourceError(`lane_${type}`, error); }
+    }
     this.state = initialState(config, this.now());
     this.book = new PaperBook(this.state.book);
     this.candidates = [];
@@ -446,6 +535,7 @@ class AgentDesk {
       this.kickTimer = null;
       this._save();
     }
+    this._lanesSync();
     this._emit(true);
     return next;
   }
@@ -465,6 +555,7 @@ class AgentDesk {
     clearTimeout(this.kickTimer);
     this.timer = null;
     this.kickTimer = null;
+    for (const lane of Object.values(this.lanes || {})) { try { lane.stop(); } catch { /* disposing */ } }
     if (!this.disposed) this._save();
     this.active = false;
     this.disposed = true;
@@ -495,6 +586,7 @@ class AgentDesk {
     const st = this.state;
     let now = this.now();
     this._dayRoll(now);
+    this._lanesSync();
     const working = st.running && !st.halt;
     const holding = st.book.positions.length > 0;
     if (!working && !holding) {
@@ -524,6 +616,7 @@ class AgentDesk {
       this._settle(resolutions, now);
     }
     this._halt(now);
+    this._lanesSync();
     if (st.running && !st.halt) {
       this._execute(candidates, books, now);
       this._maker(books, now);
@@ -540,7 +633,7 @@ class AgentDesk {
     if (st.ai.day !== day) Object.assign(st.ai, { day, spentUsd: 0, calls: 0 });
     if (st.book.day === day) return;
     st.book.day = day;
-    st.book.dayStartEquity = this.book.equity();
+    st.book.dayStartEquity = this._equity();
     if (st.halt && st.halt.reason === "daily_loss") {
       this._journal({ kind: "halt_clear", reason: "daily_loss", by: "new_day" });
       st.halt = null;
@@ -752,7 +845,7 @@ class AgentDesk {
   }
 
   _halt(now) {
-    const st = this.state, equity = this.book.equity();
+    const st = this.state, equity = this._equity();
     if (equity > st.book.peakEquity) st.book.peakEquity = r6(equity);
     if (st.halt) return;
     const h = haltCheck({ config: st.config, equity, dayStartEquity: st.book.dayStartEquity, peakEquity: st.book.peakEquity });
@@ -817,7 +910,7 @@ class AgentDesk {
       const agent = st.roster.find((a) => a.id === c.agentId);
       if (!agent || agent.status !== "active") { view.verdict = "skipped"; continue; }
       const arbitrage = isArb(c);
-      const cap = capacity({ config: cfg, book: this.book, equity: this.book.equity(), agentId: agent.id, event: c.event, market: arbitrage ? null : c.market, arbitrage });
+      const cap = capacity({ config: cfg, book: this.book, equity: this._equity(), agentId: agent.id, event: c.event, market: arbitrage ? null : c.market, arbitrage });
       let res;
       const refused = arbitrage ? null : this._precheck(c, agent, books, say);
       if (cap.usd < 1) res = { skip: say(`лимит «${limitName(cap.binding)}» исчерпан`, `limit "${limitName(cap.binding, true)}" used up`) };
@@ -883,7 +976,7 @@ class AgentDesk {
       const { fills, quote } = SC.makerStep(st.maker[market.id] || null, book, market, { size, maxShares, inventory, now });
       for (const f of fills) {
         const fill = { shares: f.shares, cost: r6(f.shares * f.price), fees: 0, avg: f.price, worst: f.price };
-        const cap = capacity({ config: cfg, book: this.book, equity: this.book.equity(), agentId: agent.id, event, market });
+        const cap = capacity({ config: cfg, book: this.book, equity: this._equity(), agentId: agent.id, event, market });
         if (fill.cost > cap.usd || fill.cost > st.book.cash || st.book.positions.length >= MAX_OPEN) continue;
         const position = this.book.open({ agentId: agent.id, type: "maker", src: `mk:${market.id}`, event, market, side: f.side, fill, now });
         const counts = st.counts[agent.id] || (st.counts[agent.id] = { trades: 0, settled: 0, wins: 0 });
@@ -1047,7 +1140,7 @@ class AgentDesk {
     st.ai.lastPlanAt = now;
     this.dirty = true;
     const stats = this._stats();
-    const summary = { equity: this.book.equity(), capital: st.config.capitalUsd, variants: Object.keys(R.VARIANTS),
+    const summary = { equity: this._equity(), capital: st.config.capitalUsd, variants: Object.keys(R.VARIANTS),
       agents: st.roster.filter((a) => a.status !== "retired").map((a) => ({ id: a.id, type: a.type, status: a.status, ...stats[a.id] })) };
     const out = await this.brain.plan(summary, now);
     if (!this._current(epoch)) return;

@@ -7,7 +7,8 @@
 const fs = require('node:fs'), path = require('node:path');
 const U = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 const OUT = process.argv[3]; fs.mkdirSync(OUT, { recursive: true });
-const VARIANTS = [{ id: 'g', k: 1 / 3, robust: true, volf: true, skew: true }, { id: 'h', k: 1 / 3, robust: true, center: true, tight: 0.25, volf: true, skew: true }];
+const VARIANTS = [{ id: 'g', k: 1 / 3, robust: true, volf: true, skew: true }, { id: 'h', k: 1 / 3, robust: true, center: true, tight: 0.25, volf: true, skew: true },
+  { id: 'hs', k: 1 / 3, robust: true, center: true, tight: 0.25, volf: true, skew: true, shield: true }]; // hs = h + news shield
 const POLL = +(process.env.POLL_MS || 10000), RAWN = Math.round(600000 / POLL), FVN = Math.max(5, Math.round(60000 / POLL)); // 10-min history, ~1-min robust median
 const MAXINV = 4; // inventory cap, multiples of quote size
 const EPS = 1e-9;
@@ -18,6 +19,18 @@ for (const m of U) {
   m.st = {};
   for (const V of VARIANTS) m.st[V.id] = saved?.m?.[m.cid]?.[V.id] || { bid: null, ask: null, cash: 0, inv: 0, nf: 0, fq: 0, rA: 0, rP: 0, ns: 0, nq: 0, capMax: 0 };
   m.mid = saved?.mid?.[m.cid] ?? null; m.mk = saved?.mk?.[m.cid] ?? null; m.raw = saved?.raw?.[m.cid] || []; byCid.set(m.cid, m);
+}
+// news shield (variant hs): a trade shock in a market pulls our quotes there and in its event siblings for SH_MS,
+// effective SH_REACT ms after the shock (trades inside that window still fill us).
+const SH_MS = 300000, SH_REACT = 250, byEv = new Map();
+for (const m of U) { m.shUntil = saved?.sh?.[m.cid] || 0; m.tb = []; const k = m.ev || m.cid; if (!byEv.has(k)) byEv.set(k, []); byEv.get(k).push(m); }
+function shock(m, now, px, side, one) {
+  const grp = byEv.get(m.ev || m.cid) || [m];
+  for (const x of grp) {
+    const fresh = now >= x.shUntil; x.shUntil = Math.max(x.shUntil, now + SH_MS);
+    if (fresh) setTimeout(() => { for (const V of VARIANTS) if (V.shield) { x.st[V.id].bid = null; x.st[V.id].ask = null; } }, SH_REACT);
+  }
+  log('shield.jsonl', { t: now, cid: m.cid, slug: m.slug, ev: m.ev, n: grp.length, px: +px.toFixed(4), mid: m.mid, side, one: +one.toFixed(2) });
 }
 const meta = saved?.meta || { started: Date.now(), polls: 0, rtdsMsgs: 0, rtdsOurs: 0, rtdsDownMs: 0 };
 const log = (f, o) => fs.appendFileSync(path.join(OUT, f), JSON.stringify(o) + '\n');
@@ -57,6 +70,9 @@ function connect() {
       if (side === 'SELL' && st.bid && st.bid.rem > EPS && px <= st.bid.px + EPS) fill(m, V, st, 'bid', Math.min(st.bid.rem, sz), st.bid.px, 'trade');
       if (side === 'BUY' && st.ask && st.ask.rem > EPS && px >= st.ask.px - EPS) fill(m, V, st, 'ask', Math.min(st.ask.rem, sz), st.ask.px, 'trade');
     }
+    const now = Date.now(); m.tb.push([now, side, sz]); while (m.tb.length && now - m.tb[0][0] > 30000) m.tb.shift();
+    let one = 0; for (const x of m.tb) if (x[1] === side) one += x[2];
+    if ((m.mid != null && Math.abs(px - m.mid) >= 0.5 * m.v - EPS) || one >= 3 * m.size - EPS) shock(m, now, px, side, one);
   };
   ws.onclose = () => { wsOpen = false; if (!downSince) downSince = Date.now(); setTimeout(connect, 2000); };
   ws.onerror = () => { try { ws.close(); } catch {} };
@@ -121,6 +137,7 @@ async function poll() {
       if (st.ask && st.ask.rem > EPS && rbb != null && rbb >= st.ask.px - EPS) fill(m, V, st, 'ask', st.ask.rem, st.ask.px, 'cross');
       st.bid = st.ask = null;
       if (mid == null) continue;
+      if (V.shield && t < m.shUntil) continue;                         // shield: pulled, no quotes, no rewards
       let ref = mid;
       if (V.robust) {
         if (fv == null || Math.abs(mid - fv) > (V.tight ?? 0.5) * m.v) continue;      // no trustworthy fair value / scoring mid far from it
@@ -160,7 +177,7 @@ async function poll() {
   fs.appendFileSync(path.join(OUT, 'mids.jsonl'), JSON.stringify({ t, mids }) + '\n');
   const snap = { meta, m: {}, mid: {} };
   snap.raw = {}; snap.mk = {};
-  for (const m of U) { snap.m[m.cid] = m.st; snap.mid[m.cid] = m.mid; snap.raw[m.cid] = m.raw; snap.mk[m.cid] = m.mk; }
+  snap.sh = {}; for (const m of U) { snap.sh[m.cid] = m.shUntil; snap.m[m.cid] = m.st; snap.mid[m.cid] = m.mid; snap.raw[m.cid] = m.raw; snap.mk[m.cid] = m.mk; }
   fs.writeFileSync(STATE + '.tmp', JSON.stringify(snap)); fs.renameSync(STATE + '.tmp', STATE);
 }
 let busy = false;

@@ -11,7 +11,7 @@ const OUT = process.argv[2] || 'out'; fs.mkdirSync(OUT, { recursive: true });
 const arg = (k, d) => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : d; };
 const ASSETS = arg('--assets', 'btc,eth').split(','), TFS = arg('--tfs', '5m,15m').split(',');
 const J = 2.0, COOL = 3000, L = 150, TRANSIT = 50, CAP = 100, FEE = 0.07, EDGE_MS = 5000;
-const LEN = { '5m': 300, '15m': 900 }, SYM = { btc: 'BTCUSDT', eth: 'ETHUSDT' };
+const LEN = { '5m': 300, '15m': 900 }, SYM = { btc: 'BTCUSDT', eth: 'ETHUSDT', sol: 'SOLUSDT', xrp: 'XRPUSDT' };
 const log = (f, o) => fs.appendFileSync(path.join(OUT, f), JSON.stringify(o) + '\n');
 const say = (s) => log('run.jsonl', { t: Date.now(), s });
 const fee = (p) => FEE * p * (1 - p);
