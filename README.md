@@ -2,7 +2,7 @@
 
 Glass desktop terminal for BTC 15m Polymarket Up/Down.
 
-**v0.27.0.** SMA/EMA 200/20 on a **closed** candle `S`, bet on **S+1**. Arrow sits on the entry candle. Auto prices the live Polymarket round and sends **CLOB V2** signed orders once the wallet, a signing key and the derived CLOB keys are in the API panel.
+**v0.28.0.** SMA/EMA 200/20 on a **closed** candle `S`, bet on **S+1**. Arrow sits on the entry candle. Auto prices the live Polymarket round and sends **CLOB V2** signed orders once the wallet, a signing key and the derived CLOB keys are in the API panel.
 
 **Для следующих агентов:** [подробный отчёт и передача проекта](#отчёт-и-передача-проекта--2026-10-06) · [ROADMAP](ROADMAP.md) · [правила Zero Mode](docs/ZERO_MODE.md). Публикация релиза не означает слияние PR в `main`; перед продолжением сверяйте GitHub.
 
@@ -37,7 +37,10 @@ and forecast checks through the AI advisor, and a shadow maker. Fills walk real 
 books with taker fees; Kelly sizing, per-trade/market/event/sector/agent limits and
 daily-loss/drawdown halts apply; no real money and no signing — live mode is closed
 until an edge certificate exists. Telegram: `/agents`, `/agents_report`,
-`/agents_stop`, `/agents_start`. See [Agents](docs/AGENTS.md) (in Russian).
+`/agents_stop`, `/agents_start`. Agents → V2 runs the V2 paper test: a9 latency
+arbitrage and a10 LP with rewards on live feeds, in their own paper account at the
+pre-registered scale, with the certificates filled in as the data come. See
+[Agents](docs/AGENTS.md) (in Russian).
 
 **Data collector (V2).** `npm run collect` records Polymarket CLOB books, Chainlink
 price and TWAP-60, fills, Binance and each Up/Down window's terms and official result
@@ -132,8 +135,8 @@ npm start
 Bump `version` in `package.json`, add a `CHANGELOG` line, tag:
 
 ```bash
-git tag v0.27.0
-git push origin v0.27.0
+git tag v0.28.0
+git push origin v0.28.0
 ```
 
 GitHub Actions builds:
