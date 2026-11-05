@@ -13,6 +13,7 @@
 const fs = require("fs");
 const path = require("path");
 const { takerFee } = require("../fees");
+const { LatCert, lpSummary } = require("./v2cert");
 let WS_IMPL = null;
 try { WS_IMPL = require("ws"); } catch { WS_IMPL = globalThis.WebSocket || null; }
 
@@ -129,10 +130,14 @@ class Lifecycle {
 // ---- latency: the core (pure, testable) ----------------------------------------------------------------------------
 
 // maxJumps5m: the quiet-market filter under test (research addendum B), off by default: the lane trades the frozen
-// rule. maxDayLossPct: the lane stops for the rest of the UTC day once the day's loss reaches this share of its capital.
+// rule. maxDayLossPct: the lane stops for the rest of the UTC day once the day's loss reaches this share of its capital;
+// off for the V2 test, where a stop after a loss would bias the sample (the kill switch of latarb_v2 stops it instead).
+// shadows: "asset tf" pairs traded by the same rule on paper for the certificate only (latarb_v2: BTC 15m secondary,
+// ETH the control); they never touch the lane's ledger, capital or P&L.
 const LAT_DEFAULTS = Object.freeze({
   assets: ["btc"], tfs: ["5m"], jumpBps: 2, coolMs: 3000, latencyMs: 150, transitMs: 50,
-  maxShares: 100, holdMs: 10000, edgeMs: 5000, feeRate: 0.07, maxJumps5m: null, maxDayLossPct: 20,
+  maxShares: 100, holdMs: 10000, edgeMs: 5000, feeRate: 0.07, maxJumps5m: null, maxDayLossPct: null,
+  shadows: Object.freeze(["btc 15m", "eth 5m", "eth 15m"]),
 });
 const WINDOW_S = Object.freeze({ "5m": 300, "15m": 900 });
 const SYMBOL = Object.freeze({ btc: "BTCUSDT", eth: "ETHUSDT", sol: "SOLUSDT", xrp: "XRPUSDT" });
@@ -147,7 +152,7 @@ class LatencyCore {
 
   addWindow(w) {
     if (this.windows.has(w.slug)) return false;
-    const row = { slug: w.slug, asset: w.asset, tf: w.tf, start: w.start, end: w.end, up: w.up, hist: [], book: null };
+    const row = { slug: w.slug, asset: w.asset, tf: w.tf, start: w.start, end: w.end, up: w.up, shadow: Boolean(w.shadow), hist: [], book: null };
     this.windows.set(w.slug, row);
     this.byToken.set(w.up, row);
     return true;
@@ -240,6 +245,8 @@ class LatencyLane {
     this.type = "latency";
     this.file = path.join(root, "latency.json");
     this.tradeLog = path.join(root, "latency-trades.jsonl");
+    this.shadowLog = path.join(root, "latency-shadow.jsonl");
+    this.certFile = path.join(root, "latency-cert.json");
     this.net = net;
     this.WS = WebSocketImpl;
     this.now = now;
@@ -248,6 +255,9 @@ class LatencyLane {
     const saved = readJson(this.file);
     this.ledger = saved && validLedger(saved.ledger) ? saved.ledger : freshLedger(now());
     this.held = saved && Array.isArray(saved.held) ? saved.held.filter((p) => p && typeof p.slug === "string" && finite(p.cost) && finite(p.shares)) : [];
+    this.cert = new LatCert(readJson(this.certFile), now());
+    this.outcomes = new Map();
+    this.combos = [];
     this.open = [];
     this.running = false;
     this.error = null;
@@ -262,12 +272,21 @@ class LatencyLane {
     if (this.running) return;
     if (typeof this.WS !== "function") { this.error = "agents_lane_no_websocket"; return; }
     this.limits = { capitalUsd, perTradeUsd };
-    this.core = new LatencyCore({ ...this.params, ...params });
+    const p = { ...this.params, ...params };
+    // the traded windows, then the shadows (same rule, certificate only)
+    const traded = [];
+    for (const a of p.assets) for (const tf of p.tfs) if (SYMBOL[a] && WINDOW_S[tf]) traded.push(`${a} ${tf}`);
+    const shadows = (Array.isArray(p.shadows) ? p.shadows : []).filter((k) => typeof k === "string" && SYMBOL[k.split(" ")[0]] && WINDOW_S[k.split(" ")[1]] && !traded.includes(k));
+    this.combos = [...traded.map((k) => [k, false]), ...[...new Set(shadows)].map((k) => [k, true])];
+    this.primary = p.assets[0];
+    this.core = new LatencyCore({ ...p, assets: [...new Set(this.combos.map(([k]) => k.split(" ")[0]))] });
     this.running = true;
     this.error = null;
     this.subs = new Set();
+    this.cert.upAt = null;
     this.life.every(30000, () => { this._windows().catch(() => {}); });
     this.life.every(15000, () => { this._resolve().catch(() => {}); });
+    this.life.every(10000, () => this._uptime());
     this.life.every(60000, () => this._persist());
     this._windows().catch(() => {}).finally(() => {
       if (!this.running) return;
@@ -278,6 +297,7 @@ class LatencyLane {
 
   stop() {
     if (!this.running) return;
+    this._uptime();
     this.running = false;
     this.life.clear();
     // trades still waiting for their 10-second exit are closed at the last known bid
@@ -287,27 +307,26 @@ class LatencyLane {
 
   async _windows() {
     const now = this.now() / 1000;
-    for (const a of this.core.p.assets) {
-      for (const tf of this.core.p.tfs) {
-        const len = WINDOW_S[tf];
-        if (!len) continue;
-        const s0 = Math.floor(now / len) * len;
-        for (const s of [s0, s0 + len]) {
-          const slug = `${a}-updown-${tf}-${s}`;
-          if (this.core.windows.has(slug)) continue;
-          try {
-            const rows = await this.net.json(`${GAMMA}/markets?slug=${encodeURIComponent(slug)}`);
-            const m = Array.isArray(rows) ? rows[0] : null;
-            if (!m) continue;
-            const toks = JSON.parse(m.clobTokenIds), outs = JSON.parse(m.outcomes);
-            const up = toks[outs.indexOf("Up")];
-            if (!up) continue;
-            this.core.addWindow({ slug, asset: a, tf, start: s * 1000, end: (s + len) * 1000, up });
-            this._subscribe([up]);
-          } catch { /* the next pass retries */ }
-        }
+    for (const [key, shadow] of this.combos) {
+      const [a, tf] = key.split(" ");
+      const len = WINDOW_S[tf];
+      if (!len) continue;
+      const s0 = Math.floor(now / len) * len;
+      for (const s of [s0, s0 + len]) {
+        const slug = `${a}-updown-${tf}-${s}`;
+        if (!this.core || this.core.windows.has(slug)) continue;
+        try {
+          const rows = await this.net.json(`${GAMMA}/markets?slug=${encodeURIComponent(slug)}`);
+          const m = Array.isArray(rows) ? rows[0] : null;
+          if (!m || !this.core) continue;
+          const toks = JSON.parse(m.clobTokenIds), outs = JSON.parse(m.outcomes);
+          const up = toks[outs.indexOf("Up")];
+          if (!up) continue;
+          if (this.core.addWindow({ slug, asset: a, tf, start: s * 1000, end: (s + len) * 1000, up, shadow })) this._subscribe([up]);
+        } catch { /* the next pass retries */ }
       }
     }
+    if (!this.core) return;
     const t = this.now();
     for (const w of [...this.core.windows.values()]) {
       if (t > w.end + 2 * 60000 && !this.open.some((p) => p.slug === w.slug)) { this.core.dropWindow(w.slug); this._unsubscribe([w.up]); }
@@ -394,9 +413,11 @@ class LatencyLane {
   }
 
   _onJump(jump, recvAt) {
-    this.feeds.jumps += 1;
-    this.feeds.lastJumpAt = recvAt;
-    this.feeds.recent = jump.recent;
+    if (jump.asset === this.primary) {
+      this.feeds.jumps += 1;
+      this.feeds.lastJumpAt = recvAt;
+      this.feeds.recent = jump.recent;
+    }
     const quiet = this.core.p.maxJumps5m;
     if (quiet != null && jump.recent > quiet) return;
     for (const w of this.core.targets(jump)) {
@@ -406,7 +427,14 @@ class LatencyLane {
     }
   }
 
-  _exposure() { return [...this.open, ...this.held].reduce((s, p) => s + p.cost, 0); }
+  _exposure() { return [...this.open, ...this.held].reduce((s, p) => s + (p.shadow ? 0 : p.cost), 0); }
+
+  // Live feeds: both sockets heard from in the last 30 s. The certificate counts its days by this time.
+  _healthy(now) {
+    const f = this.feeds;
+    return this.running && f.binance != null && now - f.binance < 30000 && f.clob != null && now - f.clob < 30000;
+  }
+  _uptime() { const now = this.now(); this.cert.uptime(now, this._healthy(now)); }
 
   // Past the day's loss limit the lane sits out until the next UTC day; the journal hears of it once.
   _dayStopped(now) {
@@ -421,20 +449,25 @@ class LatencyLane {
     return true;
   }
 
+  // A shadow window trades by the same rule and size but outside the ledger, the capital and the day's stop.
   _enter(w, jump, L) {
-    if (!this.running || this._dayStopped(this.now())) return;
+    if (!this.running || !this.core) return;
+    const shadow = Boolean(w.shadow);
+    if (!shadow && this._dayStopped(this.now())) return;
     let e = this.core.entry(w, jump.sign, jump.T + L);
     if (!e) return;
     const byUsd = Math.floor(this.limits.perTradeUsd / e.px);
     if (byUsd < 1) return;
     if (byUsd < e.shares) e = { ...e, shares: byUsd, fee: r6(takerFee(byUsd, e.px, { rate: this.core.p.feeRate })) };
     const cost = r6(e.shares * e.px + e.fee);
-    if (this._exposure() + cost > this.limits.capitalUsd + EPS) return;
-    const pos = { id: `l${++this.seq}`, slug: w.slug, asset: w.asset, tf: w.tf, T: jump.T, sign: jump.sign, bps: jump.bps, recent: jump.recent, L,
-      px: e.px, shares: e.shares, fee: e.fee, cost, at: this.now(), end: w.end };
+    if (!shadow && this._exposure() + cost > this.limits.capitalUsd + EPS) return;
+    const pos = { id: `${shadow ? "s" : "l"}${++this.seq}`, slug: w.slug, asset: w.asset, tf: w.tf, T: jump.T, sign: jump.sign, bps: jump.bps, recent: jump.recent, L,
+      px: e.px, shares: e.shares, fee: e.fee, cost, at: this.now(), end: w.end, ...(shadow ? { shadow: true } : {}) };
     this.open.push(pos);
-    this.ledger.trades += 1;
-    bump(this.ledger.hist, this.now(), { trades: 1, fees: e.fee });
+    if (!shadow) {
+      this.ledger.trades += 1;
+      bump(this.ledger.hist, this.now(), { trades: 1, fees: e.fee });
+    }
     this.life.after(jump.T + this.core.p.holdMs + 1500 - this.now(), () => {
       const i = this.open.indexOf(pos);
       if (i >= 0) { this.open.splice(i, 1); this._exitNow(pos, false); }
@@ -449,23 +482,52 @@ class LatencyLane {
     this._close(pos, { exitPx: x.px, exitFee: fee, exitDepth: x.shares, how: early ? "stop" : "bid_10s", pnl: r6(pos.shares * x.px - fee - pos.cost) });
   }
 
+  // The result of a window once Polymarket has resolved it: 1 if Up won, 0 if Down, null while unknown.
+  async _outcome(slug) {
+    if (this.outcomes.has(slug)) return this.outcomes.get(slug);
+    const rows = await this.net.json(`${GAMMA}/markets?slug=${encodeURIComponent(slug)}&closed=true`);
+    const m = Array.isArray(rows) ? rows[0] : null;
+    if (!m || m.umaResolutionStatus !== "resolved") return null;
+    const prices = JSON.parse(m.outcomePrices), outs = JSON.parse(m.outcomes);
+    const px = +prices[outs.indexOf("Up")];
+    if (!finite(px)) return null;
+    const up = px > 0.5 ? 1 : 0;
+    this.outcomes.set(slug, up);
+    if (this.outcomes.size > 2000) this.outcomes.delete(this.outcomes.keys().next().value);
+    return up;
+  }
+
+  // Held positions settle at the result; every traded window gets its result for the certificate's edge at
+  // resolution, and finished windows fold into its sums.
   async _resolve() {
     for (const pos of [...this.held]) {
       if (this.now() < pos.end + 60000) continue;
-      try {
-        const rows = await this.net.json(`${GAMMA}/markets?slug=${encodeURIComponent(pos.slug)}&closed=true`);
-        const m = Array.isArray(rows) ? rows[0] : null;
-        if (!m || m.umaResolutionStatus !== "resolved") continue;
-        const prices = JSON.parse(m.outcomePrices), outs = JSON.parse(m.outcomes);
-        const up = +prices[outs.indexOf("Up")] > 0.5 ? 1 : 0, y = pos.sign > 0 ? up : 1 - up;
-        this.held.splice(this.held.indexOf(pos), 1);
-        this._close(pos, { exitPx: y, exitFee: 0, exitDepth: null, how: "result", pnl: r6(pos.shares * y - pos.cost) });
-      } catch { /* the next pass retries */ }
+      let up = null;
+      try { up = await this._outcome(pos.slug); } catch { /* the next pass retries */ }
+      const i = this.held.indexOf(pos);
+      if (up == null || i < 0) continue;
+      const y = pos.sign > 0 ? up : 1 - up;
+      this.held.splice(i, 1);
+      this._close(pos, { exitPx: y, exitFee: 0, exitDepth: null, how: "result", pnl: r6(pos.shares * y - pos.cost) });
     }
+    for (const slug of this.cert.due(this.now(), 8)) {
+      let up = null;
+      try { up = await this._outcome(slug); } catch { /* retried with a backoff */ }
+      if (up == null) this.cert.retry(slug, this.now()); else this.cert.outcome(slug, up);
+    }
+    this.cert.fold(this.now(), new Set([...this.open, ...this.held].map((p) => p.slug)));
   }
 
   _close(pos, r) {
     const L = this.ledger, now = this.now();
+    this.cert.add({ slug: pos.slug, group: `${pos.asset} ${pos.tf}`, shadow: Boolean(pos.shadow), t: now, end: pos.end, up: pos.sign > 0,
+      shares: pos.shares, entry: pos.px, fee0: pos.fee, pnl: r.pnl });
+    if (pos.shadow) {
+      appendCapped(this.shadowLog, { t: now, slug: pos.slug, a: pos.asset, tf: pos.tf, side: pos.sign > 0 ? "Up" : "Down", bps: pos.bps, j5: pos.recent ?? null, L: pos.L,
+        shares: pos.shares, entry: pos.px, exit: r.exitPx, fees: r6(pos.fee + r.exitFee), pnl: r.pnl, how: r.how });
+      this._certEvents(now);
+      return;
+    }
     this._roll(now);
     L.closed += 1;
     if (r.pnl > 0) L.wins += 1;
@@ -477,6 +539,14 @@ class LatencyLane {
     L.recent.push(row);
     if (L.recent.length > 50) L.recent.splice(0, L.recent.length - 50);
     appendCapped(this.tradeLog, row);
+    this._certEvents(now);
+  }
+
+  // The kill switch and the verdict of the certificate reach the desk once each.
+  _certEvents(now) {
+    for (const ev of this.cert.evaluate(now)) {
+      try { this.onEvent({ lane: this.type, ...ev }); } catch { /* the journal never stops a lane */ }
+    }
   }
 
   // One journal line per finished hour with trades in it.
@@ -490,16 +560,21 @@ class LatencyLane {
   }
 
   _persist() {
-    try { writeJson(this.file, { v: 1, ledger: this.ledger, held: this.held }); } catch { this.error = "agents_lane_store_failed"; }
+    try {
+      writeJson(this.file, { v: 1, ledger: this.ledger, held: this.held });
+      writeJson(this.certFile, this.cert.toJSON());
+    } catch { this.error = "agents_lane_store_failed"; }
   }
 
   // Trades, results and P&L between two times, by the hour.
   period(from, to) { return periodOf(this.ledger.hist, from, to); }
 
-  // A fresh ledger for "Start afresh": the lane stops first; the trade log stays as a record.
+  // A fresh ledger and certificate for a new V2 test: the lane stops first; the trade logs stay as a record.
   reset() {
     this.stop();
     this.ledger = freshLedger(this.now());
+    this.cert = new LatCert(null, this.now());
+    this.outcomes.clear();
     this.held = [];
     this.open = [];
     this.error = null;
@@ -513,16 +588,17 @@ class LatencyLane {
     return {
       type: this.type, running: this.running, error: this.error, trades: L.trades, settled: L.closed, wins: L.wins,
       realized: r2(L.realized), unrealized: 0, pnl: r2(L.realized), dayPnl: this.period(dayStart(now)).pnl, fees: r2(L.fees),
-      open: this.open.length + this.held.length, exposure: r2(exposure), dayStopped: this.dayStop === dayStart(now),
-      feeds: { ...this.feeds, windows: this.core ? this.core.windows.size : 0 }, recent: L.recent.slice(-10),
+      open: [...this.open, ...this.held].filter((p) => !p.shadow).length, exposure: r2(exposure), dayStopped: this.dayStop === dayStart(now),
+      feeds: { ...this.feeds, windows: this.core ? this.core.windows.size : 0 }, recent: L.recent.slice(-10), v2: this.cert.summary(now),
     };
   }
 }
 
 // ---- LP rewards: the core (pure, testable) -------------------------------------------------------------------------
 
+// maxDayLossPct: as for the latency lane, off for the V2 test.
 const LP_DEFAULTS = Object.freeze({
-  pollMs: 10000, k: 1 / 3, tight: 0.25, maxInv: 4, maxDayLossPct: 20,
+  pollMs: 10000, k: 1 / 3, tight: 0.25, maxInv: 4, maxDayLossPct: null,
   shield: true, shieldMs: 300000, shieldReactMs: 250, shieldFar: 0.5, shieldVol: 3, shieldWindowMs: 30000,
 });
 const score = (v, d) => (d >= 0 && d < v - EPS ? ((v - d) / v) ** 2 : 0);
@@ -786,6 +862,17 @@ async function buildLpUniverse(net, { capitalUsd, perMarketUsd = 50, now = Date.
 
 // ---- LP rewards: the lane ------------------------------------------------------------------------------------------
 
+// What a market made so far: pessimistic rewards plus the cash of its trades and its inventory at the mark.
+const netOf = (m) => m.st.rP + m.st.cash + (m.mk != null ? m.st.inv * m.mk : 0);
+// The V2 record of the lane: hours with live books and trades, the two phases, the shield's counts and what the
+// markets that left the universe made with the shield (hs, the lane) and without it (h, the shadow).
+const freshLpV2 = (now) => ({ since: now, upMs: 0, ph1: null, ph2: null, shocks: 0, pulledMs: 0, marketMs: 0, arch: {} });
+const validNets = (x) => Boolean(x) && typeof x === "object" && Object.values(x).every((v) => Array.isArray(v) && v.length === 2 && v.every(finite));
+const validPhase = (x) => x === null || (Boolean(x) && typeof x === "object" && finite(x.t) && finite(x.upMs) && validNets(x.nets));
+function validLpV2(x) {
+  return Boolean(x) && typeof x === "object" && [x.since, x.upMs, x.shocks, x.pulledMs, x.marketMs].every(finite) && validPhase(x.ph1) && validPhase(x.ph2) && validNets(x.arch);
+}
+
 class LpLane {
   constructor({ root, net, WebSocketImpl = WS_IMPL, now = () => Date.now(), params = {}, onEvent = () => {}, build = buildLpUniverse } = {}) {
     if (!root) throw new TypeError("root is required");
@@ -815,11 +902,22 @@ class LpLane {
     this.hist = validHist(s.hist) ? s.hist : [];
     this.emitted = finite(s.emitted) ? s.emitted : Math.floor(this.now() / HOUR);
     this.last = finite(s.last) && finite(s.lastFills) ? { pnl: s.last, fills: s.lastFills } : null;
+    this.v2 = validLpV2(s.v2) ? s.v2 : freshLpV2(this.now());
     this.core = null;
+    this.shadow = null;
     if (Array.isArray(s.universe) && s.universe.length) {
-      try { this.core = new LpCore(s.universe, this.params, s.markets || {}, s.bank); this.core.cancelAll(); } catch { this.core = null; }
+      try {
+        this.core = new LpCore(s.universe, this.params, s.markets || {}, s.bank);
+        this.core.cancelAll();
+        const h = s.shadow && typeof s.shadow === "object" ? s.shadow : {};
+        this.shadow = new LpCore(s.universe, this._shadowParams(), h.markets || {}, h.bank);
+        this.shadow.cancelAll();
+      } catch { this.core = null; this.shadow = null; }
     }
   }
+
+  // The shadow h: the same quotes without the shield, fed the same books and trades (addendum C).
+  _shadowParams() { return { ...(this.p || this.params), shield: false }; }
 
   start({ capitalUsd = 0, perMarketUsd = 50, params = {} } = {}) {
     if (this.running || this.now() < this.retryAt) return;
@@ -847,6 +945,7 @@ class LpLane {
     this.running = false;
     this.life.clear();
     if (this.core) this.core.cancelAll();
+    if (this.shadow) this.shadow.cancelAll();
     this._persist();
   }
 
@@ -864,26 +963,39 @@ class LpLane {
   async _universe(rebuild = false) {
     const s = this.saved || {};
     const fresh = !rebuild && this.core && Array.isArray(s.universe) && s.universe.length && this.now() - (s.builtAt || 0) < 6 * HOUR && s.capitalUsd === this.limits.capitalUsd;
-    if (fresh) { this.core = new LpCore(s.universe, this.p, this.core.snapshot(), this.core.bank); return; }
+    if (fresh) {
+      this.core = new LpCore(s.universe, this.p, this.core.snapshot(), this.core.bank);
+      this.shadow = new LpCore(s.universe, this._shadowParams(), this.shadow ? this.shadow.snapshot() : {}, this.shadow ? this.shadow.bank : null);
+      return;
+    }
     let U = await this.build(this.net, { capitalUsd: this.limits.capitalUsd, perMarketUsd: this.limits.perMarketUsd, now: this.now() });
     const have = new Set(U.map((u) => u.cid));
     const old = this.core ? this.core.markets : [];
     for (const m of old) {
       if (have.has(m.cid)) continue;
-      if (Math.abs(m.st.inv) > EPS) {
+      const twin = this.shadow ? this.shadow.byCid.get(m.cid) : null;
+      if (Math.abs(m.st.inv) > EPS || (twin && Math.abs(twin.st.inv) > EPS)) {
         const payout = await this._result(m).catch(() => null);
         if (payout == null) { U = U.concat([{ cid: m.cid, tok: m.tok, tok2: m.tok2, slug: m.slug, ev: m.ev, rate: m.rate, v: m.v, ms: m.ms, tick: m.tick, size: m.size }]); continue; }
-        this._fills([{ t: this.now(), cid: m.cid, slug: m.slug, side: "result", px: payout, q: r2(m.st.inv), how: "result", mid: m.mid, inv: 0 }]);
-        m.st.cash = r6(m.st.cash + m.st.inv * payout);
-        m.st.inv = 0;
-        m.mk = payout;
+        if (Math.abs(m.st.inv) > EPS) this._fills([{ t: this.now(), cid: m.cid, slug: m.slug, side: "result", px: payout, q: r2(m.st.inv), how: "result", mid: m.mid, inv: 0 }]);
+        for (const x of twin ? [m, twin] : [m]) {
+          x.st.cash = r6(x.st.cash + x.st.inv * payout);
+          x.st.inv = 0;
+          x.mk = payout;
+        }
       }
+      const a = this.v2.arch[m.cid] || [0, 0];
+      this.v2.arch[m.cid] = [r6(a[0] + netOf(m)), r6(a[1] + (twin ? netOf(twin) : 0))];
       this.core.retire(m);
+      if (twin) this.shadow.retire(twin);
     }
     if (!U.length) throw fail("agents_lane_no_markets");
     const keep = this.core ? this.core.snapshot() : {};
     const bank = this.core ? this.core.bank : null;
+    const keepH = this.shadow ? this.shadow.snapshot() : {};
+    const bankH = this.shadow ? this.shadow.bank : null;
     this.core = new LpCore(U, this.p, keep, bank);
+    this.shadow = new LpCore(U, this._shadowParams(), keepH, bankH);
     this.saved = { ...s, universe: U, builtAt: this.now(), capitalUsd: this.limits.capitalUsd };
   }
 
@@ -919,7 +1031,10 @@ class LpLane {
       const p = d.payload;
       if (!this.core || !this.core.byCid.has(p.conditionId)) return;
       this.rtds.ours += 1;
-      this._fills(this.core.trade({ conditionId: p.conditionId, asset: p.asset, price: p.price, side: p.side, size: p.size }, last));
+      const trade = { conditionId: p.conditionId, asset: p.asset, price: p.price, side: p.side, size: p.size }, shocks = this.core.shocks;
+      this._fills(this.core.trade(trade, last));
+      this.v2.shocks += this.core.shocks - shocks;
+      if (this.shadow) this.shadow.trade(trade, last);
     };
     ws.onclose = () => {
       this.life.sockets.delete(ws);
@@ -958,14 +1073,68 @@ class LpLane {
     }
     if (!this.running || !books.size) return;
     const now = this.now();
-    const out = this.core.poll(books, now, { quote: !this._dayStopped(now) });
+    const span = this.core.lastPollAt == null ? 0 : Math.min(Math.max(0, now - this.core.lastPollAt), 2 * this.p.pollMs);
+    const quote = !this._dayStopped(now);
+    const out = this.core.poll(books, now, { quote });
+    if (this.shadow) this.shadow.poll(books, now, { quote });
     this._fills(out.fills);
     this._account();
+    await this._v2Tick(now, span);
+  }
+
+  // The V2 clock: time counts while the books arrive and the trade feed is live. At 24 h the first phase closes
+  // (and the shield's test is read on it) and the universe is rebuilt for the second; at 48 h the second closes.
+  async _v2Tick(now, span) {
+    const v = this.v2, live = this.rtds.open && this.rtds.lastAt != null && now - this.rtds.lastAt < 60000;
+    if (!(span > 0)) return;
+    const pulled = this.core.markets.filter((m) => now < m.shUntil).length;
+    v.marketMs += this.core.markets.length * span;
+    v.pulledMs += pulled * span;
+    if (!live) return;
+    v.upMs += span;
+    const PHASE = 24 * HOUR;
+    if (!v.ph1 && v.upMs >= PHASE) {
+      v.ph1 = { t: now, upMs: v.upMs, nets: this._nets() };
+      this._v2Event(now, 1);
+      try { await this._universe(true); } catch { /* the 6-hourly rebuild tries again */ }
+    } else if (v.ph1 && !v.ph2 && v.upMs >= v.ph1.upMs + PHASE) {
+      v.ph2 = { t: now, upMs: v.upMs, nets: this._nets() };
+      this._v2Event(now, 2);
+    }
+  }
+
+  _v2Event(now, phase) {
+    const sum = this.v2Summary(now), p = phase === 1 ? sum.phase1 : sum.phase2;
+    try {
+      this.onEvent({ lane: this.type, op: "v2_phase", phase, ok: p.checks.every((x) => x.ok), net: p.net, topShare: p.topShare,
+        shieldT: phase === 1 ? sum.shield.t : null, verdict: sum.verdict });
+    } catch { /* the journal never stops a lane */ }
+  }
+
+  // Per-market nets { cid: [hs, h] }: the markets in the universe now plus those that left it.
+  _nets() {
+    const out = {};
+    for (const [cid, x] of Object.entries(this.v2.arch)) out[cid] = [x[0], x[1]];
+    for (const [core, i] of [[this.core, 0], [this.shadow, 1]]) {
+      if (!core) continue;
+      for (const m of core.markets) {
+        const row = out[m.cid] || (out[m.cid] = [0, 0]);
+        row[i] = r6(row[i] + netOf(m));
+      }
+    }
+    return out;
+  }
+
+  v2Summary(now = this.now()) {
+    const h = this.shadow ? this.shadow.totals() : null, t = this.core ? this.core.totals() : null;
+    return lpSummary({ ...this.v2, nets: this._nets(), rewardsHs: t ? t.rewardsPess : null, rewardsH: h ? h.rewardsPess : null }, now);
   }
 
   // Past the day's loss limit (rewards and marks together) the lane quotes nothing until the next UTC day.
   _dayStopped(now) {
-    const limit = ((this.p || this.params).maxDayLossPct / 100) * ((this.limits && this.limits.capitalUsd) || 0);
+    const pct = (this.p || this.params).maxDayLossPct;
+    if (pct == null) return false;
+    const limit = (pct / 100) * ((this.limits && this.limits.capitalUsd) || 0);
     if (!(limit > 0)) return false;
     const day = this.period(dayStart(now)).pnl;
     if (day > -limit) return false;
@@ -995,7 +1164,8 @@ class LpLane {
     if (!this.core) return;
     try {
       this.saved = { ...(this.saved || {}), v: 1, markets: this.core.snapshot(), bank: this.core.bank, hist: this.hist, emitted: this.emitted,
-        last: this.last ? this.last.pnl : null, lastFills: this.last ? this.last.fills : null };
+        last: this.last ? this.last.pnl : null, lastFills: this.last ? this.last.fills : null,
+        shadow: this.shadow ? { markets: this.shadow.snapshot(), bank: this.shadow.bank } : null, v2: this.v2 };
       writeJson(this.file, this.saved);
     } catch { this.error = "agents_lane_store_failed"; }
   }
@@ -1006,11 +1176,13 @@ class LpLane {
     const t = this.core ? this.core.totals() : null;
     const today = dayStart(this.now());
     const base = { type: this.type, running: this.running, error: this.error, settled: 0, wins: 0, dayPnl: this.period(today).pnl, dayStopped: this.dayStop === today };
-    if (!t) return { ...base, trades: 0, realized: 0, unrealized: 0, pnl: 0, open: 0, exposure: 0 };
+    if (!t) return { ...base, trades: 0, realized: 0, unrealized: 0, pnl: 0, open: 0, exposure: 0, v2: this.v2Summary() };
+    const h = this.shadow ? this.shadow.totals() : null;
     return {
       ...base, trades: t.fills, realized: t.rewardsPess, unrealized: t.mtm, pnl: r2(t.rewardsPess + t.mtm), rewardsAgg: t.rewardsAgg, rewardsPess: t.rewardsPess,
       open: t.quoting, exposure: r2(t.restingUsd + t.inventoryUsd), markets: t.markets, quoting: t.quoting, pulled: t.pulled, shocks: t.shocks,
       rtds: { ...this.rtds }, lastPollAt: this.core.lastPollAt,
+      shadow: h ? { pnl: r2(h.rewardsPess + h.mtm), rewardsPess: h.rewardsPess, mtm: h.mtm, fills: h.fills } : null, v2: this.v2Summary(),
     };
   }
 }

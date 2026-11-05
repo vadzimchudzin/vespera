@@ -133,7 +133,7 @@ async function main() {
     const small = new L.LatencyLane({ root: tmp(), net, WebSocketImpl: FakeWS, now: () => clock.t });
     small.running = true;
     small.limits = { capitalUsd: 10, perTradeUsd: 20 };
-    small.core = new L.LatencyCore();
+    small.core = new L.LatencyCore({ maxDayLossPct: 20 });   // off by default for the V2 test
     small.core.addWindow({ slug: "w", asset: "btc", tf: "5m", start: 0, end: clock.t + 300000, up: "U" });
     small.core.book("U", clock.t - 10, lvl([[0.5, 100]]), lvl([[0.52, 100]]));
     small._enter(small.core.windows.get("w"), { T: clock.t, sign: 1, bps: 3 }, 150);
@@ -297,12 +297,16 @@ async function main() {
   // --- the desk runs the lanes ----------------------------------------------------------------------------------
   {
     class FakeLane {
-      constructor(type) { this.type = type; this.running = false; this.starts = []; this.resets = 0; this.pnl = 0; this.trades = 0; }
+      constructor(type) { this.type = type; this.running = false; this.starts = []; this.resets = 0; this.pnl = 0; this.trades = 0; this.fresh = null; }
       start(opts) { this.running = true; this.starts.push(opts); }
       stop() { this.running = false; }
       reset() { this.stop(); this.resets += 1; this.pnl = 0; this.trades = 0; }
       period() { return { trades: this.trades, settled: 1, wins: 1, pnl: this.pnl, fees: 0.25 }; }
-      status() { return { type: this.type, running: this.running, error: null, trades: this.trades, settled: 1, wins: 1, realized: this.pnl, unrealized: 0, pnl: this.pnl, dayPnl: this.pnl, fees: 0.25, open: 1, exposure: 10 }; }
+      status() {
+        const f = this.fresh;
+        return { type: this.type, running: this.running, error: null, trades: this.trades, settled: 1, wins: 1, realized: this.pnl, unrealized: 0, pnl: this.pnl, dayPnl: this.pnl,
+          fees: 0.25, open: 1, exposure: 10, feeds: { binance: f, clob: f }, lastPollAt: f, rtds: { open: f != null, lastAt: f }, v2: { verdict: "collecting" } };
+      }
     }
     const net = { json: async () => [], text: async () => "" };
     const clock = { t: NOW };
@@ -315,26 +319,35 @@ async function main() {
     assert.deepStrictEqual([lanes.latency.running, lanes.lp_rewards.running], [false, false]);
     manual.dispose();
 
-    const desk = new AgentDesk({ root, net, now: () => clock.t, autoTick: true, tickMs: 3600000, lanes });
+    const alerts = [];
+    const desk = new AgentDesk({ root, net, now: () => clock.t, autoTick: true, tickMs: 3600000, lanes, onEvent: (e) => { if (e.type === "agents_alert") alerts.push(e.payload); } });
     desk.setContext({ active: true });
     assert.strictEqual(lanes.latency.running, false, "a stopped desk keeps its lanes off");
     desk.start({});
     assert.deepStrictEqual([lanes.latency.running, lanes.lp_rewards.running], [true, true]);
-    assert.deepStrictEqual(lanes.latency.starts[0], { capitalUsd: 150, perTradeUsd: 25, perMarketUsd: 50, params: {} });
+    // the V2 scale of the pre-registrations, not the desk's limits
+    assert.deepStrictEqual(lanes.latency.starts[0], { capitalUsd: 1000, perTradeUsd: 100, params: {} });
+    assert.deepStrictEqual(lanes.lp_rewards.starts[0], { capitalUsd: 20000, perMarketUsd: 200, params: {} });
     lanes.latency.pnl = 12.5;
     lanes.latency.trades = 3;
     lanes.lp_rewards.pnl = -2.5;
     let s = desk.status();
     const a9 = s.agents.find((a) => a.id === "a9"), a10 = s.agents.find((a) => a.id === "a10");
-    assert.deepStrictEqual([a9.type, a9.pnl, a9.trades, a9.settled, a9.open, a9.exposure, a9.lane.running], ["latency", 12.5, 3, 1, 1, 10, true]);
-    assert.deepStrictEqual([a10.type, a10.pnl], ["lp_rewards", -2.5]);
-    assert.deepStrictEqual([s.equity, s.pnl, s.dayPnl, s.trades, s.lanes.latency.pnl], [1010, 10, 10, 3, 12.5]);
+    assert.deepStrictEqual([a9.type, a9.pnl, a9.trades, a9.settled, a9.open, a9.exposure, a9.lane.running, a9.v2, a9.capital], ["latency", 12.5, 3, 1, 1, 10, true, true, 1000]);
+    assert.deepStrictEqual([a10.type, a10.pnl, a10.capital], ["lp_rewards", -2.5, 20000]);
+    // the V2 account is apart from the desk's book
+    assert.deepStrictEqual([s.equity, s.pnl, s.dayPnl, s.trades, s.exposure, s.lanes.latency.pnl], [1000, 0, 0, 0, 0, 12.5]);
+    assert.deepStrictEqual([s.v2.pnl, s.v2.trades, s.v2.exposure, s.v2.latency.agentId, s.v2.latency.capitalUsd, s.v2.lp_rewards.verdict], [10, 3, 20, "a9", 1000, "collecting"]);
+    assert.deepStrictEqual(s.v2.latency.cert, { verdict: "collecting" });
     assert.strictEqual(s.agents.find((a) => a.id === "a8").status, "retired");
     const day = desk.report({ period: "day" });
-    assert.deepStrictEqual([day.agents.find((a) => a.id === "a9").realized, day.agents.find((a) => a.id === "a9").trades, day.equity], [12.5, 3, 1010]);
-    assert.throws(() => desk.configure({ capitalUsd: 2000 }), /agents_reset_required/, "the lanes have traded");
+    assert.ok(!day.agents.some((a) => a.id === "a9" || a.id === "a10"), "the lanes report in the V2 section");
+    assert.deepStrictEqual([day.v2.rows.find((r) => r.id === "a9").realized, day.v2.rows.find((r) => r.id === "a9").trades, day.equity, day.totals.trades], [12.5, 3, 1000, 0]);
+    assert.deepStrictEqual(desk.report({ period: "all" }).v2.rows.find((r) => r.id === "a10").realized, -2.5);
     desk.configure({ perTradeUsd: 10 });
-    assert.deepStrictEqual([lanes.latency.running, lanes.latency.starts.length, lanes.latency.starts[1].perTradeUsd], [true, 2, 10], "new limits restart the lanes");
+    assert.deepStrictEqual([lanes.latency.running, lanes.latency.starts.length], [true, 1], "the desk's limits never restart the lanes");
+    desk.configure({ capitalUsd: 2000 });
+    assert.strictEqual(desk.status().equity, 2000, "the lanes' trades never block a new capital");
     desk.agent({ id: "a9", action: "pause" });
     assert.deepStrictEqual([lanes.latency.running, lanes.lp_rewards.running], [false, true], "a paused agent's lane stops");
     desk.agent({ id: "a9", action: "resume" });
@@ -343,17 +356,61 @@ async function main() {
     assert.deepStrictEqual([lanes.latency.running, lanes.lp_rewards.running], [false, false], "the emergency stop stops the lanes");
     desk.resume({});
     assert.strictEqual(lanes.lp_rewards.running, true);
-    // a lane's loss counts toward the daily stop
-    lanes.lp_rewards.pnl = -70;
+    // a lane's loss never trips the desk's stops; the desk's automatic stop never stops the lanes
+    lanes.lp_rewards.pnl = -700;
     await desk.tick();
     s = desk.status();
-    assert.deepStrictEqual([s.halt && s.halt.reason, lanes.latency.running, lanes.lp_rewards.running], ["daily_loss", false, false]);
-    assert.ok(s.journal.some((r) => r.kind === "lane" && r.op === "stop" && r.agentId === "a10"));
+    assert.deepStrictEqual([s.halt, lanes.latency.running, lanes.lp_rewards.running, s.v2.pnl], [null, true, true, -687.5]);
+    desk.state.halt = { reason: "daily_loss", at: clock.t, by: "rules", equity: 1890, limit: 1900 };
+    desk._lanesSync();
+    assert.deepStrictEqual([lanes.latency.running, lanes.lp_rewards.running], [true, true]);
+    desk.state.halt = null;
     desk._laneEvent({ lane: "latency", hour: "2026-11-05T11:00:00.000Z", trades: 4, pnl: 1.2 });
     assert.deepStrictEqual((({ kind, op, agentId, trades }) => ({ kind, op, agentId, trades }))(desk.status().journal[0]), { kind: "lane", op: "hour", agentId: "a9", trades: 4 });
+
+    // the watchdog: silent feeds for 3 minutes raise one alert each, and one more when they are back
+    lanes.latency.fresh = null;
+    lanes.lp_rewards.fresh = clock.t;
+    desk._watch(clock.t);
+    assert.deepStrictEqual(desk.status().v2.issues.map((i) => [i.agentId, i.code, i.alerted]), [["a9", "binance", false], ["a9", "clob", false]]);
+    assert.strictEqual(alerts.filter((a) => a.kind === "watch").length, 0, "not before 3 minutes");
+    clock.t += 3 * 60000;
+    lanes.lp_rewards.fresh = clock.t;
+    desk._watch(clock.t);
+    assert.deepStrictEqual(alerts.filter((a) => a.kind === "watch").map((a) => [a.state, a.agentId, a.code]), [["problem", "a9", "binance"], ["problem", "a9", "clob"]]);
+    desk._watch(clock.t + 60000);
+    assert.strictEqual(alerts.filter((a) => a.kind === "watch").length, 2, "once per problem");
+    lanes.latency.fresh = clock.t + 60000;
+    lanes.lp_rewards.fresh = clock.t + 60000;
+    desk._watch(clock.t + 60000);
+    assert.deepStrictEqual(alerts.filter((a) => a.kind === "watch").slice(2).map((a) => [a.state, a.code]), [["ok", "binance"], ["ok", "clob"]]);
+    assert.deepStrictEqual(desk.status().v2.issues, []);
+    lanes.lp_rewards.running = false;
+    desk._watch(clock.t + 60000);
+    assert.deepStrictEqual(desk.status().v2.issues.map((i) => [i.agentId, i.code]), [["a10", "down"]]);
+    lanes.lp_rewards.running = true;
+    desk._watch(clock.t + 60000);
+    assert.ok(desk.status().journal.some((r) => r.kind === "watch" && r.state === "problem" && r.code === "binance"));
+
+    // the kill switch of latarb_v2 pauses a9 and says so once
+    const before = alerts.length;
+    desk._laneEvent({ lane: "latency", op: "v2_kill", trades: 512, exit: -0.004 });
+    await turn(5);
+    s = desk.status();
+    assert.deepStrictEqual([s.agents.find((a) => a.id === "a9").status, s.agents.find((a) => a.id === "a9").note, lanes.latency.running], ["paused", "v2_kill_switch", false]);
+    assert.deepStrictEqual(alerts.slice(before).map((a) => [a.kind, a.op, a.agentId]), [["v2", "v2_kill", "a9"]]);
+    assert.ok(s.journal.some((r) => r.kind === "v2" && r.op === "v2_kill" && r.trades === 512));
+    // the hourly rules leave the V2 lanes alone
+    assert.deepStrictEqual(R.evaluateRoster(desk.state.roster, { a10: { pnl: -5000, settled: 99 } }, desk.state.config, clock.t).filter((x) => x.agentId === "a10"), []);
+    assert.deepStrictEqual(R.allowSuggestion({ op: "pause", agent: "a10" }, desk.state.roster, desk.state.config, clock.t), { ok: false, reason: "v2_lane" });
+    // Start afresh keeps the V2 test; its own reset starts it over
     desk.setContext({ active: false });
     desk.reset({ confirm: true });
-    assert.deepStrictEqual([lanes.latency.resets, lanes.lp_rewards.resets, desk.status().equity], [1, 1, 1000]);
+    assert.deepStrictEqual([lanes.latency.resets, lanes.lp_rewards.resets, desk.status().equity], [0, 0, 2000]);
+    assert.throws(() => desk.reset({ confirm: true, scope: "x" }), /agents_reset_scope_invalid/);
+    desk.reset({ confirm: true, scope: "v2" });
+    assert.deepStrictEqual([lanes.latency.resets, lanes.lp_rewards.resets], [1, 1]);
+    assert.ok(desk.status().journal.some((r) => r.kind === "reset" && r.scope === "v2"));
     desk.dispose();
 
     // a desk saved before the lanes: they join as a9 and a10 and the shadow maker retires

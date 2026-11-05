@@ -86,6 +86,7 @@ function nextId(roster) {
 
 /**
  * Hourly rules. stats[id] = { pnl, settled, brier, marketBrier, brierN }; capital = the agent's share of capital.
+ * The fast lanes are the V2 test: their own pre-registered kill switch stops them, never these rules.
  *  - pause: a loss of 30% of its capital, or ≥ 20 settled trades and a loss of 10%; an agent with probabilities of
  *    its own (the models and the AI) also when its Brier score trails the market's by 0.02 after 30 settled trades;
  *  - a rule-paused agent is retested after 72 hours; paused a second time, it retires and frees its slot;
@@ -95,6 +96,7 @@ function evaluateRoster(roster, stats, config, now) {
   const capital = (config.agentCapitalPct / 100) * config.capitalUsd;
   const actions = [];
   for (const agent of roster) {
+    if (LANE_TYPES.includes(agent.type)) continue;
     const s = stats[agent.id] || { pnl: 0, settled: 0 };
     if (agent.status === "active") {
       let reason = null;
@@ -118,9 +120,11 @@ function evaluateRoster(roster, stats, config, now) {
 }
 
 // A model's roster suggestion is applied only when the rules would allow it: pausing is always allowed (the safe
-// direction); resuming needs a rule pause older than 24 h; spawning needs a free slot and a listed variant.
+// direction); resuming needs a rule pause older than 24 h; spawning needs a free slot and a listed variant. The V2
+// lanes are not the model's to touch.
 function allowSuggestion(action, roster, config, now) {
   if (!action || typeof action !== "object") return { ok: false, reason: "invalid" };
+  if (roster.some((a) => a.id === action.agent && LANE_TYPES.includes(a.type))) return { ok: false, reason: "v2_lane" };
   if (action.op === "pause") {
     const agent = roster.find((a) => a.id === action.agent && a.status === "active");
     return agent ? { ok: true, action: { op: "pause", agentId: agent.id, reason: "ai_plan" } } : { ok: false, reason: "not_active" };
