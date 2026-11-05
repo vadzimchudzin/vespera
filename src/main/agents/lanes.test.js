@@ -161,6 +161,75 @@ async function main() {
     small.running = false;
   }
 
+  // --- latency: the shadows, the certificate's results and its clock -------------------------------------------------
+  {
+    const root = tmp(), clock = { t: NOW + 60000 };
+    const s0 = Math.floor(clock.t / 300000) * 300000;
+    const btc = `btc-updown-5m-${s0 / 1000}`, eth = `eth-updown-5m-${s0 / 1000}`;
+    let resolved = false;
+    const net = {
+      async json(url) {
+        if (url.includes("closed=true")) return resolved ? [{ umaResolutionStatus: "resolved", outcomePrices: JSON.stringify(["0", "1"]), outcomes: JSON.stringify(["Up", "Down"]) }] : [];
+        if (url.includes(`slug=${btc}`)) return [{ slug: btc, clobTokenIds: JSON.stringify(["UP", "DN"]), outcomes: JSON.stringify(["Up", "Down"]) }];
+        if (url.includes(`slug=${eth}`)) return [{ slug: eth, clobTokenIds: JSON.stringify(["EUP", "EDN"]), outcomes: JSON.stringify(["Up", "Down"]) }];
+        return [];
+      },
+    };
+    const lane = new L.LatencyLane({ root, net, WebSocketImpl: FakeWS, now: () => clock.t });
+    lane.start({ capitalUsd: 1000, perTradeUsd: 100 });
+    await turn(5);
+    assert.deepStrictEqual(lane.combos, [["btc 5m", false], ["btc 15m", true], ["eth 5m", true], ["eth 15m", true]]);
+    const clob = socket(/ws-subscriptions-clob/), bin = socket(/binance/);
+    assert.ok(/btcusdt@aggTrade\/ethusdt@aggTrade/.test(bin.url), "the control's asset rides the same socket");
+    assert.deepStrictEqual(JSON.parse(clob.sent[0]).assets_ids.sort(), ["EUP", "UP"]);
+    const T = clock.t;
+    clob.deliver([{ event_type: "book", asset_id: "EUP", timestamp: String(T - 5000), bids: lvl([[0.5, 100]]), asks: lvl([[0.52, 100]]) }]);
+    clob.deliver({ event_type: "price_change", timestamp: String(T + 9000), price_changes: [{ asset_id: "EUP", side: "BUY", price: "0.55", size: "60" }] });
+    const agg = (dt, p) => bin.deliver({ stream: "ethusdt@aggTrade", data: { e: "aggTrade", s: "ETHUSDT", T: T + dt, p: String(p) } });
+    agg(-1000, 3000);
+    clock.t = T + 100;
+    agg(0, 3001.5);                          // +5 bps on ETH
+    assert.strictEqual(lane.feeds.jumps, 0, "the jump counter is the traded asset's");
+    // the feeds are live: the certificate's clock runs
+    lane._uptime();
+    clock.t = T + 5100;
+    lane._uptime();
+    assert.strictEqual(Object.values(lane.cert.days).reduce((s, d) => s + d.up, 0), 5000);
+    clock.t = T + 20000;
+    await turn(1700);
+    await turn(5);
+    const st = lane.status();
+    assert.deepStrictEqual([st.trades, st.settled, st.open, st.pnl, st.exposure], [0, 0, 0, 0, 0], "a shadow trade stays out of the ledger");
+    assert.ok(!fs.existsSync(path.join(root, "latency-trades.jsonl")));
+    const rows = fs.readFileSync(path.join(root, "latency-shadow.jsonl"), "utf8").trim().split("\n").map((x) => JSON.parse(x));
+    assert.deepStrictEqual([rows.length, rows[0].a, rows[0].tf, rows[0].side, rows[0].how, rows[0].shares], [1, "eth", "5m", "Up", "bid_10s", 100]);
+    const fee1 = takerFee(100, 0.52, { rate: 0.07 }), fee2 = takerFee(100, 0.55, { rate: 0.07 });
+    let g = st.v2.groups.find((x) => x.key === "eth 5m");
+    assert.deepStrictEqual([g.role, g.shadow, g.trades, g.windows, g.res], ["control", true, 1, 1, null]);
+    near(g.pnl, 100 * 0.55 - fee2 - (100 * 0.52 + fee1), 0.006);
+    assert.deepStrictEqual([st.v2.verdict, st.v2.pending], ["collecting", 1]);
+    assert.strictEqual(Object.values(lane.cert.days).reduce((s, d) => s + d.n, 0), 0, "the days count the traded windows only");
+    // the result: asked a minute after the window's end, again with a backoff, then folded into the sums
+    clock.t = s0 + 300000 + 61000;
+    await lane._resolve();
+    assert.ok(lane.cert.w[eth] && lane.cert.w[eth].tries === 1, "not resolved yet: retried later");
+    resolved = true;
+    await lane._resolve();
+    assert.ok(lane.cert.w[eth], "the retry waits for its backoff");
+    clock.t += 61000;
+    await lane._resolve();
+    assert.ok(!lane.cert.w[eth], "resolved and folded");
+    g = lane.status().v2.groups.find((x) => x.key === "eth 5m");
+    near(g.res, -(100 * 0.52 + fee1) / 100, 1e-6);       // Up lost: the shares were worth nothing at the result
+    assert.deepStrictEqual([g.resWindows, g.noResult], [1, 0]);
+    lane.stop();
+    // the certificate survives a restart
+    const again = new L.LatencyLane({ root, net, WebSocketImpl: FakeWS, now: () => clock.t });
+    assert.deepStrictEqual(again.status().v2.groups, lane.status().v2.groups);
+    again.reset();
+    assert.deepStrictEqual([again.status().v2.groups, new L.LatencyLane({ root, net, WebSocketImpl: FakeWS }).status().v2.groups], [[], []]);
+  }
+
   // --- LP: the core ---------------------------------------------------------------------------------------------
   {
     const U = [
@@ -292,6 +361,57 @@ async function main() {
     failing.start({ capitalUsd: 100 });
     assert.strictEqual(failing.running, true);
     await turn(5);
+  }
+
+  // --- LP: the shadow without the shield, the V2 clock and its phases ------------------------------------------------
+  {
+    const root = tmp(), clock = { t: NOW }, events = [];
+    const mk = (i) => ({ cid: `c${i}`, tok: `y${i}`, tok2: `n${i}`, slug: `m${i}`, ev: `e${i}`, rate: 100, v: 0.03, ms: 10, tick: 0.01, size: 20 });
+    let universe = [mk(1), mk(2), mk(3)];
+    const net = { async json(url, opts = {}) { return url.includes("/books") ? opts.body.map((b) => ({ asset_id: b.token_id, bids: lvl([[0.49, 100]]), asks: lvl([[0.51, 100]]), tick_size: "0.01" })) : []; } };
+    const lane = new L.LpLane({ root, net, WebSocketImpl: FakeWS, now: () => clock.t, onEvent: (row) => events.push(row), build: async () => universe.slice() });
+    lane.start({ capitalUsd: 100, perMarketUsd: 50 });
+    await turn(5);
+    for (let i = 0; i < 5; i += 1) { clock.t += 10000; await lane._poll(); }
+    assert.deepStrictEqual([lane.status().quoting, lane.shadow.totals().quoting], [3, 3], "the shadow quotes the same books");
+    assert.deepStrictEqual([lane.v2.upMs, lane.v2.marketMs], [0, 120000], "no trade feed heard yet: the V2 clock waits");
+    const ws = socket(/ws-live-data/);
+    ws.deliver({ topic: "activity", type: "trades", payload: { conditionId: "c2", asset: "y2", price: 0.49, side: "SELL", size: 5 } });
+    assert.deepStrictEqual([lane.core.byCid.get("c2").st.inv, lane.shadow.byCid.get("c2").st.inv], [5, 5], "and fills on the same trades");
+    // 60 shares sold at the mid at once: the shield pulls c3; the shadow has no shield and keeps quoting
+    ws.deliver({ topic: "activity", type: "trades", payload: { conditionId: "c3", asset: "y3", price: 0.5, side: "SELL", size: 60 } });
+    assert.deepStrictEqual([lane.v2.shocks, lane.shadow.shocks], [1, 0]);
+    clock.t += 10000;
+    await lane._poll();
+    const st = lane.status();
+    assert.deepStrictEqual([st.quoting, st.pulled, lane.shadow.totals().quoting, st.shadow.fills], [2, 1, 3, 1]);
+    assert.ok(st.shadow.pnl > 0 && lane.shadow.byCid.get("c3").st.rP > lane.core.byCid.get("c3").st.rP, "the shadow earned on c3 while it was pulled");
+    assert.deepStrictEqual([lane.v2.upMs, lane.v2.marketMs, lane.v2.pulledMs], [10000, 150000, 10000]);
+    assert.deepStrictEqual([st.v2.phase, st.v2.verdict, st.v2.pulledShare], [1, "collecting", 0.0667]);
+    // 24 hours of live feeds close phase 1: its line in the journal, then a rebuilt universe for phase 2
+    lane.v2.upMs = 24 * HOUR - 5000;
+    universe = [mk(2), mk(3), mk(4)];
+    clock.t += 10000;
+    await lane._poll();
+    const ph = events.filter((e) => e.op === "v2_phase");
+    assert.deepStrictEqual(ph.map((e) => [e.lane, e.phase, e.ok, e.verdict]), [["lp_rewards", 1, false, "fail"]], "three markets: the top one is above a quarter of the net");
+    assert.deepStrictEqual(Object.keys(lane.v2.ph1.nets).sort(), ["c1", "c2", "c3"]);
+    assert.deepStrictEqual([lane.core.markets.map((m) => m.cid), lane.shadow.markets.map((m) => m.cid)], [["c2", "c3", "c4"], ["c2", "c3", "c4"]]);
+    assert.deepStrictEqual(Object.keys(lane.v2.arch), ["c1"], "what the market that left made, with and without the shield");
+    assert.ok(lane.v2.arch.c1[1] > lane.v2.arch.c1[0] - 1e-9 && lane.v2.arch.c1[0] > 0);
+    const s2 = lane.status().v2;
+    assert.deepStrictEqual([s2.phase, s2.phase1.done, s2.phase1.markets], [2, true, 3]);
+    clock.t += 10000;
+    await lane._poll();
+    assert.strictEqual(events.filter((e) => e.op === "v2_phase").length, 1, "phase 1 closes once");
+    assert.strictEqual(lane.status().v2.phase2.markets, 3, "phase 2 is the new universe: c1 left before it");
+    lane.stop();
+    // all of it survives a restart
+    const again = new L.LpLane({ root, net, WebSocketImpl: FakeWS, now: () => clock.t, build: async () => universe.slice() });
+    assert.deepStrictEqual([again.v2.shocks, again.v2.ph1.t, again.shadow.byCid.get("c2").st.inv, again.status().shadow.fills], [1, lane.v2.ph1.t, 5, 1]);
+    assert.deepStrictEqual(again.status().v2.phase1, lane.status().v2.phase1);
+    again.reset();
+    assert.deepStrictEqual([again.v2.ph1, again.v2.shocks, again.shadow, again.status().v2.upH], [null, 0, null, 0]);
   }
 
   // --- the desk runs the lanes ----------------------------------------------------------------------------------

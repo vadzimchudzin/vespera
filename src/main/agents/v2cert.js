@@ -295,9 +295,14 @@ function lpChecks(p, done) {
 // state: { upMs, ph1: { t, upMs, nets } | null, ph2: same | null, nets (now), shocks, pulledMs, marketMs, rewardsHs, rewardsH }
 function lpSummary(state, now = Date.now()) {
   const up = state.upMs || 0;
+  // phase 2: what each market made since phase 1 closed; one that made nothing since (it left at the rebuild) is out
   const sub = (a, b) => {
     const out = {};
-    for (const [cid, x] of Object.entries(a || {})) { const y = (b && b[cid]) || [0, 0]; out[cid] = [x[0] - y[0], x[1] - y[1]]; }
+    for (const [cid, x] of Object.entries(a || {})) {
+      const y = b && b[cid];
+      if (y && x[0] === y[0] && x[1] === y[1]) continue;
+      out[cid] = y ? [x[0] - y[0], x[1] - y[1]] : [x[0], x[1]];
+    }
     return out;
   };
   const p1nets = state.ph1 ? state.ph1.nets : state.nets;
