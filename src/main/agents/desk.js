@@ -48,6 +48,7 @@ const V2_SCALE = Object.freeze({
 // one more when it is fine again.
 const WATCH_MS = 3 * 60000;
 const WATCH_FEED_MS = 90000;
+const WATCH_START_MS = { latency: WATCH_FEED_MS, lp_rewards: 5 * 60000 };   // a10 first builds its markets (about 1.5 min)
 const DECIDED = Object.freeze({ p: 0.985, w: 0.6 });
 
 const r2 = (x) => Math.round(x * 100) / 100;
@@ -256,14 +257,18 @@ class AgentDesk {
         }
         if (on && agent && !lane.running) {
           lane.start({ ...(V2_SCALE[type] || {}), params: { ...agent.params } });
-          if (lane.running) this._journal({ kind: "lane", op: "start", agentId: agent.id, type });
+          if (lane.running) {
+            this._journal({ kind: "lane", op: "start", agentId: agent.id, type });
+            (this.laneSince || (this.laneSince = {}))[type] = this.now();
+          }
         }
       } catch (error) { this._sourceError(`lane_${type}`, error); }
     }
   }
 
-  // What should be running and is not: a lane down, or a feed silent for WATCH_FEED_MS. A problem that lasts
-  // WATCH_MS raises one alert (Telegram and the panel) and one more when it clears.
+  // What should be running and is not: a lane down, or a feed silent for WATCH_FEED_MS (a lane that has just started
+  // gets WATCH_START_MS to connect). A problem that lasts WATCH_MS raises one alert (Telegram and the panel) and one
+  // more when it clears.
   _laneIssues(now) {
     const out = [];
     if (!this._lanesOn()) return out;
@@ -275,6 +280,8 @@ class AgentDesk {
       try { s = lane.status(); } catch { s = null; }
       const add = (code) => out.push({ type, agentId: agent.id, code, error: (s && s.error) || null });
       if (!s || !s.running) { add("down"); continue; }
+      const since = this.laneSince && this.laneSince[type];
+      if (since != null && now - since < (WATCH_START_MS[type] || WATCH_FEED_MS)) continue;
       if (type === "latency") {
         if (old(s.feeds && s.feeds.binance)) add("binance");
         if (old(s.feeds && s.feeds.clob)) add("clob");

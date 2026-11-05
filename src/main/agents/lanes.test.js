@@ -488,9 +488,13 @@ async function main() {
     desk._laneEvent({ lane: "latency", hour: "2026-11-05T11:00:00.000Z", trades: 4, pnl: 1.2 });
     assert.deepStrictEqual((({ kind, op, agentId, trades }) => ({ kind, op, agentId, trades }))(desk.status().journal[0]), { kind: "lane", op: "hour", agentId: "a9", trades: 4 });
 
-    // the watchdog: silent feeds for 3 minutes raise one alert each, and one more when they are back
+    // the watchdog: silent feeds for 3 minutes raise one alert each, and one more when they are back; a lane that has
+    // just started has 90 seconds to connect (a10, which builds its markets first, five minutes)
     lanes.latency.fresh = null;
-    lanes.lp_rewards.fresh = clock.t;
+    lanes.lp_rewards.fresh = null;
+    desk._watch(clock.t);
+    assert.deepStrictEqual(desk.status().v2.issues, [], "just started");
+    clock.t += 2 * 60000;
     desk._watch(clock.t);
     assert.deepStrictEqual(desk.status().v2.issues.map((i) => [i.agentId, i.code, i.alerted]), [["a9", "binance", false], ["a9", "clob", false]]);
     assert.strictEqual(alerts.filter((a) => a.kind === "watch").length, 0, "not before 3 minutes");
