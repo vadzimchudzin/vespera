@@ -10,6 +10,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { createNet } = require("./net");
+const { createProxyRoute } = require("./proxy");
 const MK = require("./market");
 const M = require("./models");
 const SC = require("./scanners");
@@ -79,13 +80,15 @@ async function eachLimit(items, limit, work) {
 }
 
 class AgentDesk {
-  constructor({ root, ai = null, net = null, now = () => Date.now(), onEvent = () => {}, locale = () => "en", tickMs = TICK_MS, autoTick = true, lanes } = {}) {
+  constructor({ root, ai = null, net = null, proxy = null, now = () => Date.now(), onEvent = () => {}, locale = () => "en", tickMs = TICK_MS, autoTick = true, lanes } = {}) {
     if (!root) throw new TypeError("root is required");
     this.root = path.resolve(root);
     this.file = path.join(this.root, "desk.json");
     this.journalFile = path.join(this.root, "journal.jsonl");
     this.ai = ai;
-    this.net = net || createNet();
+    // the proxy from the API panel (a getter, read on every call): Polymarket's requests and sockets go through it
+    this.proxy = proxy ? createProxyRoute(proxy) : null;
+    this.net = net || createNet({ proxy: this.proxy });
     this.now = now;
     this.onEvent = onEvent;
     this.locale = typeof locale === "function" ? locale : () => "en";
@@ -114,7 +117,7 @@ class AgentDesk {
     // The fast lanes (latency arbitrage, LP with rewards) trade on their own sockets and timers. They run only while
     // the desk ticks by itself (active, auto-tick), runs, is not halted and has an active agent of their type.
     this.lanes = lanes === undefined
-      ? createLanes({ root: path.join(this.root, "lanes"), net: this.net, now, onEvent: (row) => this._laneEvent(row) })
+      ? createLanes({ root: path.join(this.root, "lanes"), net: this.net, now, onEvent: (row) => this._laneEvent(row), proxy: this.proxy })
       : lanes || {};
   }
 
@@ -420,7 +423,7 @@ class AgentDesk {
           capital: V2_SCALE[a.type] ? V2_SCALE[a.type].capitalUsd : capital, v2: Boolean(V2_SCALE[a.type]), ...stats[a.id],
         })),
         positions: this._positionsView(200), candidates: this.candidates.slice(0, 40), journal: this.tail.slice(-60).reverse(),
-        sources: { ...this.sourceErrors }, lanes,
+        sources: { ...this.sourceErrors }, lanes, proxy: this.proxy ? this.proxy.describe() : { on: false, url: "", route: null, error: null },
       };
     } catch (error) {
       return { ok: false, reason: codeOf(error, "agents_status_failed") };
@@ -675,6 +678,7 @@ class AgentDesk {
     this.timer = null;
     this.kickTimer = null;
     for (const lane of Object.values(this.lanes || {})) { try { lane.stop(); } catch { /* disposing */ } }
+    try { this.proxy?.close(); } catch { /* disposing */ }
     if (!this.disposed) this._save();
     this.active = false;
     this.disposed = true;

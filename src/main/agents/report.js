@@ -53,6 +53,19 @@ const WATCH = {
   rtds: ["нет ленты сделок Polymarket", "no Polymarket trade feed"],
 };
 const watchName = (code, locale) => (WATCH[code] ? say(locale, ...WATCH[code]) : String(code || "?"));
+// the network's codes in words; anything else stays a code
+const NET = {
+  agents_source_unavailable: ["нет связи с Polymarket", "no connection to Polymarket"],
+  agents_timeout: ["Polymarket не ответил вовремя", "Polymarket did not answer in time"],
+  agents_proxy_invalid: ["прокси указан, но не работает — проверьте адрес в панели API", "the proxy is set but unusable — check the address in the API panel"],
+  agents_proxy_down: ["прокси не отвечает", "the proxy does not answer"],
+  agents_proxy_auth: ["прокси отклонил логин или пароль", "the proxy rejected the login or password"],
+  agents_proxy_timeout: ["прокси не ответил вовремя", "the proxy timed out"],
+  agents_proxy_dropped: ["прокси оборвал соединение", "the proxy dropped the connection"],
+  agents_proxy_host: ["адрес прокси не найден", "the proxy's host was not found"],
+  agents_proxy_target_refused: ["прокси не открыл соединение с Polymarket", "the proxy would not open the connection to Polymarket"],
+};
+const netName = (code, locale) => (NET[code] ? say(locale, ...NET[code]) : String(code));
 const cents = (x) => (x == null || !Number.isFinite(+x) ? "—" : `${x > 0 ? "+" : x < 0 ? "−" : ""}${Math.abs(x * 100).toFixed(2)}¢`);
 const count = (x) => grouped(String(Math.round(Number(x) || 0)));
 const pval = (p) => (p == null ? "—" : p < 0.001 ? "< 0.001" : Number(p).toFixed(3));
@@ -122,7 +135,7 @@ function v2Text(p, locale) {
 function watchText(p, locale) {
   const who = `${p.agentId || "?"} ${typeName(p.type, locale)}`;
   if (p.state === "ok") return say(locale, `V2 · ${who}: снова в порядке (${watchName(p.code, locale)} — устранено).`, `V2 · ${who}: back to normal (${watchName(p.code, locale)} — cleared).`);
-  const err = p.error ? ` (${p.error})` : "";
+  const err = p.error ? ` (${netName(p.error, locale)})` : "";
   return say(locale, `V2 · ${who}: ${watchName(p.code, locale)} дольше 3 мин${err}. Тест V2 теряет часы — проверьте сеть и приложение.`,
     `V2 · ${who}: ${watchName(p.code, locale)} for over 3 min${err}. The V2 test is losing hours — check the network and the app.`);
 }

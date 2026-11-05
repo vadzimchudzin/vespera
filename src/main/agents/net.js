@@ -1,7 +1,8 @@
 "use strict";
 
 // Public market data only: no keys, no cookies, no account. Every request has a timeout and a size cap, so a slow
-// or hostile endpoint can neither stall the desk nor fill its memory.
+// or hostile endpoint can neither stall the desk nor fill its memory. With a proxy (proxy.js), Polymarket goes through
+// it and nowhere else: a proxy that is set but unusable fails the request, it never falls back to a direct call.
 
 function fail(code) {
   const error = new Error(code);
@@ -31,8 +32,10 @@ async function readText(response, maxBytes) {
   return text;
 }
 
-function createNet({ fetchImpl = globalThis.fetch, timeoutMs = 15000 } = {}) {
+function createNet({ fetchImpl = globalThis.fetch, timeoutMs = 15000, proxy = null } = {}) {
   async function text(url, { method = "GET", body = null, headers = {}, timeout = timeoutMs, maxBytes = 8 * 1024 * 1024 } = {}) {
+    const hdrs = { accept: "application/json, application/xml;q=0.9, */*;q=0.5", ...(body != null ? { "content-type": "application/json" } : {}), ...headers };
+    if (proxy && proxy.covers(url)) return proxy.request(url, { method, body, headers: hdrs, timeout, maxBytes });
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeout);
     timer.unref?.();
@@ -41,7 +44,7 @@ function createNet({ fetchImpl = globalThis.fetch, timeoutMs = 15000 } = {}) {
         method,
         signal: controller.signal,
         redirect: "error",
-        headers: { accept: "application/json, application/xml;q=0.9, */*;q=0.5", ...(body != null ? { "content-type": "application/json" } : {}), ...headers },
+        headers: hdrs,
         body: body == null ? undefined : JSON.stringify(body),
       });
       if (!response || typeof response.status !== "number") throw fail("agents_source_unavailable");

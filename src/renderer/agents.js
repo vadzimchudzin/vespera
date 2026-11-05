@@ -89,8 +89,27 @@
     not_server_owner: ["Сервер сейчас не ведёт исполнение.", "The server does not own execution now."],
     handoff_pending: ["Идёт передача между компьютером и сервером.", "A handoff between the desktop and the server is in progress."],
     remote_unavailable: ["Сервер недоступен.", "The server is unavailable."],
+    agents_source_unavailable: ["нет связи с источником; если Polymarket у вас заблокирован, укажите прокси в панели API", "no connection to the source; if Polymarket is blocked where you are, set a proxy in the API panel"],
+    agents_timeout: ["источник не ответил вовремя", "the source did not answer in time"],
+    agents_rate_limited: ["источник ограничил частоту запросов, повтор позже", "the source is rate-limiting, retrying later"],
+    agents_bad_json: ["источник прислал нечитаемый ответ", "the source sent an unreadable answer"],
+    agents_response_too_large: ["ответ источника слишком велик", "the source's answer is too large"],
+    agents_proxy_invalid: ["прокси в панели API указан, но не работает: проверьте адрес и схему (http://, socks5://); без него Polymarket не опрашивается", "the proxy in the API panel is set but unusable: check the address and scheme (http://, socks5://); Polymarket is not reached without it"],
+    agents_proxy_down: ["прокси не отвечает (соединение отклонено)", "the proxy does not answer (connection refused)"],
+    agents_proxy_auth: ["прокси отклонил логин или пароль", "the proxy rejected the login or password"],
+    agents_proxy_timeout: ["прокси не ответил вовремя", "the proxy timed out"],
+    agents_proxy_dropped: ["прокси оборвал соединение", "the proxy dropped the connection"],
+    agents_proxy_host: ["адрес прокси не найден (DNS)", "the proxy's host was not found (DNS)"],
+    agents_proxy_target_refused: ["прокси не открыл соединение с Polymarket", "the proxy would not open the connection to Polymarket"],
+    ring_proxy_socks_auth: ["Кольцо не работает через SOCKS-прокси с логином и паролем: в Chromium нет входа в SOCKS. Укажите HTTP-прокси или SOCKS без пароля — агентам подходит любой.", "The ring cannot use a SOCKS proxy with a login and password: Chromium cannot log in to SOCKS. Use an HTTP proxy or SOCKS without a password — the agents work with either."],
   };
-  const reason = (c) => (REASONS[c] ? pick(REASONS[c]) : String(c || say("неизвестная ошибка", "unknown error")));
+  const reason = (c) => {
+    if (REASONS[c]) return pick(REASONS[c]);
+    const http = /^agents_http_(\d{3})$/.exec(c || "");
+    if (http) return http[1] === "403" ? say("доступ запрещён (HTTP 403): возможно, регион заблокирован — укажите прокси в панели API", "access denied (HTTP 403): the region may be blocked — set a proxy in the API panel")
+      : say(`источник ответил ошибкой HTTP ${http[1]}`, `the source answered with HTTP ${http[1]}`);
+    return String(c || say("неизвестная ошибка", "unknown error"));
+  };
   const AI_REASONS = {
     agents_ai_off: ["выключен в настройках агентов", "off in the agents' settings"], agents_ai_budget_zero: ["бюджет агентов на ИИ — $0", "the agents' AI budget is $0"],
     agents_ai_budget_used: ["дневной бюджет исчерпан", "the daily budget is used up"], ai_disabled: ["ИИ-помощник выключен", "the AI advisor is off"],
@@ -187,7 +206,8 @@
     const where = ui.side === "server" ? say("на сервере", "on the server") : ui.side === "local" ? say("на этом компьютере", "on this computer") : "";
     return h("header", { class: "ag-head" },
       h("div", { class: "ag-title" }, h("h2", null, say("Агенты", "Agents")), h("span", { class: `ag-chip ${chip[1]}` }, chip[0])),
-      h("div", { class: "ag-sub" }, say("Бумажная торговля на Polymarket — реальные деньги не используются", "Paper trading on Polymarket — no real money is used") + (where ? ` · ${where}` : "")),
+      h("div", { class: "ag-sub" }, say("Бумажная торговля на Polymarket — реальные деньги не используются", "Paper trading on Polymarket — no real money is used") + (where ? ` · ${where}` : "")
+        + (s && s.proxy && s.proxy.on ? ` · ${say("Polymarket через прокси", "Polymarket via the proxy")}` : "")),
       h("button", { class: "orb sm ag-close", type: "button", title: say("Закрыть", "Close"), on: { click: () => close() } }, "✕"));
   }
 
@@ -209,7 +229,8 @@
     else if (s.running) row.append(button(say("Стоп", "Stop"), "ghost", () => act("agentsStop")));
     else row.append(button(say("Старт", "Start"), "ok", () => act("agentsStart")));
     if (!s.halt) row.append(button(say("Аварийная остановка", "Emergency stop"), "ghost ag-danger", () => act("agentsKill"), say("Никаких новых сделок, пока стоп не снят", "No new trades until the halt is cleared")));
-    if (typeof api.openRing === "function") row.append(h("span", { class: "ag-spacer" }), button(say("Открыть кольцо", "Open the ring"), "ghost", () => api.openRing().catch(() => {})));
+    if (typeof api.openRing === "function") row.append(h("span", { class: "ag-spacer" }), button(say("Открыть кольцо", "Open the ring"), "ghost",
+      () => api.openRing().then((r) => { if (r && r.ok === false) flash(reason(r.reason), "neg"); }).catch(() => {})));
     box.append(row);
     if (s.halt) {
       const auto = s.halt.reason !== "manual";
@@ -236,7 +257,16 @@
     }
     if (ai.lastError) issues.push(`${say("ИИ", "AI")}: ${ai.lastError}`);
     if (s.lastError) issues.push(`${say("Цикл", "Tick")}: ${s.lastError}`);
-    for (const [name, e] of Object.entries(s.sources || {})) issues.push(`${name}: ${e && e.code} · ${time(e && e.at)}`);
+    if (s.proxy && s.proxy.on && s.proxy.error) issues.push(`${say("Прокси", "Proxy")}: ${reason(s.proxy.error)}`);
+    // the sources that fail the same way on one line: with Polymarket cut off, all of Gamma fails at once
+    const failing = new Map();
+    for (const [name, e] of Object.entries(s.sources || {})) {
+      const key = (e && e.code) || "", g = failing.get(key) || { names: [], at: 0 };
+      g.names.push(name);
+      g.at = Math.max(g.at, (e && e.at) || 0);
+      failing.set(key, g);
+    }
+    for (const [code, g] of failing) issues.push(`${g.names.join(", ")}: ${reason(code)} · ${time(g.at || null)}`);
     if (issues.length) box.append(h("div", { class: "ag-note" }, issues.map((t) => h("div", null, t))));
     return box;
   }

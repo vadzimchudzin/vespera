@@ -106,6 +106,26 @@ function validLedger(x) {
     validHist(x.hist) && Array.isArray(x.recent);
 }
 
+// A Polymarket socket goes through the app's proxy when one is set (proxy.js); Binance stays direct. A proxy that is set
+// but unusable is never bypassed: the socket is not opened, the lane says why and tries again in five seconds.
+const PROXIED = new WeakSet();
+function openSocket(lane, url) {
+  let opts;
+  try { opts = lane.proxy ? lane.proxy.ws(url) : undefined; } catch (error) { lane.error = (error && error.code) || "agents_proxy_invalid"; return null; }
+  // the browser-style WebSocket takes no agent and would go direct
+  if (opts && typeof globalThis.WebSocket === "function" && lane.WS === globalThis.WebSocket) { lane.error = "agents_lane_no_websocket"; return null; }
+  const ws = opts ? new lane.WS(url, opts) : new lane.WS(url);
+  if (opts) PROXIED.add(ws);
+  return ws;
+}
+function socketOpened(lane) { if (/^agents_proxy_/.test(lane.error || "")) lane.error = null; }
+function socketFailed(lane, ws, event) { if (PROXIED.has(ws) && lane.proxy && typeof lane.proxy.wsError === "function") lane.proxy.wsError(event); }
+// The lane does not start while the proxy is set but unusable; it would only reach Binance.
+function proxyBlocked(lane) {
+  if (!lane.proxy) return false;
+  try { lane.proxy.ws(lane.type === "latency" ? CLOB_WS : RTDS_WS); return false; } catch (error) { lane.error = (error && error.code) || "agents_proxy_invalid"; return true; }
+}
+
 // Timers and sockets that one stop() clears.
 class Lifecycle {
   constructor() { this.timers = new Set(); this.sockets = new Set(); }
@@ -242,7 +262,7 @@ class LatencyCore {
 // ---- latency: the lane (sockets, timers, ledger) -------------------------------------------------------------------
 
 class LatencyLane {
-  constructor({ root, net, WebSocketImpl = WS_IMPL, now = () => Date.now(), params = {}, onEvent = () => {} } = {}) {
+  constructor({ root, net, WebSocketImpl = WS_IMPL, now = () => Date.now(), params = {}, onEvent = () => {}, proxy = null } = {}) {
     if (!root) throw new TypeError("root is required");
     this.type = "latency";
     this.file = path.join(root, "latency.json");
@@ -251,6 +271,7 @@ class LatencyLane {
     this.certFile = path.join(root, "latency-cert.json");
     this.net = net;
     this.WS = WebSocketImpl;
+    this.proxy = proxy;
     this.now = now;
     this.onEvent = onEvent;
     this.params = { ...LAT_DEFAULTS, ...params };
@@ -273,6 +294,7 @@ class LatencyLane {
   start({ capitalUsd = 0, perTradeUsd = Infinity, params = {} } = {}) {
     if (this.running) return;
     if (typeof this.WS !== "function") { this.error = "agents_lane_no_websocket"; return; }
+    if (proxyBlocked(this)) return;
     this.limits = { capitalUsd, perTradeUsd };
     const p = { ...this.params, ...params };
     // the traded windows, then the shadows (same rule, certificate only)
@@ -346,13 +368,15 @@ class LatencyLane {
 
   _clob() {
     if (!this.running) return;
-    const ws = new this.WS(CLOB_WS);
+    const ws = openSocket(this, CLOB_WS);
+    if (!ws) { this.life.after(5000, () => this._clob()); return; }
     this.clob = ws;
     this.clobOpen = false;
     this.life.sockets.add(ws);
     let last = this.now();
     ws.onopen = () => {
       this.clobOpen = true;
+      socketOpened(this);
       last = this.now();
       ws.send(JSON.stringify({ assets_ids: [...this.subs], type: "market", custom_feature_enabled: true }));
     };
@@ -370,7 +394,7 @@ class LatencyLane {
       this.core?.clearBooks();
       if (this.running) this.life.after(1000, () => this._clob());
     };
-    ws.onerror = () => { try { ws.close(); } catch { /* closing */ } };
+    ws.onerror = (e) => { socketFailed(this, ws, e); try { ws.close(); } catch { /* closing */ } };
     const ping = this.life.every(2000, () => {
       if (ws !== this.clob) { clearInterval(ping); return; }
       if (this.clobOpen) { try { ws.send("PING"); } catch { /* closing */ } }
@@ -802,17 +826,32 @@ class LpCore {
 // The reward markets worth quoting with this capital: the research filters (rate >= $5/day, no sports, >= 3 days to
 // the end, mid 0.10-0.90, raw spread <= 2v), ranked by expected reward per dollar, taken until the capital is used.
 const SPORT = /^(lol|cs2|csgo|dota|val|nfl|nba|nhl|mlb|epl|ucl|uel|atp|wta|ufc|cbb|cfb|mls)-/;
-async function buildLpUniverse(net, { capitalUsd, perMarketUsd = 50, now = Date.now(), maxMarkets = 300 } = {}) {
+// A failed rewards page is asked again up to twice (after 1 s, then 2 s), a failed books batch once; a refusal that
+// cannot change by asking again (an unusable proxy, a wrong proxy login, a 4xx) is not.
+const FINAL = /^agents_(proxy_invalid|proxy_auth|http_4\d\d)$/;
+async function retried(work, tries, pause) {
+  for (let i = 1; ; i += 1) {
+    try { return await work(); } catch (error) {
+      if (i >= tries || FINAL.test((error && error.code) || "")) throw error;
+      await pause(1000 * i);
+    }
+  }
+}
+const sleep = (ms) => new Promise((resolve) => { const t = setTimeout(resolve, ms); t.unref?.(); });
+async function buildLpUniverse(net, { capitalUsd, perMarketUsd = 50, now = Date.now(), maxMarkets = 300, pause = sleep } = {}) {
   const today = dayKey(now);
   const rateOf = (r) => (r.rewards_config || []).reduce((s, c) => s + ((c.end_date || "9999") >= today && (c.start_date || "0000") <= today ? +c.rate_per_day || 0 : 0), 0);
   let rows = [], cur = null;
   for (let k = 0; k < 40; k += 1) {
     const q = new URLSearchParams({ order_by: "rate_per_day", position: "DESC", page_size: "500" });
     if (cur) q.set("next_cursor", cur);
-    const j = await net.json(`${CLOB}/rewards/markets/multi?${q}`);
-    rows.push(...((j && j.data) || []));
+    const j = await retried(() => net.json(`${CLOB}/rewards/markets/multi?${q}`, { timeout: 30000 }), 3, pause);
+    const page = (j && j.data) || [];
+    rows.push(...page);
     cur = j && j.next_cursor;
     if (!cur || cur === "LTE=") break;
+    // the pages come by rate, highest first: after a page with nothing at $5/day or more, no later page has any
+    if (!page.some((r) => r && rateOf(r) >= 5)) break;
   }
   const seen = new Set();
   rows = rows.filter((r) => r && r.condition_id && !seen.has(r.condition_id) && seen.add(r.condition_id));
@@ -823,7 +862,7 @@ async function buildLpUniverse(net, { capitalUsd, perMarketUsd = 50, now = Date.
   for (let i = 0; i < rows.length; i += 100) {
     const part = rows.slice(i, i + 100);
     try {
-      const res = await net.json(`${CLOB}/books`, { method: "POST", body: part.map((r) => ({ token_id: r.tokens[0].token_id })), timeout: 30000 });
+      const res = await retried(() => net.json(`${CLOB}/books`, { method: "POST", body: part.map((r) => ({ token_id: r.tokens[0].token_id })), timeout: 30000 }), 2, pause);
       for (const b of res || []) books.set(b.asset_id, b);
     } catch { /* a missing batch only shrinks the choice */ }
   }
@@ -876,13 +915,14 @@ function validLpV2(x) {
 }
 
 class LpLane {
-  constructor({ root, net, WebSocketImpl = WS_IMPL, now = () => Date.now(), params = {}, onEvent = () => {}, build = buildLpUniverse } = {}) {
+  constructor({ root, net, WebSocketImpl = WS_IMPL, now = () => Date.now(), params = {}, onEvent = () => {}, build = buildLpUniverse, proxy = null } = {}) {
     if (!root) throw new TypeError("root is required");
     this.type = "lp_rewards";
     this.file = path.join(root, "lp.json");
     this.fillLog = path.join(root, "lp-fills.jsonl");
     this.net = net;
     this.WS = WebSocketImpl;
+    this.proxy = proxy;
     this.now = now;
     this.onEvent = onEvent;
     this.build = build;
@@ -924,6 +964,7 @@ class LpLane {
   start({ capitalUsd = 0, perMarketUsd = 50, params = {} } = {}) {
     if (this.running || this.now() < this.retryAt) return;
     if (typeof this.WS !== "function") { this.error = "agents_lane_no_websocket"; return; }
+    if (proxyBlocked(this)) return;
     this.running = true;
     this.error = null;
     this.limits = { capitalUsd, perMarketUsd };
@@ -1013,11 +1054,13 @@ class LpLane {
 
   _rtds() {
     if (!this.running) return;
-    const ws = new this.WS(RTDS_WS);
+    const ws = openSocket(this, RTDS_WS);
+    if (!ws) { this.life.after(5000, () => this._rtds()); return; }
     this.life.sockets.add(ws);
     let last = this.now();
     ws.onopen = () => {
       this.rtds.open = true;
+      socketOpened(this);
       last = this.now();
       ws.send(JSON.stringify({ action: "subscribe", subscriptions: [{ topic: "activity", type: "trades" }] }));
     };
@@ -1043,7 +1086,7 @@ class LpLane {
       this.rtds.open = false;
       if (this.running) this.life.after(2000, () => this._rtds());
     };
-    ws.onerror = () => { try { ws.close(); } catch { /* closing */ } };
+    ws.onerror = (e) => { socketFailed(this, ws, e); try { ws.close(); } catch { /* closing */ } };
     const ping = this.life.every(5000, () => {
       if (!this.life.sockets.has(ws)) { clearInterval(ping); return; }
       if (this.rtds.open) { try { ws.send("PING"); } catch { /* closing */ } }
@@ -1190,10 +1233,10 @@ class LpLane {
 }
 
 const LANE_TYPES = Object.freeze(["latency", "lp_rewards"]);
-function createLanes({ root, net, WebSocketImpl, now, onEvent } = {}) {
+function createLanes({ root, net, WebSocketImpl, now, onEvent, proxy = null } = {}) {
   return {
-    latency: new LatencyLane({ root, net, WebSocketImpl, now, onEvent }),
-    lp_rewards: new LpLane({ root, net, WebSocketImpl, now, onEvent }),
+    latency: new LatencyLane({ root, net, WebSocketImpl, now, onEvent, proxy }),
+    lp_rewards: new LpLane({ root, net, WebSocketImpl, now, onEvent, proxy }),
   };
 }
 

@@ -82,6 +82,7 @@ class ExecutionHost {
       root: path.join(userDataDir, "agents"),
       ai: this.aiAdvisor,
       net: engineOptions.agentsNet,
+      proxy: () => this.outboundProxy(),
       now: engineOptions.agentsNow,
       autoTick: engineOptions.agentsAutoTick,
       locale: () => this.engine?.settings?.locale || "en",
@@ -93,6 +94,11 @@ class ExecutionHost {
     this.bridge = new BridgeClient();
     this.telegramContext = { active: false, command: null, serialize: null, epoch: null };
     this.telegramBot = null;
+  }
+
+  // The proxy from the API panel, for the agents and the ring; never on the server (direct).
+  outboundProxy() {
+    return this.direct ? "" : String(this.engine?.settings?.proxyUrl || "");
   }
 
   _open(dir) {

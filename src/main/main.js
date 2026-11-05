@@ -1,14 +1,16 @@
 "use strict";
 
-const { app, BrowserWindow, ipcMain, shell, Notification, dialog, clipboard } = require("electron");
+const { app, BrowserWindow, ipcMain, shell, Notification, dialog, clipboard, session } = require("electron");
 const fs = require("fs");
 const path = require("path");
 const { ExecutionRouter } = require("./executionRouter");
+const { chromiumProxy } = require("./agents/proxy");
 
 let win;
 let router;
 let ringWin = null;
 let ringTimer = null;
+let ringOpening = null;
 
 if (!app.requestSingleInstanceLock()) app.exit(0);
 
@@ -33,6 +35,18 @@ function createWindow() {
   win.on("closed", () => { if (ringWin && !ringWin.isDestroyed()) ringWin.close(); });
 }
 
+// The ring reads Polymarket from Chromium, so it gets the proxy from the API panel in a session of its own; the main
+// window's session is left alone. Chromium cannot log in to a SOCKS proxy, so with a SOCKS proxy that has a login the
+// ring does not open rather than go direct.
+async function ringSession() {
+  const cfg = chromiumProxy(router?.host?.outboundProxy?.() || "");
+  if (!cfg.ok) return cfg;
+  const ses = session.fromPartition("vespera-ring");
+  await ses.setProxy(cfg.rules ? { proxyRules: cfg.rules, proxyBypassRules: "<local>" } : { mode: "system" });
+  if (typeof ses.closeAllConnections === "function") await ses.closeAllConnections();   // nothing left on the old route
+  return { ok: true, ses, auth: cfg.auth };
+}
+
 // The ring (tools/engine-viz) in its own window: the live Polymarket picture plus a read-only feed of the agents'
 // paper positions. It never gets the main preload, so it cannot reach the engine, settings or keys.
 function openRing() {
@@ -42,12 +56,29 @@ function openRing() {
     ringWin.focus();
     return { ok: true };
   }
+  if (!ringOpening) ringOpening = createRing().finally(() => { ringOpening = null; });
+  return ringOpening;
+}
+
+async function createRing() {
+  const net = await ringSession();
+  if (!net.ok) return { ok: false, reason: net.reason };
   ringWin = new BrowserWindow({
     width: 1600, height: 960, minWidth: 960, minHeight: 600, backgroundColor: "#060607", title: "Vespera · Ring",
     autoHideMenuBar: true, icon: path.join(__dirname, "../../build/icon.png"),
-    webPreferences: { preload: path.join(__dirname, "ringPreload.js"), contextIsolation: true, nodeIntegration: false, sandbox: true },
+    webPreferences: { preload: path.join(__dirname, "ringPreload.js"), contextIsolation: true, nodeIntegration: false, sandbox: true, session: net.ses },
   });
   const page = ringWin;
+  // the proxy's login, at most three answers a minute: a wrong password ends in a refusal, not a loop
+  const answers = [];
+  page.webContents.on("login", (event, _details, authInfo, callback) => {
+    const t = Date.now();
+    while (answers.length && t - answers[0] > 60000) answers.shift();
+    if (!authInfo || !authInfo.isProxy || !net.auth || answers.length >= 3) return;
+    event.preventDefault();
+    answers.push(t);
+    callback(net.auth.username, net.auth.password);
+  });
   page.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   page.webContents.on("will-navigate", (event, url) => { if (url !== page.webContents.getURL()) event.preventDefault(); });
   page.loadFile(path.join(__dirname, "../../tools/engine-viz/index.html"));

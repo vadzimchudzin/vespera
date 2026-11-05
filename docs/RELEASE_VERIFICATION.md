@@ -1,19 +1,19 @@
-# Vespera 0.28.0 — the V2 paper test in the agents desk
+# Vespera 0.28.1 — the agents through the app's proxy
 
-0.27.0 plus the `V2money` work on the agents desk: two fast lanes, a9 latency arbitrage and a10 LP with rewards, run the frozen V2 plans forward on live feeds with their own paper account and certificates. The SMA/EMA strategy, the engine and the Polymarket broker code are unchanged. Paper only: no signing and no real-money orders.
+0.28.0 with one fix: the agents desk, its V2 lanes and the ring now reach Polymarket through the proxy from the API panel. The SMA/EMA strategy, the engine and the Polymarket broker code are unchanged. Paper only: no agent can place a real order.
 
-## What's new
+## What's fixed
 
-- **Agents → V2.** a9 (`latarb_v2`: a BTC jump on Binance buys the jump's side of the BTC 5m Up/Down window at the ask and sells at the bid 10 s later, with both taker fees) and a10 (`lp_v1` with the news shield: two-sided quotes on up to 300 reward markets, re-quoted every 10 s) trade on paper in a separate V2 account at the plans' scale, $1000 and $20 000. Their results stay out of the desk's equity and halts, and there are no day stops inside the test. See [AGENTS](https://github.com/vadzimchudzin/vespera/blob/v0.28.0/docs/AGENTS.md).
-- **Certificates.** a9 needs 2000 BTC trades, an exit at the bid above zero with p < 0.01, a positive edge at the official result and at least 3 full UTC days with 20 h of live feeds; the verdict is taken once, and a kill switch pauses a9 if the exit is not above zero after 500 BTC 5m trades. a10 needs two phases of 24 h, each with a net above zero and no market above 25% of it; its news shield is tested against a shadow without it. Shadows (BTC 15m, and ETH as the control) count for the certificate only.
-- **The V2 tab** fills both certificates in as the data come, shows the watchdog's problems, opens the V2 data folder and can start V2 afresh without touching the desk. Telegram gets a V2 block, a V2 section in the daily report and alerts for the kill switch, the verdict, a10's phases and the watchdog.
-- **Research.** `research/v2money` holds the paper bots, the pre-registrations with their desk addenda, the results and the hypothesis registry. It is not part of the installers.
+- **Agents, V2 and the ring behind a proxy.** Where Polymarket is blocked (Belarus among other places) the app's trading already went through the API panel's proxy, but the desk, a9, a10 and the ring went direct and failed: `agents_source_unavailable` on every Gamma source, a9 with Binance but no CLOB and no windows, a10 down, an empty ring. Now Gamma, the CLOB and both WebSockets go through that proxy over the same SOCKS routes as orders; Binance, Coinbase, Deribit, the weather and the news stay direct. A proxy that is set but unusable is never bypassed: requests fail with a reason and the lanes wait for it.
+- **The ring** gets its own browser session with the same proxy and the app answers an HTTP(S) proxy's login. Chromium cannot log in to a SOCKS proxy, so with a SOCKS proxy that has a login and password the ring does not open and says why; the agents work with either.
+- **a10** reads 13 pages of reward markets instead of 40 (the same markets) and asks a failed page again before giving up.
+- **Reasons, not codes,** for network and proxy failures in the Agents panel and the Telegram alerts.
 
-Full list: [CHANGELOG](https://github.com/vadzimchudzin/vespera/blob/v0.28.0/CHANGELOG.md).
+Full list: [CHANGELOG](https://github.com/vadzimchudzin/vespera/blob/v0.28.1/CHANGELOG.md).
 
-## Running the V2 test
+## Traffic through the proxy
 
-Agents → Start, then the V2 tab. The test runs where execution runs: in Zero Mode the desk is on the server, which this release does not update, and the V2 tab says so; keep execution on this computer to test V2 here. a10 takes about a minute and a half to build its markets. The a9 certificate needs at least 3 full UTC days with 20 h of live feeds, so the computer has to stay on and online; restarts continue the test from the saved state.
+Measured through a local proxy over six minutes: 30–75 MB a minute, about 2–4.5 GB an hour. Almost all of it is a9's CLOB market channel: its 8 BTC/ETH Up/Down windows send 900–2000 messages a second and the server offers no compression. a10's book polls and RTDS take about 0.6 MB a minute each, the catalog about 6 MB every 30 minutes, and opening the ring loads tens of megabytes. Check the proxy's traffic limit before leaving the V2 test running.
 
 ## Known issue: 4h rounds
 
@@ -21,10 +21,9 @@ US daylight time ended on 1 November, and Polymarket now starts its 4h Up/Down w
 
 ## Verified
 
-- The full `npm test` (50 test files) on Linux with Node 24, including the lanes, both certificates, the V2 Telegram texts and the reset scopes through the host.
-- `npm audit`: no high or critical findings; the dependencies are those of 0.27.0.
-- The desk ran 200 seconds on live feeds in a throwaway data folder: a9 had Binance and the CLOB, tracked 8 windows and made 20 BTC 5m trades while its shadows traded; a10 built 300 markets in about 80 s and quoted about 270 with RTDS live and its shadow following; the watchdog's start-up problems cleared once the feeds were up.
-- The app started headless (Electron 44.7 from an earlier install; the installers carry 44.10.1) with an empty profile: Agents → Start ran both lanes on live feeds and the V2 tab showed them without page errors.
+- The full `npm test` (51 test files) on Linux with Node 24, including the new `proxy.test.js` on loopback: a CONNECT proxy with and without a login, a SOCKS5 relay that refuses host names (the IPv4 route is taken and kept), WebSockets through both, a dead and a broken proxy with no direct request or socket, the size cap on unpacked bytes, timeouts, the lanes on fake sockets and a10's paging and retries.
+- The app started headless (Electron 44.7 from an earlier install; the installers carry 44.10.1) with an empty profile and an HTTP proxy with a login on loopback: Agents → Start ran the desk and both lanes through it (757 events, a9 with Binance direct and the CLOB through the proxy on 8–10 windows, a10 with 300 markets and RTDS), seven tunnels in all, none to Binance; the ring opened through the same proxy after its login and drew the live catalog.
+- A live check of the reward markets: 40 pages of 500, 5848 at $5/day or more, all within the first 13 pages.
 
 The release workflow publishes only after the Node 22 tests pass on Linux, Windows and macOS and both the Windows NSIS x64 and the macOS universal DMG builds succeed. Both installers and SHA256SUMS must be present before publication. macOS is ad-hoc signed, not Developer ID notarized.
 
@@ -34,6 +33,7 @@ Remaining findings: 14 low in production (the ethers v5 / elliptic cryptography 
 
 ## Not verified / operator acceptance still required
 
+- A real SOCKS proxy and a real HTTP proxy abroad: the routes were tested on loopback stand-ins.
 - A multi-day V2 run: no certificate has been reached yet, and paper results are not evidence of profitability.
 - Installation on customer Windows/macOS machines and OS-specific GUI acceptance.
 - Real Telegram delivery of the V2 reports and alerts.
@@ -41,4 +41,4 @@ Remaining findings: 14 low in production (the ethers v5 / elliptic cryptography 
 
 ## Upgrading
 
-In Zero Mode the agents desk runs on the server, so the V2 lanes need the server updated too; until then, test V2 with execution on this computer. Stop execution safely and back up both sides before upgrading; never reset ownership state to bypass unresolved transfers or orders. Research still assumes Binance candles and a binary entry price of 0.50, not historical Polymarket order books. This release is not a certification for unattended real-money trading.
+Install over 0.28.0; the agents' books, the V2 accounts and their certificates are kept. Keep the proxy in the API panel and execution on this computer. In Zero Mode the agents desk runs on the server, which this release does not update and which needs no proxy. Stop execution safely and back up both sides before upgrading; never reset ownership state to bypass unresolved transfers or orders. This release is not a certification for unattended real-money trading.
