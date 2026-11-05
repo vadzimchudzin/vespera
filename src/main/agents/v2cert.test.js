@@ -126,6 +126,7 @@ assert.strictEqual(V.tFrom(5, 5, 5), null, "no spread, no t");
   assert.deepStrictEqual([s.verdict, s.phase, s.phase1.done, s.phase1.hours, s.phase1.markets, s.phase2], ["collecting", 1, false, 12, 10, null]);
   assert.ok(s.shield.t > 2 && s.shield.helps && !s.shield.decided);
   assert.deepStrictEqual([s.perDay.shocks, s.pulledShare, s.rewardsGivenUp], [12, 0.1, 5]);
+  assert.strictEqual(V.lpSummary({ upMs: 0.5 * HOUR, ph1: null, ph2: null, nets: nets(2, () => [1, 1]), shocks: 3 }).perDay, null, "no rate from the first minutes");
   assert.deepStrictEqual(s.phase1.checks.map((x) => [x.id, x.ok]), [["hours", false], ["net", true], ["top_market", true]]);
   // phase 1 done and passed, phase 2 running: what phase 2 made is the difference from the snapshot
   const p1 = nets(10, (i) => [2 + (i % 3) * 0.1, 1]);

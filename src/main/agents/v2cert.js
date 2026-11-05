@@ -321,7 +321,8 @@ function lpSummary(state, now = Date.now()) {
   const days = up / DAY;
   return {
     rule: "lp_v1", verdict, phase: !state.ph1 ? 1 : !state.ph2 ? 2 : null, upH: r2(up / HOUR), phase1: p1, phase2: p2, shield,
-    perDay: days > 0 ? { net: r2(lpPhase(state.nets).net / days), shocks: r2((state.shocks || 0) / days) } : null,
+    // a rate from the first minutes is mostly noise: none before an hour of V2 time
+    perDay: up >= HOUR ? { net: r2(lpPhase(state.nets).net / days), shocks: r2((state.shocks || 0) / days) } : null,
     pulledShare: state.marketMs > 0 ? r4(state.pulledMs / state.marketMs) : null,
     rewardsGivenUp: finite(state.rewardsH) && finite(state.rewardsHs) ? r2(state.rewardsH - state.rewardsHs) : null, at: now,
   };

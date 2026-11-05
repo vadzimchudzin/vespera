@@ -50,7 +50,9 @@ function writeJson(file, value) {
   fs.writeFileSync(tmp, JSON.stringify(value));
   fs.renameSync(tmp, file);
 }
-function appendCapped(file, row, maxBytes = 8 * 1024 * 1024) {
+// The lanes' trade logs: room for weeks of the V2 test, so its trades can be checked apart from the certificate;
+// past the cap the file moves to .1 (one generation).
+function appendCapped(file, row, maxBytes = 64 * 1024 * 1024) {
   try {
     let size = 0;
     try { size = fs.statSync(file).size; } catch { /* a new file */ }
