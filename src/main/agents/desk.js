@@ -472,7 +472,7 @@ class AgentDesk {
       fees: period === "all" ? r2(b.feesPaid) : r2(sum(agents, (a) => a.fees || 0)),
     };
     const equity = this._equity();
-    const v2 = this._v2();
+    const v2 = this._v2(this._laneStatus(), true);
     return {
       ok: true, period, from, to: now, equity: r2(equity), startCapital: b.startCapital, pnl: r2(equity - b.startCapital), totals, agents,
       v2: { ...v2, rows: v2Rows },

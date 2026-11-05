@@ -70,6 +70,9 @@ async function hostCalls() {
   assert.deepStrictEqual([ring.ok, ring.events, ring.open], [true, [], 0]);
   s = await host.call("agentsReset", [{ capitalUsd: 500, confirm: true }]);
   assert.deepStrictEqual([s.startCapital, s.equity, s.running], [500, 500, false]);
+  s = await host.call("agentsReset", [{ scope: "v2", confirm: true }]);
+  assert.deepStrictEqual([s.startCapital, s.journal.some((row) => row.kind === "reset" && row.scope === "v2")], [500, true], "a V2 reset leaves the desk as it is");
+  assert.deepStrictEqual(await host.call("agentsReset", [{ scope: "all", confirm: true }]), { ok: false, reason: "agents_reset_scope_invalid" });
 
   // the desk works only on the side that owns execution, like research
   host.setResearchContext({ active: true });

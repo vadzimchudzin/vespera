@@ -195,7 +195,7 @@ class ExecutionHost {
         case "agentsKill": return desk.kill({ by });
         case "agentsResume": return desk.resume({ by });
         case "agentsAgent": return desk.agent({ id: arg.id, action: arg.action });
-        case "agentsReset": return desk.reset({ capitalUsd: arg.capitalUsd, confirm: arg.confirm });
+        case "agentsReset": return desk.reset({ capitalUsd: arg.capitalUsd, confirm: arg.confirm, scope: arg.scope });
         default: throw fault("unknown_method");
       }
     } catch (error) {

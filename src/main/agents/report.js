@@ -1,7 +1,8 @@
 "use strict";
 
 // Texts of the agents desk for Telegram: status, the trade digest, roster changes, halt alerts and the daily report,
-// in Russian or English. Plain text built from the desk's own numbers; everything here is paper.
+// in Russian or English. Plain text built from the desk's own numbers; everything here is paper. The V2 lanes (a9, a10)
+// keep their own paper account and certificates: their lines, alerts and the watchdog's come last.
 
 const { TYPES } = require("./roster");
 
@@ -26,6 +27,7 @@ const REASONS = {
   ai_plan: ["по плану ИИ", "on the AI's plan"],
   manual: ["вручную", "by hand"],
   replaced_by_lp: ["заменён агентом «LP с наградами»", "replaced by LP with rewards"],
+  v2_kill_switch: ["правило остановки V2 (выход ≤ 0 после 500 сделок)", "the V2 kill switch (an exit ≤ 0 after 500 trades)"],
 };
 const reasonText = (reason, locale) => {
   if (REASONS[reason]) return say(locale, ...REASONS[reason]);
@@ -34,6 +36,96 @@ const reasonText = (reason, locale) => {
   return String(reason || "");
 };
 const haltName = (reason, locale) => (HALTS[reason] ? say(locale, ...HALTS[reason]) : String(reason || "?"));
+
+// --- V2 -----------------------------------------------------------------------------------------------------------
+const VERDICTS = {
+  collecting: ["идёт сбор", "collecting"],
+  pass: ["пройден ✓", "passed ✓"],
+  fail: ["не пройден ✗", "failed ✗"],
+  kill: ["остановлен правилом ✗", "stopped by the kill switch ✗"],
+};
+const verdictName = (v, locale) => say(locale, ...(VERDICTS[v] || VERDICTS.collecting));
+const WATCH = {
+  down: ["не работает", "is down"],
+  binance: ["нет данных Binance", "no data from Binance"],
+  clob: ["нет стаканов Polymarket", "no Polymarket order books"],
+  books: ["не приходят стаканы", "no order books"],
+  rtds: ["нет ленты сделок Polymarket", "no Polymarket trade feed"],
+};
+const watchName = (code, locale) => (WATCH[code] ? say(locale, ...WATCH[code]) : String(code || "?"));
+const cents = (x) => (x == null || !Number.isFinite(+x) ? "—" : `${x > 0 ? "+" : x < 0 ? "−" : ""}${Math.abs(x * 100).toFixed(2)}¢`);
+const count = (x) => grouped(String(Math.round(Number(x) || 0)));
+const pval = (p) => (p == null ? "—" : p < 0.001 ? "< 0.001" : Number(p).toFixed(3));
+
+// Where a lane's certificate stands: a9's counts, exit and full days; a10's phase, hours and net.
+function certText(type, b, locale) {
+  const c = b && b.cert;
+  if (!c) return verdictName(b && b.verdict, locale);
+  const parts = [];
+  if (type === "latency") {
+    const ch = (id) => (c.checks || []).find((x) => x.id === id) || {};
+    const pr = ch("primary_trades"), btc = ch("btc_trades"), ex = ch("exit"), pd = ch("positive_days");
+    parts.push(say(locale, `BTC 5m ${count(pr.value)}/${count(pr.need)} сд. (BTC всего ${count(btc.value)}/${count(btc.need)})`,
+      `BTC 5m ${count(pr.value)}/${count(pr.need)} trades (all BTC ${count(btc.value)}/${count(btc.need)})`));
+    if (ex.value != null) parts.push(say(locale, `выход ${cents(ex.value)}/акц.${ex.p != null ? ` (p ${pval(ex.p)})` : ""}`, `exit ${cents(ex.value)}/share${ex.p != null ? ` (p ${pval(ex.p)})` : ""}`));
+    parts.push(say(locale, `полных дней ${c.fullDays || 0}/${pd.minFull || 3}`, `full days ${c.fullDays || 0}/${pd.minFull || 3}`));
+  } else {
+    const ph = c.phase === 1 ? c.phase1 : c.phase === 2 ? c.phase2 : null;
+    if (ph) parts.push(say(locale, `фаза ${c.phase}: ${(Number(ph.hours) || 0).toFixed(1)}/24 ч, итог ${signed(ph.net)}`, `phase ${c.phase}: ${(Number(ph.hours) || 0).toFixed(1)}/24 h, net ${signed(ph.net)}`));
+    else parts.push(say(locale, "обе фазы закрыты", "both phases closed"));
+    if (c.shield && c.shield.t != null) parts.push(say(locale, `щит t ${c.shield.t}`, `shield t ${c.shield.t}`));
+  }
+  parts.push(verdictName(b.verdict, locale));
+  return parts.join(" · ");
+}
+
+// The V2 block of the status: the account, a line per lane, the watchdog's open problems.
+function v2Lines(v, locale) {
+  const lanes = ["latency", "lp_rewards"].map((type) => [type, v && v[type]]).filter(([, b]) => b && b.agentId && b.status !== "retired");
+  if (!lanes.length) return [];
+  const lines = [say(locale, `V2 · отдельный бумажный счёт: ${signed(v.pnl)} · сегодня ${signed(v.dayPnl)}`, `V2 · its own paper account: ${signed(v.pnl)} · today ${signed(v.dayPnl)}`)];
+  for (const [type, b] of lanes) {
+    const mark = b.status === "paused" ? say(locale, " (пауза)", " (paused)") : "";
+    lines.push(` ${b.agentId} ${typeName(type, locale)}${mark}: ${signed(b.pnl)} · ${certText(type, b, locale)}`);
+  }
+  for (const i of (v.issues || []).slice(0, 4)) lines.push(` ⚠ ${i.agentId} ${typeName(i.type, locale)}: ${watchName(i.code, locale)}`);
+  return lines;
+}
+
+function v2Text(p, locale) {
+  const who = `${p.agentId || "?"} ${typeName(p.type, locale)}`;
+  if (p.op === "v2_kill") {
+    return [say(locale, `V2 · ${who}: сработало правило остановки — после ${count(p.trades)} сделок BTC 5m выход ${cents(p.exit)} на акцию (≤ 0).`,
+      `V2 · ${who}: the kill switch fired — after ${count(p.trades)} BTC 5m trades the exit is ${cents(p.exit)} a share (≤ 0).`),
+    say(locale, "Агент на паузе, его тест V2 не пройден. По протоколу latarb_v2 — остановиться и разобраться; продолжить можно только вручную.",
+      "The agent is paused and its V2 test failed. Per latarb_v2: stop and re-examine; only a manual resume continues it.")].join("\n");
+  }
+  if (p.op === "v2_verdict") {
+    const what = say(locale, `${count(p.trades)} сделок BTC 5m, выход ${cents(p.exit)} на акцию (p ${pval(p.p)})`, `${count(p.trades)} BTC 5m trades, exit ${cents(p.exit)} a share (p ${pval(p.p)})`);
+    return p.verdict === "pass"
+      ? say(locale, `V2 · ${who}: сертификат пройден ✓ — ${what}. Это бумажный тест; решение о реальных деньгах — за вами.`, `V2 · ${who}: certificate passed ✓ — ${what}. This is a paper test; real money is your call.`)
+      : say(locale, `V2 · ${who}: сертификат не пройден ✗ — ${what}. Подробности — во вкладке V2.`, `V2 · ${who}: certificate failed ✗ — ${what}. Details are in the V2 tab.`);
+  }
+  if (p.op === "v2_phase") {
+    const top = p.topShare != null ? pct(p.topShare, 0) : "—";
+    const shield = p.phase === 1 && p.shieldT != null ? say(locale, ` · щит t = ${p.shieldT}`, ` · shield t = ${p.shieldT}`) : "";
+    const head = say(locale, `V2 · ${who}: фаза ${p.phase} (24 ч) закрыта ${p.ok ? "✓" : "✗"} — итог ${signed(p.net)}, крупнейший рынок ${top}${shield}.`,
+      `V2 · ${who}: phase ${p.phase} (24 h) closed ${p.ok ? "✓" : "✗"} — net ${signed(p.net)}, top market ${top}${shield}.`);
+    const next = p.phase === 1 && p.ok ? say(locale, "Вселенная пересобрана, идёт фаза 2.", "The universe is rebuilt; phase 2 is under way.")
+      : p.phase === 1 ? say(locale, `Вердикт: ${verdictName(p.verdict, locale)}; фаза 2 идёт для справки.`, `Verdict: ${verdictName(p.verdict, locale)}; phase 2 runs for the record.`)
+        : say(locale, `Вердикт: ${verdictName(p.verdict, locale)}.`, `Verdict: ${verdictName(p.verdict, locale)}.`);
+    return `${head}\n${next}`;
+  }
+  return null;
+}
+
+function watchText(p, locale) {
+  const who = `${p.agentId || "?"} ${typeName(p.type, locale)}`;
+  if (p.state === "ok") return say(locale, `V2 · ${who}: снова в порядке (${watchName(p.code, locale)} — устранено).`, `V2 · ${who}: back to normal (${watchName(p.code, locale)} — cleared).`);
+  const err = p.error ? ` (${p.error})` : "";
+  return say(locale, `V2 · ${who}: ${watchName(p.code, locale)} дольше 3 мин${err}. Тест V2 теряет часы — проверьте сеть и приложение.`,
+    `V2 · ${who}: ${watchName(p.code, locale)} for over 3 min${err}. The V2 test is losing hours — check the network and the app.`);
+}
 
 function head(s, locale) {
   const state = s.halt ? say(locale, `СТОП: ${haltName(s.halt.reason, locale)}`, `HALTED: ${haltName(s.halt.reason, locale)}`)
@@ -56,7 +148,7 @@ function statusText(s, locale = "en") {
   lines.push(ai.available
     ? say(locale, `ИИ: ${usd(ai.spentUsd)} из ${usd(ai.dailyUsd)} сегодня · ${ai.calls} запр.`, `AI: ${usd(ai.spentUsd)} of ${usd(ai.dailyUsd)} today · ${ai.calls} calls`)
     : say(locale, `ИИ: выключен (${ai.reason || "—"})`, `AI: off (${ai.reason || "—"})`));
-  const agents = (s.agents || []).filter((a) => a.status !== "retired");
+  const agents = (s.agents || []).filter((a) => a.status !== "retired" && !a.v2);
   if (agents.length) {
     lines.push(say(locale, "Агенты:", "Agents:"));
     for (const a of agents) {
@@ -64,6 +156,7 @@ function statusText(s, locale = "en") {
       lines.push(` ${a.id} ${typeName(a.type, locale)}${mark}: ${signed(a.pnl)} · ${say(locale, `${a.trades} сд.`, `${a.trades} tr.`)}${a.open ? ` · ${say(locale, `${a.open} откр.`, `${a.open} open`)}` : ""}`);
     }
   }
+  lines.push(...v2Lines(s.v2, locale));
   if (s.halt) lines.push(haltHint(s.halt, locale));
   return lines.join("\n");
 }
@@ -135,6 +228,16 @@ function dailyText(r, locale = "en") {
   }
   if (r.ai && r.ai.calls) lines.push(say(locale, `ИИ: ${r.ai.calls} запр., ${usd(r.ai.spentUsd)}`, `AI: ${r.ai.calls} calls, ${usd(r.ai.spentUsd)}`));
   if (r.halt) lines.push(say(locale, `Стоп: ${haltName(r.halt.reason, locale)}`, `Halt: ${haltName(r.halt.reason, locale)}`));
+  const v = r.v2, rows = v && Array.isArray(v.rows) ? v.rows.filter((x) => x.status !== "retired") : [];
+  if (rows.length) {
+    lines.push(say(locale, `V2 · отдельный счёт: всего ${signed(v.pnl)}`, `V2 · its own account: ${signed(v.pnl)} overall`));
+    for (const x of rows) {
+      const what = x.type === "lp_rewards" ? say(locale, `${x.trades} заполн.`, `${x.trades} fills`) : say(locale, `${x.trades} сд., закрыто ${x.settled}`, `${x.trades} tr., ${x.settled} settled`);
+      lines.push(` ${x.id} ${typeName(x.type, locale)}: ${what} · ${signed(x.realized)}`);
+      lines.push(`   ${certText(x.type, v[x.type] || {}, locale)}`);
+    }
+    for (const i of (v.issues || []).slice(0, 4)) lines.push(` ⚠ ${i.agentId} ${typeName(i.type, locale)}: ${watchName(i.code, locale)}`);
+  }
   return lines.join("\n");
 }
 
@@ -147,7 +250,9 @@ function alertText(payload, locale = "en") {
   else if (payload.kind === "halt") text = haltText(payload, locale);
   else if (payload.kind === "roster") text = rosterText(payload, locale);
   else if (payload.kind === "daily") text = dailyText(payload.report, locale);
+  else if (payload.kind === "v2") text = v2Text(payload, locale);
+  else if (payload.kind === "watch") text = watchText(payload, locale);
   return text ? clip(text, 3800) : null;
 }
 
-module.exports = { statusText, digestText, haltText, rosterText, dailyText, alertText, tradeLine, typeName, usd, signed, pct };
+module.exports = { statusText, digestText, haltText, rosterText, dailyText, alertText, tradeLine, typeName, usd, signed, pct, certText, cents };

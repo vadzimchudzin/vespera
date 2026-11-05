@@ -618,6 +618,36 @@ async function main() {
     assert.strictEqual(T.alertText({ kind: "unknown" }, "en"), null);
     assert.strictEqual(T.alertText(null, "en"), null);
     assert.ok(T.alertText({ kind: "trade", row: { ...trade, label: "x".repeat(5000) } }, "en").length <= 3800);
+
+    // V2: its own account and the certificates' progress, the kill switch, the verdict, a10's phases, the watchdog
+    const { LatCert, lpSummary } = require("./v2cert");
+    const lat = new LatCert(null, NOW);
+    for (let i = 0; i < 3; i += 1) lat.add({ slug: `w${i}`, group: "btc 5m", shadow: false, t: NOW, end: NOW + 300000, up: true, shares: 10, entry: 0.5, fee0: 0.175, pnl: 0.1 * (i + 1) });
+    const v2 = { pnl: 1.5, dayPnl: 0.5, trades: 3, exposure: 0, issues: [{ type: "lp_rewards", agentId: "a10", code: "rtds" }],
+      latency: { agentId: "a9", status: "active", pnl: 0.6, verdict: "collecting", cert: lat.summary(NOW) },
+      lp_rewards: { agentId: "a10", status: "paused", pnl: 0.9, verdict: "collecting",
+        cert: lpSummary({ upMs: 12.5 * 3600000, ph1: null, ph2: null, nets: { c1: [0.5, 0.4], c2: [0.4, 0.4] }, shocks: 2, pulledMs: 0, marketMs: 1 }, NOW) } };
+    const withV2 = { ...status, v2, agents: [...status.agents, { id: "a9", type: "latency", status: "active", v2: true, pnl: 0.6, trades: 3 }] };
+    const ru2 = T.statusText(withV2, "ru");
+    assert.ok(ru2.includes("Агенты:\n a1 Арбитраж наборов: +$7.00 · 1 сд.\nV2 · отдельный бумажный счёт: +$1.50 · сегодня +$0.50\n"), "the V2 agents are not in the desk's list");
+    assert.ok(ru2.includes("\n a9 Латентный арбитраж: +$0.60 · BTC 5m 3/1 000 сд. (BTC всего 3/2 000) · выход +2.00¢/акц. (p 0.037) · полных дней 0/3 · идёт сбор\n"), ru2);
+    assert.ok(ru2.includes("\n a10 LP с наградами (пауза): +$0.90 · фаза 1: 12.5/24 ч, итог +$0.90 · идёт сбор\n ⚠ a10 LP с наградами: нет ленты сделок Polymarket"), ru2);
+    const day2 = T.dailyText({ ok: true, equity: 1000, pnl: 0, totals: { trades: 0, settled: 0, wins: 0, realized: 0, fees: 0 }, agents: [],
+      v2: { ...v2, rows: [{ id: "a9", type: "latency", status: "active", trades: 3, settled: 3, wins: 3, realized: 0.6, fees: 0.5 }, { id: "a10", type: "lp_rewards", status: "active", trades: 4, settled: 0, wins: 0, realized: 0.9, fees: 0 }] } }, "en");
+    assert.ok(day2.includes("V2 · its own account: +$1.50 overall\n a9 Latency arbitrage: 3 tr., 3 settled · +$0.60\n   BTC 5m 3/1 000 trades"), day2);
+    assert.ok(day2.includes(" a10 LP with rewards: 4 fills · +$0.90\n   phase 1: 12.5/24 h, net +$0.90 · collecting"), day2);
+    assert.strictEqual(T.alertText({ kind: "v2", op: "v2_kill", agentId: "a9", type: "latency", trades: 500, exit: -0.0012 }, "en"),
+      "V2 · a9 Latency arbitrage: the kill switch fired — after 500 BTC 5m trades the exit is −0.12¢ a share (≤ 0).\nThe agent is paused and its V2 test failed. Per latarb_v2: stop and re-examine; only a manual resume continues it.");
+    assert.ok(T.alertText({ kind: "v2", op: "v2_verdict", agentId: "a9", type: "latency", verdict: "pass", trades: 1200, exit: 0.0041, p: 0.0004 }, "ru")
+      .startsWith("V2 · a9 Латентный арбитраж: сертификат пройден ✓ — 1 200 сделок BTC 5m, выход +0.41¢ на акцию (p < 0.001)."));
+    assert.strictEqual(T.alertText({ kind: "v2", op: "v2_phase", agentId: "a10", type: "lp_rewards", phase: 1, ok: true, net: 12.3, topShare: 0.18, shieldT: 2.4, verdict: "collecting" }, "en"),
+      "V2 · a10 LP with rewards: phase 1 (24 h) closed ✓ — net +$12.30, top market 18% · shield t = 2.4.\nThe universe is rebuilt; phase 2 is under way.");
+    assert.ok(T.alertText({ kind: "v2", op: "v2_phase", agentId: "a10", type: "lp_rewards", phase: 1, ok: false, net: -2, topShare: null, shieldT: null, verdict: "fail" }, "ru")
+      .endsWith("Вердикт: не пройден ✗; фаза 2 идёт для справки."));
+    assert.strictEqual(T.alertText({ kind: "watch", state: "problem", agentId: "a9", type: "latency", code: "binance", error: null }, "en"),
+      "V2 · a9 Latency arbitrage: no data from Binance for over 3 min. The V2 test is losing hours — check the network and the app.");
+    assert.strictEqual(T.alertText({ kind: "watch", state: "ok", agentId: "a9", type: "latency", code: "clob" }, "ru"), "V2 · a9 Латентный арбитраж: снова в порядке (нет стаканов Polymarket — устранено).");
+    assert.strictEqual(T.alertText({ kind: "roster", op: "pause", agentId: "a9", type: "latency", reason: "v2_kill_switch" }, "en"), "Agent a9 Latency arbitrage paused: the V2 kill switch (an exit ≤ 0 after 500 trades).");
   }
 
   console.log("agents tests ok");
