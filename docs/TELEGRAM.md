@@ -57,6 +57,14 @@ Approved users receive halts, the daily report (at 06:00 UTC by default) and, wh
 trade). The commands act on the desk of the current executor: the server in Zero
 Mode, otherwise this computer; each keeps its own paper book.
 
+The V2 lanes (a9 latency arbitrage, a10 LP with rewards) have their own paper
+account: `/agents` shows a V2 block apart from the desk's agents, and the daily
+report has a V2 section with both certificates. Approved users are also told when
+a9's kill switch fires, when a9's verdict is taken, when an a10 phase closes, and
+when the watchdog sees a lane down or a feed silent for 3 minutes (and again when
+it is back). Stop and the emergency stop pause the lanes too; automatic halts do
+not.
+
 ## Delivery and limits
 
 Updates are durably marked before handling commands. Replayed updates never

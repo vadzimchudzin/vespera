@@ -27,3 +27,26 @@ variants g and h unchanged (robust median over ~1 min, 10-min vol filter). Same 
 - Run: 3 s re-quote, fresh top-300 universe (built 16:15 UTC), variants g, h, hs side by side.
 - Hypothesis: hs net (pessimistic rewards + MTM) per day > h on the same markets. Test after >= 24 h: paired difference
   by market, t > 2, and hs net > 0. Report shocks per day, share of time pulled and rewards given up.
+
+## Desk addendum (frozen 2026-11-05 21:56 UTC, before the desk's run; Vespera 0.28.0, agent a10)
+How the agents desk runs and reads this plan with Addendum C. The pass criterion and the shield hypothesis are
+unchanged; this fixes what the plan left open.
+- The lane is variant `hs` (`h` + the shield of Addendum C). Variant `h` runs as a shadow fed the same books and RTDS
+  trades, without the shield; `g` is not run.
+- Account: a separate V2 paper account of $20 000 with at most $200 a market: up to 300 markets by expected reward per
+  dollar under the research filters (rate >= $5/day, no sports, >= 3 days to the end, mid 0.10-0.90, raw spread <= 2v),
+  50 shares a side or the market's reward minimum if larger (a minimum above 200 is skipped). Its P&L stays out of the
+  desk's equity and halts; no day stop.
+- Re-quote every 10 s (Addendum A's cadence), not the 3 s of the Addendum C run: the desk polls the books of up to 300
+  markets from the user's machine.
+- Hours: lane time in which the books arrived and the RTDS trade feed was live (a message within 60 s). Phase 1 closes
+  at 24 such hours and the universe is rebuilt at once; phase 2 closes after 24 more. The 6-hourly rebuilds go on in
+  both phases; a market with inventory stays until it is flat, a resolved one is settled at its result.
+- Phase 2 counts what each market made after phase 1 closed; a market that made nothing since (it left at the rebuild)
+  is not in phase 2.
+- Pass: in each phase net (pessimistic rewards + MTM) > 0 and no market > 25% of it; a failed phase 1 fails the test.
+  The shield test (paired difference hs - h by market, t > 2, and hs net > 0) is read once, on phase 1. Shocks per day,
+  the share of market time pulled and the rewards given up are reported.
+- The sample starts when the lane first runs on 0.28.0 and survives restarts (saved state). "Start V2 afresh" starts it
+  over; each such restart is a new run in REGISTRY.md. The technical checks before the release (2026-11-05 21:25 and
+  21:52 UTC, throwaway data folders) are not part of any sample.
