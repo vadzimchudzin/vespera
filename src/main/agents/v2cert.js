@@ -164,7 +164,7 @@ class LatCert {
       delete this.w[slug];
     }
   }
-  _into(g, w) {
+  _into(g, w, pending = false) {
     g.n += w.n;
     g.sh = r6(g.sh + w.sh);
     g.pnl = r6(g.pnl + w.pnl);
@@ -178,7 +178,7 @@ class LatCert {
       g.rpnl = r6(g.rpnl + rp);
       g.rs1 = r6(g.rs1 + rp);
       g.rs2 = r6(g.rs2 + rp * rp);
-    } else g.lost += 1;
+    } else if (!pending) g.lost += 1;
   }
 
   // Time with live feeds, by UTC day: the lane samples it every few seconds; a gap counts at most maxGapMs.
@@ -196,15 +196,18 @@ class LatCert {
   }
 
   groups() {
-    const out = {};
+    const out = {}, wait = {};
     for (const [k, g] of Object.entries(this.g)) out[k] = { ...g };
-    for (const w of Object.values(this.w)) this._into(out[w.k] || (out[w.k] = freshGroup(w.sd)), w);
+    for (const w of Object.values(this.w)) {
+      this._into(out[w.k] || (out[w.k] = freshGroup(w.sd)), w, true);   // still waiting: not yet a window without a result
+      wait[w.k] = (wait[w.k] || 0) + 1;
+    }
     return Object.entries(out).map(([key, g]) => {
       const t = tFrom(g.w, g.s1, g.s2), rt = tFrom(g.rw, g.rs1, g.rs2);
       return {
         key, role: ROLE(key), shadow: Boolean(g.sd), trades: g.n, windows: g.w, shares: r2(g.sh), pnl: r2(g.pnl),
         exit: g.sh > 0 ? r6(g.pnl / g.sh) : null, t: t == null ? null : r2(t), p: t == null ? null : r6(tTail(t, g.w - 1)),
-        res: g.rsh > 0 ? r6(g.rpnl / g.rsh) : null, resT: rt == null ? null : r2(rt), resWindows: g.rw, noResult: g.lost,
+        res: g.rsh > 0 ? r6(g.rpnl / g.rsh) : null, resT: rt == null ? null : r2(rt), resWindows: g.rw, noResult: g.lost, pending: wait[key] || 0,
       };
     }).sort((a, b) => ["primary", "secondary", "control"].indexOf(a.role) - ["primary", "secondary", "control"].indexOf(b.role) || a.key.localeCompare(b.key));
   }

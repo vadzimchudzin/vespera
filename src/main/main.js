@@ -162,6 +162,13 @@ ipcMain.handle("setups:export", async (_e, input) => {
   return { ok: true };
 });
 ipcMain.handle("ring:open", () => openRing());
+// The V2 lanes' files on this computer (ledgers, certificates, trade logs) in the system's file manager.
+ipcMain.handle("agents:openData", async () => {
+  const dir = path.join(app.getPath("userData"), "agents", "lanes");
+  try { fs.mkdirSync(dir, { recursive: true }); } catch { return { ok: false, reason: "agents_store_unwritable" }; }
+  const error = await shell.openPath(dir);
+  return error ? { ok: false, reason: "agents_open_failed" } : { ok: true };
+});
 ipcMain.handle("execution:get", async () => { await router.poll(); return router.execution(); });
 ipcMain.handle("execution:configure", async (_e, patch) => {
   try { return await router.configure(patch); }

@@ -48,7 +48,7 @@ assert.strictEqual(V.tFrom(5, 5, 5), null, "no spread, no t");
   assert.deepStrictEqual(Object.keys(c.w).sort(), ["e1", "w2"]);
   g = c.groups();
   near(g[0].res, (100 - 50 * 0.5 - 0.875 - 50 * 0.52 - 0.87) / 100, 1e-9);
-  assert.deepStrictEqual([g[0].resWindows, g[0].windows, g[0].trades], [1, 2, 3], "the pending window still counts for the exit");
+  assert.deepStrictEqual([g[0].resWindows, g[0].windows, g[0].trades, g[0].pending, g[0].noResult], [1, 2, 3, 1, 0], "the pending window still counts for the exit");
   // a window that never gets a result folds without one after its tries
   for (let i = 0; i < 20; i += 1) c.retry("e1", end);
   assert.deepStrictEqual(c.due(end + 10 * DAY), ["w2"], "e1 is out of tries; w2 still waits for its result");

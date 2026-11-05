@@ -59,6 +59,7 @@ contextBridge.exposeInMainWorld("vespera", {
   agentsReport: (input) => ipcRenderer.invoke("agents:report", input),
   agentsRing: () => ipcRenderer.invoke("agents:ring"),
   agentsReset: (input) => ipcRenderer.invoke("agents:reset", input),
+  openAgentsData: () => ipcRenderer.invoke("agents:openData"),
   openRing: () => ipcRenderer.invoke("ring:open"),
   getExecution: () => ipcRenderer.invoke("execution:get"),
   configureExecution: (patch) => ipcRenderer.invoke("execution:configure", patch),
