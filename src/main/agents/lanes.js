@@ -580,7 +580,11 @@ class LpCore {
     }
   }
 
-  // An RTDS taker trade on either token of a market: fills a resting quote it reaches; may trip the shield.
+  // An RTDS trade record on either token of a market: fills a resting quote it reaches; may trip the shield.
+  // RTDS publishes one record for the taker (average price; the only one with a fee field in fee markets) and one per
+  // maker order hit, with the maker's side. A maker record can only reach a quote of ours that crosses the book,
+  // so the fills are as for takers only; the shield's one-sided volume, though, sees both sides of every match and
+  // in effect trips on total volume. lp_paper.js counts the same way, so the lane and the research variant agree.
   trade({ conditionId, asset, price, side, size }, now) {
     const m = this.byCid.get(conditionId);
     if (!m) return [];
