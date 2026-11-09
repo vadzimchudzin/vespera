@@ -145,6 +145,7 @@
       const token = $("executionToken");
       const button = $("executionConnect");
       const retry = $("executionRetry");
+      const showNewToken = $("executionShowToken");
       const toggle = $("zeroModeToggle");
       const output = $("executionMessage");
       const serverActive = execution.mode === "server";
@@ -161,6 +162,7 @@
         button.disabled = state.executionBusy || Boolean(execution.switching);
         button.textContent = t("serverConnectSave");
       }
+      if (showNewToken) showNewToken.hidden = !execution.hasResetCredential;
       if (retry) {
         retry.hidden = !execution.pendingTarget;
         retry.disabled = state.executionBusy || Boolean(execution.switching);
@@ -280,6 +282,25 @@
       state.executionBusy = false;
       paintExecution();
     }
+  }
+
+  async function resetExecutionAccess() {
+    if (state.executionBusy || !window.vespera?.resetExecutionAccess) return;
+    const code = $("executionResetCode").value;
+    if (!code) { showExecutionMessage(t("executionError_reset_code_invalid"), true); return; }
+    if (!window.confirm(t("resetDevicesConfirm"))) return;
+    state.executionBusy = true; paintExecution(); showExecutionMessage(t("executionBusy"));
+    try {
+      const result = executionResult(await window.vespera.resetExecutionAccess({ url: $("executionUrl").value.trim(), token: $("executionToken").value, code }));
+      if (!result?.ok) showExecutionMessage(executionErrorText(result?.reason, result?.message), true);
+      else {
+        $("executionNewToken").value = result.newToken;
+        $("executionNewTokenBox").hidden = false;
+        $("executionToken").value = "";
+        showExecutionMessage(t("resetDevicesDone"));
+      }
+    } catch (error) { showExecutionMessage(executionErrorText(error), true); }
+    finally { $("executionResetCode").value = ""; state.executionBusy = false; paintExecution(); }
   }
 
   async function switchExecutionMode(mode) {
@@ -2722,6 +2743,16 @@
             <button type="button" class="ghost" id="executionConnect" ${execution.switching ? "disabled" : ""}>${t("serverConnectSave")}</button>
             <div class="execution-mode-control"><span>${t("zeroMode")}</span><button type="button" class="toggle ${execution.mode === "server" ? "on" : ""}" id="zeroModeToggle" aria-pressed="${execution.mode === "server"}" ${execution.switching || (execution.mode === "server" && !execution.connected) ? "disabled" : ""}><span class="knob"></span></button></div>
           </div>
+          <button type="button" class="ghost" id="executionResetOpen">${t("resetDevices")}</button>
+          <div id="executionResetBox" hidden>
+            <div class="field"><label for="executionResetCode">${t("resetDevicesCode")}</label><input id="executionResetCode" type="password" autocomplete="off" spellcheck="false" /></div>
+            <button type="button" class="ghost" id="executionResetRun">${t("resetDevicesRun")}</button>
+          </div>
+          <button type="button" class="ghost" id="executionShowToken" ${execution.hasResetCredential ? "" : "hidden"}>${t("resetDevicesShowToken")}</button>
+          <div id="executionNewTokenBox" hidden>
+            <div class="field"><label for="executionNewToken">${t("serverToken")}</label><input id="executionNewToken" type="text" readonly autocomplete="off" spellcheck="false" /></div>
+            <button type="button" class="ghost" id="executionCopyToken">${t("resetDevicesCopy")}</button>
+          </div>
           <button type="button" class="ghost execution-retry" id="executionRetry" ${execution.pendingTarget ? "" : "hidden"} ${execution.switching ? "disabled" : ""}>${t("executionRetry")}</button>
           <p class="hint" id="executionStatusHint">${execution.error ? esc(executionErrorText(execution.error, "")) : execution.mode === "server" ? (execution.connected ? t("executionServerHint") : t("executionOfflineHint")) : t("executionLocalHint")}</p>
           <p class="hint" id="executionRouteHint" ${execution.mode === "server" ? "" : "hidden"}>${t("executionRouteHint")}</p>
@@ -3095,6 +3126,14 @@
       };
       refreshTelegram();
       if (hasTelegramApi) state.telegramTimer = setInterval(() => refreshTelegram(false, true), 2000);
+      $("executionResetOpen").onclick = () => { $("executionResetBox").hidden = !$("executionResetBox").hidden; if (!$("executionResetBox").hidden) $("executionResetCode").focus(); };
+      $("executionResetRun").onclick = resetExecutionAccess;
+      $("executionShowToken").onclick = async () => {
+        const value = await window.vespera?.getResetCredential?.();
+        if (!value) return;
+        $("executionNewToken").value = value; $("executionNewTokenBox").hidden = false;
+      };
+      $("executionCopyToken").onclick = async () => { await window.vespera?.copyText?.($("executionNewToken").value); showExecutionMessage(t("resetDevicesCopied")); };
       $("executionConnect").onclick = configureExecution;
       $("zeroModeToggle").onclick = () => switchExecutionMode(executionState()?.mode === "server" ? "local" : "server");
       $("executionRetry").onclick = retryExecutionTransfer;

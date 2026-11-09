@@ -14,10 +14,17 @@ function serverConfig(env = process.env) {
     token = fs.readFileSync(file, "utf8").trim();
   }
   if (Buffer.byteLength(token) < 32) throw new Error("VESPERA_SERVER_TOKEN must contain at least 32 bytes");
+  let resetCode = "";
+  if (env.VESPERA_RESET_CODE_FILE) {
+    const file = path.resolve(env.VESPERA_RESET_CODE_FILE), stat = fs.statSync(file);
+    if (!stat.isFile() || (process.platform !== "win32" && (stat.mode & 0o077))) throw new Error("reset_code_file_permissions_invalid");
+    resetCode = fs.readFileSync(file, "utf8").trim();
+    if (Buffer.byteLength(resetCode) < 16 || /\s/.test(resetCode)) throw new Error("reset_code_invalid");
+  }
   const port = env.VESPERA_PORT == null ? 8787 : Number(env.VESPERA_PORT);
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error("VESPERA_PORT is invalid");
   const host = env.VESPERA_HOST || "127.0.0.1";
-  return { userDataDir: path.resolve(env.VESPERA_DATA_DIR), token, port, host };
+  return { userDataDir: path.resolve(env.VESPERA_DATA_DIR), token, resetCode, port, host };
 }
 
 function start(env = process.env) {

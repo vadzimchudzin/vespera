@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.26.1 — 2026-11-09
+
+- **Zero Mode device reset:** Settings → Execution now has an explicit recovery-code action. It stops execution, revokes the shared server token, and shows a new token for signing in again. The authoritative book, settings and history are preserved on the server for the first new device; the new device does not overwrite them with its local book.
+- **Position safety:** a real open position is sold at executable CLOB bids, with a durable intent written before submission. Only confirmed venue trades are applied; partial fills, remaining dust, insufficient depth, an unknown outcome, a test or paper position, or other unresolved state keep the reset locked. There is no blind retry after an ambiguous order. A zero-fill or unavailable market can require manual reconciliation or waiting for resolution; a sale is not guaranteed.
+- **Local owner:** update the existing owning desktop too. While it is online it registers a private device proof, then stops, closes its position and transfers its book when the reset is requested from another device. An old, offline or unenrolled local desktop cannot be safely stopped or liquidated remotely; reset remains blocked instead of allowing duplicate trading.
+- **Recovery and security:** owner, new credential and generation commit together; queued old requests are re-authorized, revoked tokens remain invalid after restart, and a lost reply can be recovered using the encrypted pending token. The code is separately provisioned on the server. Telegram and new trading commands are blocked during reset. Disk errors fail closed.
+- **Verification:** automated unit, recovery, restart, token-rotation and simulated partial-sale integrations; settings UI tested locally. No real-money order was sent during testing. See [release verification](docs/RELEASE_VERIFICATION.md).
+
 ## 0.26.0 — 2026-10-12
 
 - **The candle source is no longer a silent fallback.** History is requested from `api.binance.com`, then from the official market-data mirror `data-api.binance.vision` (Binance's public mirror of the Binance.com market data), and only then from Binance.US. Binance.US is a different exchange with different candles (on a 31-day check about 20% of signals differed), so using it is now reported: `snapshot().feed` shows the REST and WebSocket hosts and `degraded`, the header shows an amber **BINANCE.US** badge, the journal records `feed_fallback_binance_us`, Start on real money is refused with `feed_source_not_binance_com`, and a real-money order is never placed on such candles (the session pauses). Paper and dry run keep running with a warning.

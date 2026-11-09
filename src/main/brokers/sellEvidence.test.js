@@ -1,0 +1,23 @@
+"use strict";
+const assert = require("node:assert/strict");
+const { inspectSell } = require("./sellEvidence");
+const id = "0x" + "a".repeat(64), maker = "0x" + "1".repeat(40);
+const pending = { action: "SELL", evidence: { orderId: id, maker, tokenId: "123", shares: 10, limitPrice: 0.3, feeRate: 0.07, feeExponent: 1 } };
+const order = { id, maker_address: maker, asset_id: "123", side: "SELL", status: "MATCHED", size_matched: "10", associate_trades: ["a", "b"] };
+const trades = [0.4, 0.5].map((price, i) => ({ id: i ? "b" : "a", taker_order_id: id, asset_id: "123", side: "SELL", trader_side: "TAKER", status: "CONFIRMED", size: "5", price: String(price), fee_rate_bps: "700" }));
+const client = (o = order, rows = trades) => ({ async getOrder() { return { ok: true, json: o }; }, async getTrade(id) { return { ok: true, json: rows.filter(t => t.id === id) }; } });
+(async () => {
+ const a = await inspectSell(client(), pending, maker); assert.equal(a.kind, "sold"); assert.equal(a.sale.proceedsUsd, "4.500000"); assert.equal(a.sale.feeUsd, "0.17150"); assert.equal(a.sale.partial, false);
+ const b = await inspectSell(client({ ...order, size_matched: "5", associate_trades: ["a"] }), pending, maker); assert.equal(b.sale.partial, true);
+ for (const [o, reason] of [[{ ...order, side: "BUY" }, "sell_identity_mismatch"], [{ ...order, status: "LIVE" }, "sell_not_terminal"], [{ ...order, size_matched: "0" }, "sell_fill_unproven"], [{ ...order, size_matched: "11" }, "sell_trade_evidence_incomplete"]]) assert.equal((await inspectSell(client(o), pending, maker)).reason, reason);
+ for (const [change, reason] of [[{ side: "BUY" }, "sell_trade_identity_mismatch"], [{ status: "MINED" }, "sell_trade_not_final"], [{ price: "0.2" }, "sell_trade_amount_invalid"], [{ fee_rate_bps: "30" }, "sell_fee_schedule_mismatch"]]) assert.equal((await inspectSell(client(order, trades.map(t => ({ ...t, ...change }))), pending, maker)).reason, reason);
+ assert.equal((await inspectSell(client(), { ...pending, action: "BUY" }, maker)).reason, "sell_hash_unavailable");
+ assert.equal((await inspectSell(client(), { ...pending, evidence: { ...pending.evidence, feeRate: null } }, maker)).reason, "sell_fee_unproven");
+ assert.equal((await inspectSell(client(), { ...pending, evidence: { ...pending.evidence, shares: 9 } }, maker)).reason, "sell_trade_evidence_incomplete");
+ assert.equal((await inspectSell(client(order, trades.filter(t => t.id !== "a")), pending, maker)).reason, "sell_trade_evidence_incomplete");
+ const { PolymarketAdapter } = require("./polymarketAdapter");
+ const adapter = new PolymarketAdapter({ walletAddress: maker, client: client() });
+ assert.equal((await adapter.inspectOrder(pending)).kind, "sold", "adapter dispatches SELL to sale-only evidence");
+ assert.equal((await adapter.inspectOrder({ ...pending, action: "BUY" })).ok, false, "buy recovery cannot accept sale evidence");
+ console.log("SELL evidence tests ok");
+})().catch(e => { console.error(e); process.exitCode = 1; });

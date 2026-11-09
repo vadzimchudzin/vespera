@@ -1,0 +1,20 @@
+"use strict";
+const assert = require("node:assert/strict");
+const { ethers } = require("ethers");
+const { PolymarketAdapter } = require("./polymarketAdapter");
+const { submitSell } = require("./sellSubmit");
+const privateKey = "0x" + "11".repeat(32), walletAddress = new ethers.Wallet(privateKey).address;
+const book = { asset_id: "123", market: "0xmarket", tick_size: "0.01", neg_risk: false, min_order_size: "5", bids: [{price:"0.5",size:"20"}] };
+(async () => {
+ let prepared = null, posts = 0, active = true, replyId = null;
+ const client = { configure() {}, async getOrderBook() { return {ok:true,json:book}; }, async clobMarketInfo() { return {ok:true,json:{fd:{r:0.07,e:1}}}; }, async postOrder(order) { posts++; assert.ok(prepared, "durable intent must precede POST"); assert.equal(order.order.side,1); assert.equal(order.orderType,"FAK"); return {ok:true,json:{orderID:replyId}}; } };
+ const adapter = new PolymarketAdapter({privateKey,walletAddress,apiKey:"test",apiSecret:"cw==",apiPassphrase:"test",client});
+ const opts = {tokenId:"123",shares:"10",onPrepared: async e => {prepared=e; replyId=e.orderId;},isActive:()=>active};
+ let r = await submitSell(adapter, opts); assert.equal(r.state,"submitted_unconfirmed"); assert.equal(posts,1); assert.equal(prepared.shares,10); assert.match(prepared.orderId,/^0x[a-f0-9]{64}$/);
+ r = await submitSell(adapter,{...opts,onPrepared:async()=>{throw Error("disk");}}); assert.equal(r.reason,"sale_prepare_failed"); assert.equal(posts,1);
+ r = await submitSell(adapter,{...opts,onPrepared:async()=>{active=false;}}); assert.equal(r.reason,"sale_cancelled"); assert.equal(posts,1); active=true;
+ client.postOrder=async()=>{posts++; throw Error("network");}; r=await submitSell(adapter,opts); assert.equal(r.ambiguous,true); assert.equal(posts,2,"never retry an uncertain POST");
+ client.clobMarketInfo=async()=>({ok:false}); r=await submitSell(adapter,opts); assert.equal(r.reason,"sale_fee_unavailable"); assert.equal(posts,2);
+ client.clobMarketInfo=async()=>({ok:true,json:{}}); r=await submitSell(adapter,opts); assert.equal(r.reason,"sale_fee_unavailable"); assert.equal(posts,2,"missing fee metadata is not a zero-fee schedule");
+ console.log("Sale submission tests ok");
+})().catch(e=>{console.error(e);process.exitCode=1;});

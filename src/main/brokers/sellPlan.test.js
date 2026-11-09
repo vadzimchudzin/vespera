@@ -1,0 +1,14 @@
+"use strict";
+const assert = require("node:assert/strict");
+const { planSell } = require("./sellPlan");
+const book = { asset_id: "123", tick_size: "0.01", neg_risk: false, min_order_size: "5", bids: [{price:"0.4",size:"5"},{price:"0.5",size:"6"}] };
+const plan = planSell({tokenId:"123", shares:"10.123456", book});
+assert.equal(plan.ok, true); assert.equal(plan.sharesMicro, "10120000"); assert.equal(plan.remainderMicro, "3456"); assert.equal(plan.limitPriceMicro, "400000"); assert.equal(plan.minimumProceedsMicro, "4048000");
+assert.equal(planSell({tokenId:"other",shares:"10",book}).reason,"sale_book_identity");
+assert.equal(planSell({tokenId:"123",shares:"4.99",book}).reason,"sale_below_minimum");
+assert.equal(planSell({tokenId:"123",shares:"12",book}).reason,"sale_insufficient_depth");
+assert.equal(planSell({tokenId:"123",shares:"10",book:{...book,bids:[{price:"0.401",size:"50"}]}}).reason,"sale_book_invalid");
+assert.equal(planSell({tokenId:"123",shares:"10",book:{...book,neg_risk:null}}).reason,"sale_market_metadata");
+assert.equal(planSell({tokenId:"123",shares:"1e10",book}).reason,"sale_invalid_size");
+assert.equal(planSell({tokenId:"123",shares:"5",book:{...book,tick_size:"0.0025",bids:[{price:"0.0025",size:"5"}]}}).minimumProceedsMicro,"12500");
+console.log("Sale planning tests ok");

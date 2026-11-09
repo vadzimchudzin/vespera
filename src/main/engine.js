@@ -6,6 +6,8 @@ const { MarketData } = require("./marketData");
 const { INTERVAL_MS, SYMBOLS, TIMEFRAMES, HISTORY_BARS, clampRefreshMs, symbolLabel, fallbackTick, fetchExchangeSymbols } = require("./markets");
 const { createVenue } = require("./brokers");
 const { Journal } = require("./journal");
+const crypto = require("crypto");
+const { applySale, positionReady } = require("./brokers/saleAccounting");
 const { SIZING_MODES, perDollar } = require("./risk");
 const { computeStats, todayPnl, dailyBreakdown } = require("./stats");
 const { Decimal } = require("./money");
@@ -428,6 +430,10 @@ class Engine {
       const e = entries[i];
       if (!isLive(e)) continue;
       if (e.type === "settled") break;
+      if (e.type === "sale_progress" && e.bet && e.bet.clientOrderId) {
+        this.liveBet = { ...e.bet };
+        break;
+      }
       if (e.type === "order_sent" && e.side && e.sizeUsd) {
         this.liveBet = {
           dryRun: Boolean(e.dryRun),
@@ -1363,6 +1369,9 @@ class Engine {
   _settleLive(bar) {
     const bet = this.liveBet;
     if (!bet) return null;
+    // While a sale may have reached the venue, no competing settlement may
+    // consume the unreconciled original balance.
+    if (this.journal.pendingOrder()?.action === "SELL") return null;
     if (this.finalPending && this.finalPending.clientOrderId === bet.clientOrderId) return this.finalPending;
     if (bet.roundCloseTs && bar.closeTs && bar.closeTs < bet.roundCloseTs) return null;
     if (!bet.dryRun) {
@@ -1554,9 +1563,12 @@ class Engine {
         ? Number(bet.shares)
         : entry > 0 && entry < 1 ? size / entry : size * (Number(bet.payout) > 1 ? Number(bet.payout) : 2);
       const fee = Number(bet.feeUsd) > 0 ? Number(bet.feeUsd) : 0;
-      const pnl = Decimal((won ? shares - size : -size) - fee);
+      const proceeds = Number(bet.saleProceedsUsd) || 0;
+      const sellFee = Number(bet.saleFeeUsd) || 0;
+      const pnl = Decimal((won ? shares : 0) + proceeds - size - fee - sellFee);
       const row = {
         ...bet,
+        feeUsd: (fee + sellFee).toFixed(6),
         mode: "auto",
         status: won ? "win" : "loss",
         outcome,
@@ -1750,6 +1762,7 @@ class Engine {
       if (existing && (!orderId || existing.orderId === orderId)) return { ok: true, alreadyResolved: true, order: existing };
       return { ok: false, reason: "no_pending_order" };
     }
+    if (pending.action === "SELL") return this._resolveSale({ clientOrderId, orderId, confirm });
     if (pending.clientOrderId !== clientOrderId) return { ok: false, reason: "client_order_id_mismatch" };
     if (confirm !== true || !orderId) return { ok: false, reason: "confirmation_required" };
     const inspected = await this.inspectPendingOrder();
@@ -1843,6 +1856,78 @@ class Engine {
     this.emit("log", { level: "info", message: `order_reconciled: ${clientOrderId} ${pending.test ? "test" : "live"} fill restored; press Start to resume` });
     this.emit("status", this.status);
     return { ok: true, order: persisted, state: this.snapshot() };
+  }
+
+  // Close at the currently executable book price. Any ambiguous result remains
+  // durably locked; a second order is never sent until venue evidence is final.
+  async closePositionForReset() {
+    if (this._saleClosing || this._opening || this._starting || this.finalPending || this._finalReconcileBusy || this._testPositionActive())
+      return { ok: false, reason: "execution_busy" };
+    if (this.journal.pendingOrder()) return { ok: false, reason: "order_pending" };
+    this.stop();
+    if (this.paper.openBet) return { ok: false, reason: "paper_position_open" };
+    const bet = this.liveBet;
+    if (!bet) return { ok: true, complete: true };
+    if (bet.dryRun) return { ok: false, reason: "dry_position_open" };
+    if (!positionReady(bet) || typeof this.live.submitSale !== "function")
+      return { ok: false, reason: "sale_not_ready" };
+    this._saleClosing = true;
+    const clientOrderId = `reset-sale-${crypto.randomUUID()}`;
+    try {
+      this.journal.beginOrder({ mode: "auto", action: "SELL", clientOrderId, positionId: bet.clientOrderId });
+      const generation = this._executionGeneration;
+      const result = await this.live.submitSale({ tokenId: bet.tokenId, shares: bet.shares,
+        isActive: () => !this._disposed && generation === this._executionGeneration,
+        onPrepared: (evidence) => this.journal.attachOrderEvidence(clientOrderId, evidence) });
+      if (!result?.ok) {
+        if (!result?.ambiguous) this.journal.completeOrder(clientOrderId);
+        else this._pauseUnknownOrder();
+        return { ok: false, reason: result?.reason || "sale_failed" };
+      }
+      return await this._resolveSale({ clientOrderId, orderId: result.evidence.orderId, confirm: true });
+    } catch {
+      // Even a local exception might have happened after submission. Keep lock.
+      this._pauseUnknownOrder();
+      return { ok: false, reason: "sale_outcome_unknown" };
+    } finally { this._saleClosing = false; }
+  }
+
+  async _resolveSale({ clientOrderId, orderId, confirm }) {
+    const pending = this.journal.pendingOrder();
+    if (!pending || pending.action !== "SELL") return { ok: false, reason: "no_pending_sale" };
+    if (pending.clientOrderId !== clientOrderId) return { ok: false, reason: "client_order_id_mismatch" };
+    if (confirm !== true || !orderId || orderId !== pending.evidence?.orderId) return { ok: false, reason: "confirmation_required" };
+    const find = () => this.journal.restoreEntries.find(e => ["sale_progress", "settled"].includes(e.type) && e.saleClientOrderId === clientOrderId);
+    let recorded = find();
+    if (!recorded) {
+      if (!this.liveBet || this.liveBet.clientOrderId !== pending.positionId || this.finalPending)
+        return { ok: false, reason: "sale_position_mismatch" };
+      const inspected = await this.inspectPendingOrder();
+      if (!inspected?.ok || inspected.kind !== "sold" || inspected.sale?.orderId !== orderId || inspected.evidence?.orderId !== orderId)
+        return { ok: false, reason: inspected?.reason || "sale_unconfirmed" };
+      const calculated = applySale(this.liveBet, inspected.sale);
+      if (!calculated.ok) return calculated;
+      const row = calculated.complete
+        ? { type: "settled", ...calculated.settled, saleClientOrderId: clientOrderId, saleEvidence: inspected.evidence }
+        : { type: "sale_progress", mode: "auto", saleClientOrderId: clientOrderId, positionId: pending.positionId,
+            bet: calculated.bet, saleEvidence: inspected.evidence };
+      try { recorded = this.journal.write(row); } catch { recorded = find(); }
+      if (!recorded) return { ok: false, reason: "persistence_failed" };
+    }
+    if (recorded.type === "settled") {
+      if (!this._appliedSettlementIds.has(pending.positionId)) {
+        if (recorded.status === "win") this.risk.onWin(); else this.risk.onLoss(-Number(recorded.pnl));
+        this._appliedSettlementIds.add(pending.positionId);
+      }
+      this.liveBet = null;
+    } else this.liveBet = { ...recorded.bet };
+    try { this.journal.completeOrder(clientOrderId); } catch { /* checkpoint allows safe retry */ }
+    this.running = false;
+    this._stopHealth();
+    this.pauseReason = null;
+    this.status = this.liveBet ? "waiting_settlement" : this.risk.halted ? "halt" : "stopped";
+    this.emit("status", this.status);
+    return { ok: true, complete: !this.liveBet, remainingShares: this.liveBet?.shares || "0", state: this.snapshot() };
   }
 
   async _executeSignal(ev, bar) {

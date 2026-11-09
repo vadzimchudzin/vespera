@@ -257,3 +257,15 @@ function tempJournal() {
 }
 
 console.log("journal state tests ok");
+
+// Sell intent evidence survives restart but never persists a signature.
+{
+  const { dir, file } = tempJournal();
+  const j = new Journal(file);
+  j.beginOrder({ clientOrderId: "sell-test", action: "SELL" });
+  j.attachOrderEvidence("sell-test", { orderId: "hash", shares: 10.25, signature: "secret-signature" });
+  const pending = new Journal(file).pendingOrder();
+  assert.strictEqual(pending.evidence.shares, 10.25);
+  assert.strictEqual(pending.evidence.signature, undefined);
+  fs.rmSync(dir, { recursive: true, force: true });
+}

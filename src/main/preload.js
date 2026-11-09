@@ -51,6 +51,8 @@ contextBridge.exposeInMainWorld("vespera", {
   telegramDisconnect: () => ipcRenderer.invoke("telegram:disconnect"),
   getExecution: () => ipcRenderer.invoke("execution:get"),
   configureExecution: (patch) => ipcRenderer.invoke("execution:configure", patch),
+  getResetCredential: () => ipcRenderer.invoke("execution:resetCredential"),
+  resetExecutionAccess: (input) => ipcRenderer.invoke("execution:resetAccess", input),
   setExecutionMode: (mode) => ipcRenderer.invoke("execution:setMode", mode),
   minimize: () => ipcRenderer.invoke("window:minimize"),
   maximize: () => ipcRenderer.invoke("window:maximize"),

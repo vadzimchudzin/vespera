@@ -293,7 +293,7 @@ class ExecutionHost {
         this.store.save({ baseUsd: e.settings.baseUsd });
         return e.snapshot();
       case "getSettings": {
-        const { apiKey, apiSecret, apiPassphrase, privateKey, serverToken, transferBundle, ...safe } = this.store.value;
+        const { apiKey, apiSecret, apiPassphrase, privateKey, serverToken, resetNewToken, deviceProof, transferBundle, ...safe } = this.store.value;
         return { ...safe, hasApiKey: Boolean(apiKey), hasApiSecret: Boolean(apiSecret), hasApiPassphrase: Boolean(apiPassphrase), hasPrivKey: Boolean(privateKey) };
       }
       case "saveSettings": {

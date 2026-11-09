@@ -15,6 +15,7 @@ const MAX_FILES = 5;
 const MAX_MEMORY_ENTRIES = 5000;
 const REPLAY_TYPES = new Set([
   "order_sent",
+  "sale_progress",
   "test_order",
   "settled",
   "settlement_provisional",
@@ -56,6 +57,12 @@ class Journal {
       fs.closeSync(fd);
       fd = null;
       fs.renameSync(tempPath, filePath);
+      // Persist the directory entry as well as the file before any venue POST.
+      // A power loss must not discard the durable order intent after a sale.
+      try {
+        const dirFd = fs.openSync(path.dirname(filePath), "r");
+        try { fs.fsyncSync(dirFd); } finally { fs.closeSync(dirFd); }
+      } catch (error) { if (process.platform !== "win32") throw error; }
     } catch (err) {
       if (fd !== undefined && fd !== null) fs.closeSync(fd);
       try { fs.rmSync(tempPath, { force: true }); } catch { /* best effort */ }
@@ -110,7 +117,7 @@ class Journal {
     for (const entry of entries) {
       if (entry.type === "paper_reset") lastPaperReset = entry;
       if (entry.type === "test_order") lastTestOrder = entry;
-      if (entry.type === "order_sent" || entry.type === "settled" || entry.type === "settlement_provisional") {
+      if (entry.type === "order_sent" || entry.type === "sale_progress" || entry.type === "settled" || entry.type === "settlement_provisional") {
         const book = entry.mode === "auto" ? (entry.dryRun ? "dry" : "live") : "paper";
         lastByBook.set(book, entry);
       }
@@ -377,7 +384,7 @@ class Journal {
     if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)) {
       throw new Error("Order evidence must be an object");
     }
-    const allowed = ["orderId", "maker", "tokenId", "slug", "side", "sizeUsd", "limitPrice", "feeRate", "feeExponent", "makerAddress", "signerAddress", "signatureType"];
+    const allowed = ["orderId", "maker", "tokenId", "slug", "side", "sizeUsd", "shares", "limitPrice", "feeRate", "feeExponent", "makerAddress", "signerAddress", "signatureType"];
     const safeEvidence = {};
     for (const key of allowed) {
       const value = evidence[key];

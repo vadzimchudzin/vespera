@@ -5,6 +5,12 @@ production host. Do not use it to claim HTTPS/DNS, venue reachability, external
 alerts, a successful recovery drill, or a production soak before those are
 actually run by the operator. The server remains loopback-only by default.
 
+## Zero Mode recovery code
+
+Set `VESPERA_RESET_CODE_FILE` to a separate, private, strong randomly generated code file readable only by the service account (mode `0600`). The file must contain at least 16 non-whitespace bytes. Provision and share the code through a secure channel; never print it in service logs. The normal server token is not the recovery code. Existing deployments without this variable leave reset disabled.
+
+After a successful reset, the current server token lives in the protected ownership state under the data directory; the configured server token file is only the initial token for a service with no rotated credential. Back up the private data directory and the reset-code file together under access controls; restoring an older backup can restore an old token. The initiating desktop keeps its generated replacement token encrypted so an interrupted reply can be recovered. Do not manually remove the reset intent, pending order, owner binding or device proof to force a takeover. The previously owning local desktop must be updated, online and enrolled; otherwise the remote reset is refused or waits.
+
 ## Preflight
 
 On the intended host, install Node.js 22+ and production dependencies from the

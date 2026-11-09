@@ -124,6 +124,11 @@ ipcMain.handle("execution:configure", async (_e, patch) => {
   try { return await router.configure(patch); }
   catch (err) { return { ok: false, reason: err.code || "remote_unavailable", execution: router.execution() }; }
 });
+ipcMain.handle("execution:resetCredential", () => router.getResetCredential());
+ipcMain.handle("execution:resetAccess", async (_e, input) => {
+  try { return await router.resetAccess(input); }
+  catch (err) { return { ok: false, reason: err.code || "remote_unavailable", execution: router.execution() }; }
+});
 ipcMain.handle("execution:setMode", (_e, mode) => router.switchMode(mode));
 
 ipcMain.handle("journal:exportCsv", async () => {

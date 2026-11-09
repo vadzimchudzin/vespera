@@ -275,7 +275,7 @@ function masterKeyMatchesSettings(scope) {
     key = fs.readFileSync(file);
     if (key.length !== 32) return false;
     const settings = JSON.parse(fs.readFileSync(path.join(path.resolve(scope), "settings.json"), "utf8"));
-    const encrypted = ["apiKey", "apiSecret", "apiPassphrase", "privateKey", "serverToken", "transferBundle"]
+    const encrypted = ["apiKey", "apiSecret", "apiPassphrase", "privateKey", "serverToken", "resetNewToken", "deviceProof", "transferBundle"]
       .map((field) => settings[field]).filter((value) => typeof value === "string" && value.startsWith(MASTER_PREFIX));
     return encrypted.every((value) => decryptWithKey(value, key) != null);
   } catch {

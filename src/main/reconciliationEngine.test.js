@@ -47,6 +47,16 @@ function liveFor(inspection) {
 async function run() {
   {
     const dir = temporaryDirectory();
+    const engine = makeEngine(dir, liveFor({ ok: true, kind: "filled", order: fill(), evidence: { orderId: "venue-order-1" } }));
+    engine.journal.beginOrder({ clientOrderId: "unknown-sell", action: "SELL", side: "UP", sizeUsd: "1.00" });
+    const result = await engine.resolvePendingOrder({ clientOrderId: "unknown-sell", orderId: "venue-order-1", confirm: true });
+    assert.deepStrictEqual(result, { ok: false, reason: "confirmation_required" });
+    assert.ok(engine.journal.pendingOrder(), "unknown sale remains locked");
+    assert.strictEqual(engine.liveBet, null, "a sale must not be restored as a buy");
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  {
+    const dir = temporaryDirectory();
     const live = liveFor({ ok: false, reason: "not_found" });
     let engine = makeEngine(dir, live);
     const intent = {
