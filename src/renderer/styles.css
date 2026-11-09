@@ -2283,3 +2283,8 @@ details.adv[open] > summary {
   border-radius: 99px;
   background: var(--warn);
 }
+
+/* Reset controls are separate from normal server connection settings. */
+#executionResetOpen, #executionShowToken { margin-top: 10px; }
+#executionResetBox { margin-top: 10px; }
+#executionNewTokenBox { margin-top: 10px; }

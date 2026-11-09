@@ -778,9 +778,14 @@ class PolymarketAdapter {
     return outcome ? { resolved: true, outcome } : { resolved: false };
   }
 
+  async submitSale(options) {
+    return require("./sellSubmit").submitSell(this, options);
+  }
+
   async inspectOrder(pending) {
     try {
       this._syncClientIdentity();
+      if (pending?.action === "SELL") return await require("./sellEvidence").inspectSell(this.client, pending, this.walletAddress);
       return await require("./orderEvidence").inspectOrder(this.client, pending, this.walletAddress);
     } catch {
       return { ok: false, reason: "order_lookup_unavailable" };

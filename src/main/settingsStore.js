@@ -24,7 +24,7 @@ const {
  * master key. Legacy values are migrated on their next successful save.
  */
 
-const SECRET_FIELDS = ["apiKey", "apiSecret", "apiPassphrase", "privateKey", "serverToken", "transferBundle"];
+const SECRET_FIELDS = ["apiKey", "apiSecret", "apiPassphrase", "privateKey", "serverToken", "resetNewToken", "deviceProof", "transferBundle"];
 
 const DEFAULTS = {
   symbol: "BTCUSDT",

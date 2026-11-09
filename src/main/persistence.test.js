@@ -154,11 +154,13 @@ async function run() {
       apiPassphrase: "PASS-1",
       privateKey: "PRIV-1",
       serverToken: "SERVER-TOKEN-1",
+      resetNewToken: "RESET-TOKEN-1",
+      deviceProof: "DEVICE-PROOF-1",
       transferBundle: "TRANSFER-PRIVATE-1",
       walletAddress: "0xabc",
     });
     const raw = fs.readFileSync(path.join(dir, "settings.json"), "utf8");
-    for (const secret of ["KEY-1", "SECRET-1", "PASS-1", "PRIV-1", "SERVER-TOKEN-1", "TRANSFER-PRIVATE-1"]) {
+    for (const secret of ["KEY-1", "SECRET-1", "PASS-1", "PRIV-1", "SERVER-TOKEN-1", "RESET-TOKEN-1", "DEVICE-PROOF-1", "TRANSFER-PRIVATE-1"]) {
       assert(!raw.includes(secret), `${secret} must not appear in settings.json`);
     }
     for (const key of SECRET_FIELDS) {

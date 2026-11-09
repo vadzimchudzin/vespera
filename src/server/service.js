@@ -24,7 +24,7 @@ const METHODS = new Set([
   "agentsStatus", "agentsConfigure", "agentsStart", "agentsStop", "agentsKill", "agentsResume", "agentsAgent",
   "agentsReport", "agentsRing", "agentsReset",
 ]);
-const SECRET_KEYS = /^(api.?key|api.?secret|api.?passphrase|private.?key|proxy.?url|server.?token|telegram.?token|token|authorization|credentials|bundle)$/i;
+const SECRET_KEYS = /^(api.?key|api.?secret|api.?passphrase|private.?key|proxy.?url|server.?token|auth.?token|reset.?new.?token|device.?proof|reset.?code|telegram.?token|token|authorization|credentials|bundle)$/i;
 
 // Refusals raised before any external effect. They are definite: the request is closed and the client sees the
 // real reason. Anything else keeps failing closed as "command_outcome_unknown", because it may follow a venue call.
@@ -136,7 +136,7 @@ function clean(value, depth = 0, redactions = []) {
   return result;
 }
 
-function createService({ userDataDir, token, host, hostFactory, now = Date.now, telegramTransport = null } = {}) {
+function createService({ userDataDir, token, resetCode = "", host, hostFactory, now = Date.now, telegramTransport = null } = {}) {
   if (!userDataDir) throw new TypeError("userDataDir is required");
   try {
     fs.lstatSync(path.join(userDataDir, ".restore-validation.json"));
@@ -182,17 +182,28 @@ function createService({ userDataDir, token, host, hostFactory, now = Date.now, 
     }
     if (!owner.protocol) owner.protocol = PROTOCOL;
     if (owner.owner === "local" && owner.deviceId != null && typeof owner.deviceId !== "string") throw new Error("invalid_ownership");
-    if (owner.owner === "server" && (typeof owner.deviceId !== "string" || !owner.deviceId)) throw new Error("invalid_ownership");
+    if (owner.owner === "server" && !((typeof owner.deviceId === "string" && owner.deviceId) || (owner.deviceId === null && owner.resetUnclaimed === true))) throw new Error("invalid_ownership");
+    if (owner.authToken != null && (typeof owner.authToken !== "string" || Buffer.byteLength(owner.authToken) < 32 || /\s/.test(owner.authToken))) throw new Error("invalid_ownership");
   } catch (error) {
     releaseLock();
     throw new Error(`service_state_corrupt:${error.message}`);
   }
 
-  const saveOwner = () => atomicJson(ownershipFile, owner);
+  let activeHost = host;
+  let stateWriteFailed = false;
+  const failStateWrites = () => {
+    stateWriteFailed = true;
+    try { activeHost?.engine?.stop?.(); } catch { /* service stays locked */ }
+  };
+  const saveOwner = () => {
+    if (stateWriteFailed) throw new Error("service_state_unwritable");
+    try { atomicJson(ownershipFile, owner); } catch (error) { failStateWrites(); throw error; }
+  };
   const commitOwner = (next) => {
-    atomicJson(ownershipFile, next);
+    if (stateWriteFailed) throw new Error("service_state_unwritable");
+    try { atomicJson(ownershipFile, next); } catch (error) { failStateWrites(); throw error; }
     owner = next;
-    Promise.resolve(activeHost?.setResearchContext?.({ active: next.owner === "server" })).catch(() => {});
+    Promise.resolve(activeHost?.setResearchContext?.({ active: next.owner === "server" && !next.resetPending && !next.resetUnclaimed })).catch(() => {});
   };
   const requestFile = (id) => path.join(ledgerDir, `${crypto.createHash("sha256").update(id).digest("hex")}.json`);
   const lookupRequest = (id) => {
@@ -229,8 +240,7 @@ function createService({ userDataDir, token, host, hostFactory, now = Date.now, 
       throw new Error(`service_state_unwritable:${error.message}`);
     }
   }
-  let activeHost = host;
-  const redactions = [token];
+  const redactions = [token, owner.authToken, resetCode].filter(Boolean);
   const refreshRedactions = () => {
     const settings = activeHost && activeHost.engine && activeHost.engine.settings;
     if (!settings) return;
@@ -306,7 +316,7 @@ function createService({ userDataDir, token, host, hostFactory, now = Date.now, 
   telegramBot = new TelegramBot({
     store: telegramStore,
     host: activeHost,
-    getOwner: () => owner,
+    getOwner: () => owner.resetPending || owner.resetUnclaimed ? { owner: "reset_locked", epoch: owner.epoch } : owner,
     serialize,
     transport: telegramTransport,
     now,
@@ -396,14 +406,29 @@ function createService({ userDataDir, token, host, hostFactory, now = Date.now, 
     lastSeenAt: owner.lastSeenAt,
     desiredRunning: owner.desiredRunning,
     version: (snapshot && snapshot.version) || require("../../package.json").version,
+    resetPending: Boolean(owner.resetPending), resetUnclaimed: Boolean(owner.resetUnclaimed),
+    resetRequestId: owner.resetPending ? owner.resetRequestId : null, deviceProofEnrolled: Boolean(owner.deviceProofHash),
   });
   const authorize = (req) => {
+    if (stateWriteFailed) throw new ServiceError("service_state_unwritable", 503);
     const header = req.headers.authorization || "";
     const match = /^Bearer ([^\s]+)$/.exec(header);
     if (!match) throw new ServiceError("unauthorized", 401);
     const supplied = Buffer.from(match[1]);
-    const expected = Buffer.from(token);
+    const expected = Buffer.from(owner.authToken || token);
     if (supplied.length !== expected.length || !crypto.timingSafeEqual(supplied, expected)) throw new ServiceError("unauthorized", 401);
+  };
+  const authorizedSerial = (req, work) => serialize(() => { authorize(req); return work(); });
+  let badResetAttempts = 0, resetBlockedUntil = 0;
+  const verifyResetCode = (value) => {
+    if (now() < resetBlockedUntil) throw new ServiceError("reset_rate_limited", 429);
+    if (typeof resetCode !== "string" || Buffer.byteLength(resetCode) < 16) throw new ServiceError("reset_not_configured", 503);
+    const a = Buffer.from(typeof value === "string" ? value : ""), b = Buffer.from(resetCode);
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+      if (++badResetAttempts >= 5) { resetBlockedUntil = now() + 15 * 60 * 1000; badResetAttempts = 0; }
+      throw new ServiceError("reset_code_invalid", 403);
+    }
+    badResetAttempts = 0;
   };
   const stripProxy = (method, args) => {
     if (!["saveSettings", "connect", "ping", "deriveKeys"].includes(method)) return args;
@@ -425,7 +450,7 @@ function createService({ userDataDir, token, host, hostFactory, now = Date.now, 
   async function handle(req, res) {
     try {
       const url = new URL(req.url, "http://127.0.0.1");
-      if (req.method === "GET" && url.pathname === "/healthz") return send(res, 200, { healthy: true, protocol: PROTOCOL });
+      if (req.method === "GET" && url.pathname === "/healthz") return send(res, stateWriteFailed ? 503 : 200, { healthy: !stateWriteFailed, protocol: PROTOCOL });
       authorize(req);
       if (req.method === "GET" && url.pathname === "/v1/status") {
         let snapshot = null;
@@ -457,11 +482,11 @@ function createService({ userDataDir, token, host, hostFactory, now = Date.now, 
         return send(res, 200, { events, cursor: events.length ? events[events.length - 1].id : eventCursor });
       }
       if (req.method !== "POST") throw new ServiceError("not_found", 404);
-      const max = url.pathname === "/v1/activate" ? MAX_BUNDLE + 128 * 1024 : MAX_BODY;
+      const max = ["/v1/activate", "/v1/reset", "/v1/reset/local-ready"].includes(url.pathname) ? MAX_BUNDLE + 128 * 1024 : MAX_BODY;
       const body = await readBody(req, max);
-      if (url.pathname === "/v1/heartbeat") {
+      if (url.pathname === "/v1/heartbeat") return send(res, 200, await authorizedSerial(req, async () => {
         const id = deviceId(body);
-        if (!owner.deviceId || owner.deviceId !== id) return send(res, 200, { ok: true, connected: false });
+        if (!owner.deviceId || owner.deviceId !== id) return { ok: true, connected: false };
         const wasConnected = owner.owner === "server" && owner.lastSeenAt != null && now() - owner.lastSeenAt <= 30_000;
         owner.lastSeenAt = now();
         saveOwner();
@@ -469,11 +494,42 @@ function createService({ userDataDir, token, host, hostFactory, now = Date.now, 
           desktopWasConnected = true;
           telegramBot?.notifyDesktop(true);
         }
-        return send(res, 200, { ok: true, connected: owner.owner === "server" });
-      }
-      if (url.pathname === "/v1/register") return send(res, 200, await serialize(async () => {
+        return { ok: true, connected: owner.owner === "server" };
+      }));
+      if (url.pathname === "/v1/device-enroll") return send(res, 200, await authorizedSerial(req, async () => {
+        const device = deviceId(body), proof = body.deviceProof;
+        if (owner.owner !== "local" || owner.deviceId !== device || owner.resetPending) throw new ServiceError("owner_device_mismatch", 409);
+        if (typeof proof !== "string" || Buffer.byteLength(proof) < 32 || /\s/.test(proof)) throw new ServiceError("device_proof_invalid", 400);
+        const hash = crypto.createHash("sha256").update(proof).digest("hex");
+        if (owner.deviceProofHash && owner.deviceProofHash !== hash) throw new ServiceError("device_proof_mismatch", 409);
+        if (!owner.deviceProofHash) commitOwner({ ...owner, deviceProofHash: hash });
+        return { ok: true };
+      }));
+      if (url.pathname === "/v1/reset/local-ready") return send(res, 200, await authorizedSerial(req, async () => {
+        const id = requestId(body), device = deviceId(body), proof = body.deviceProof;
+        if (!owner.resetPending || owner.resetRequestId !== id || owner.deviceId !== device) throw new ServiceError("reset_in_progress", 409);
+        if (typeof proof !== "string" || !owner.deviceProofHash) throw new ServiceError("device_proof_invalid", 403);
+        const actual = Buffer.from(crypto.createHash("sha256").update(proof).digest("hex"));
+        const expected = Buffer.from(owner.deviceProofHash);
+        if (actual.length !== expected.length || !crypto.timingSafeEqual(actual, expected)) throw new ServiceError("device_proof_invalid", 403);
+        if (owner.owner === "server") return { ok: true, alreadyReady: true };
+        if (!body.bundle || Buffer.byteLength(JSON.stringify(body.bundle)) > MAX_BUNDLE) throw new ServiceError("invalid_transfer", 409);
+        if (typeof activeHost.idle === "function" && !activeHost.idle()) throw new ServiceError("reset_position_open", 409);
+        try { await activeHost.importBundle(body.bundle); } catch { throw new ServiceError("invalid_transfer", 409); }
+        refreshRedactions();
+        commitOwner({ ...owner, owner: "server", desiredRunning: false, lastSeenAt: now() });
+        return { ok: true };
+      }));
+      if (url.pathname === "/v1/register") return send(res, 200, await authorizedSerial(req, async () => {
         const id = requestId(body);
         const device = deviceId(body);
+        if (owner.resetPending) throw new ServiceError("reset_in_progress", 409);
+        if (owner.owner === "server" && owner.resetUnclaimed === true && owner.deviceId === null) {
+          commitOwner({ ...owner, deviceId: device, resetUnclaimed: false, registrationRequestId: id, lastSeenAt: now() });
+          return { ok: true, owner: "server", deviceId: device, epoch: owner.epoch };
+        }
+        if (owner.owner === "server" && owner.deviceId === device && owner.registrationRequestId === id)
+          return { ok: true, owner: "server", deviceId: device, epoch: owner.epoch };
         if (owner.owner !== "local") throw new ServiceError("not_local_owner", 409);
         if (owner.deviceId && owner.deviceId !== device) throw new ServiceError("device_already_registered", 409);
         if (owner.deviceId === device && owner.registrationRequestId === id) return { ok: true, owner: "local", deviceId: device, epoch: owner.epoch };
@@ -483,8 +539,9 @@ function createService({ userDataDir, token, host, hostFactory, now = Date.now, 
         finishRequest(id);
         return { ok: true, owner: "local", deviceId: device, epoch: owner.epoch };
       }));
-      if (url.pathname === "/v1/command") return send(res, 200, await (["aiModels", "aiRecommend", "aiLocalPull"].includes(body.method) ? (work) => work() : serialize)(async () => {
+      if (url.pathname === "/v1/command") return send(res, 200, await (["aiModels", "aiRecommend", "aiLocalPull"].includes(body.method) ? (work) => { authorize(req); return work(); } : (work) => authorizedSerial(req, work))(async () => {
         const id = requestId(body);
+        if (owner.resetPending && !["stop", "inspectPendingOrder", "resolvePendingOrder", "reconcileFinalSettlement"].includes(body.method)) throw new ServiceError("reset_in_progress", 409);
         const device = deviceId(body);
         if (owner.deviceId !== device) throw new ServiceError("owner_device_mismatch", 409);
         if (owner.owner !== "server") throw new ServiceError("not_server_owner", 409);
@@ -521,7 +578,62 @@ function createService({ userDataDir, token, host, hostFactory, now = Date.now, 
           throw new ServiceError("command_outcome_unknown", 503);
         }
       }));
-      if (url.pathname === "/v1/activate") return send(res, 200, await serialize(async () => {
+      if (url.pathname === "/v1/reset/verify") return send(res, 200, await authorizedSerial(req, async () => {
+        verifyResetCode(body.code); return { ok: true };
+      }));
+      if (url.pathname === "/v1/reset") return send(res, 200, await authorizedSerial(req, async () => {
+        verifyResetCode(body.code);
+        const id = requestId(body), nextToken = body.newToken;
+        if (typeof nextToken !== "string" || Buffer.byteLength(nextToken) < 32 || /\s/.test(nextToken) || nextToken === (owner.authToken || token))
+          throw new ServiceError("reset_token_invalid", 400);
+        if (owner.owner === "local" && owner.deviceId && body.deviceId !== owner.deviceId) {
+          if (!owner.deviceProofHash) throw new ServiceError("reset_local_owner_unverified", 409);
+          if (!owner.resetPending) commitOwner({ ...owner, resetPending: true, resetRequestId: id, desiredRunning: false });
+          if (owner.resetRequestId !== id) throw new ServiceError("reset_in_progress", 409);
+          throw new ServiceError("reset_waiting_owner", 409);
+        }
+        if (owner.owner === "local" && owner.deviceId) {
+          if (typeof body.deviceProof !== "string" || !owner.deviceProofHash) throw new ServiceError("device_proof_invalid", 403);
+          const actual = Buffer.from(crypto.createHash("sha256").update(body.deviceProof).digest("hex"));
+          const expected = Buffer.from(owner.deviceProofHash);
+          if (actual.length !== expected.length || !crypto.timingSafeEqual(actual, expected)) throw new ServiceError("device_proof_invalid", 403);
+        }
+        if (owner.owner === "local" && !owner.deviceId) {
+          commitOwner({ ...owner, authToken: nextToken, epoch: owner.epoch + 1, deviceId: null, registrationRequestId: null, desiredRunning: false });
+          redactions.push(nextToken);
+          return { ok: true, owner: "local", epoch: owner.epoch };
+        }
+        if (owner.resetUnclaimed) throw new ServiceError("reset_already_unclaimed", 409);
+        if (!owner.resetPending) commitOwner({ ...owner, resetPending: true, resetRequestId: id, desiredRunning: false });
+        if (owner.resetRequestId !== id) throw new ServiceError("reset_in_progress", 409);
+        if (owner.owner === "local") {
+          if (!body.bundle || Buffer.byteLength(JSON.stringify(body.bundle)) > MAX_BUNDLE) throw new ServiceError("invalid_transfer", 409);
+          if (typeof activeHost.idle === "function" && !activeHost.idle()) throw new ServiceError("reset_position_open", 409);
+          try { await activeHost.importBundle(body.bundle); } catch { throw new ServiceError("invalid_transfer", 409); }
+          refreshRedactions();
+        }
+        const engine = activeHost.engine;
+        // Cancel new signals immediately, including an in-flight opening.
+        engine?.stop?.();
+        if (engine?.journal?.pendingOrder?.()?.action === "SELL") {
+          const pending = engine.journal.pendingOrder();
+          const r = await engine.resolvePendingOrder({ clientOrderId: pending.clientOrderId, orderId: pending.evidence?.orderId, confirm: true });
+          if (!r?.ok) throw new ServiceError("reset_sale_pending", 409);
+        }
+        if (engine?.liveBet && typeof engine.closePositionForReset === "function") {
+          const r = await engine.closePositionForReset();
+          if (!r?.ok || !r.complete) throw new ServiceError("reset_position_open", 409);
+        }
+        try { await activeHost.quiesce(); } catch { throw new ServiceError("reset_position_open", 409); }
+        if (typeof activeHost.idle === "function" && !activeHost.idle()) throw new ServiceError("reset_position_open", 409);
+        // Ownership, generation, and the replacement credential commit together.
+        commitOwner({ ...owner, owner: "server", deviceId: null, authToken: nextToken, epoch: owner.epoch + 1, desiredRunning: false,
+          resetPending: false, resetUnclaimed: true, resetRequestId: null, registrationRequestId: null, deviceProofHash: null, lastSeenAt: null });
+        redactions.push(nextToken);
+        return { ok: true, owner: "server", epoch: owner.epoch };
+      }));
+      if (url.pathname === "/v1/activate") return send(res, 200, await authorizedSerial(req, async () => {
+        if (owner.resetPending) throw new ServiceError("reset_in_progress", 409);
         const id = requestId(body);
         const device = deviceId(body);
         if (body.bundle == null || Buffer.byteLength(JSON.stringify(body.bundle)) > MAX_BUNDLE) throw new ServiceError("invalid_bundle");
@@ -551,7 +663,8 @@ function createService({ userDataDir, token, host, hostFactory, now = Date.now, 
         warmServerChart();
         return { ok: true, owner: "server", epoch: owner.epoch };
       }));
-      if (url.pathname === "/v1/release") return send(res, 200, await serialize(async () => {
+      if (url.pathname === "/v1/release") return send(res, 200, await authorizedSerial(req, async () => {
+        if (owner.resetPending) throw new ServiceError("reset_in_progress", 409);
         const id = requestId(body);
         const device = deviceId(body);
         if (releaseCache && releaseCache.requestId === id && releaseCache.deviceId === device) {
@@ -602,10 +715,10 @@ function createService({ userDataDir, token, host, hostFactory, now = Date.now, 
   server.requestTimeout = 30_000;
   server.headersTimeout = 10_000;
   server.on("listening", () => {
-    Promise.resolve(activeHost.setResearchContext?.({ active: owner.owner === "server" })).catch(() => {});
+    Promise.resolve(activeHost.setResearchContext?.({ active: owner.owner === "server" && !owner.resetPending && !owner.resetUnclaimed })).catch(() => {});
     if (owner.owner !== "server") return;
     warmServerChart();
-    if (!owner.desiredRunning) return;
+    if (!owner.desiredRunning || owner.resetPending || owner.resetUnclaimed) return;
     const engine = activeHost.engine;
     if (engine && ((typeof engine.journal?.pendingOrder === "function" && engine.journal.pendingOrder()) || engine.risk?.halted)) {
       owner.desiredRunning = false;
@@ -634,7 +747,7 @@ function createService({ userDataDir, token, host, hostFactory, now = Date.now, 
       if (releaseLock) { releaseLock(); releaseLock = null; }
     }
   };
-  return { server, close, get owner() { return { ...owner }; }, get host() { return activeHost; } };
+  return { server, close, get owner() { const { authToken, ...safe } = owner; return safe; }, get host() { return activeHost; } };
 }
 
 module.exports = { createService, MAX_BODY, MAX_BUNDLE, METHODS };

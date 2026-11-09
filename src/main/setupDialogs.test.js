@@ -23,6 +23,24 @@ async function run() {
   const lang = { window: {} };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, "../renderer/i18n.js"), "utf8"), lang);
   for (const locale of ["en", "ru"]) assert.ok(lang.window.VSP_I18N[locale].executionConnectFirst);
+  // Exercise the reset handler with DOM-like controls; it must erase the code.
+  assert.ok(renderer.includes('id="executionResetOpen"') && renderer.includes('id="executionResetCode" type="password"'));
+  const resetBegin = renderer.indexOf("  async function resetExecutionAccess() {");
+  const resetEnd = renderer.indexOf("  async function switchExecutionMode(mode)", resetBegin);
+  assert.ok(resetBegin >= 0 && resetEnd > resetBegin);
+  const controls = { executionResetCode: { value: "private-code" }, executionUrl: { value: "https://example.com" },
+    executionToken: { value: "old-token" }, executionNewToken: { value: "" }, executionNewTokenBox: { hidden: true } };
+  let submitted;
+  const reset = vm.runInNewContext(`(${renderer.slice(resetBegin, resetEnd).trim()})`, {
+    $: id => controls[id], state: { executionBusy: false }, paintExecution() {}, showExecutionMessage() {}, t: key => key,
+    executionResult: result => result, window: { confirm: () => true, vespera: { resetExecutionAccess: async input => { submitted = input; return { ok: true, newToken: "new-token" }; } } },
+  });
+  await reset();
+  assert.equal(submitted.code, "private-code");
+  assert.equal(controls.executionResetCode.value, "");
+  assert.equal(controls.executionToken.value, "");
+  assert.equal(controls.executionNewToken.value, "new-token");
+  assert.equal(controls.executionNewTokenBox.hidden, false);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vespera-setup-dialogs-"));
   const handlers = new Map();
   const calls = [];

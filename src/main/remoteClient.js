@@ -41,7 +41,7 @@ class RemoteClient {
         res.on("aborted", () => reject(fault("remote_unavailable")));
         res.on("error", () => reject(fault("remote_unavailable")));
         res.on("end", () => {
-          if (res.statusCode === 401 || res.statusCode === 403) return reject(fault("remote_unauthorized"));
+          if (res.statusCode === 401) return reject(fault("remote_unauthorized"));
           let value;
           try { value = JSON.parse(Buffer.concat(chunks).toString("utf8")); }
           catch { return reject(fault("invalid_remote_response")); }
