@@ -286,7 +286,7 @@
     const execution = executionState() || { mode: "local" };
     if (mode === execution.mode || state.executionBusy) return;
     if (mode === "server" && !execution.configured) {
-      showExecutionMessage(t("executionInvalidUrl"), true);
+      showExecutionMessage(t("executionConnectFirst"), true);
       return;
     }
     const confirmation = mode === "server" ? t("executionSwitchServerConfirm") : t("executionSwitchLocalConfirm");

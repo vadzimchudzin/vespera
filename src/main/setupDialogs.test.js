@@ -8,6 +8,21 @@ const vm = require("node:vm");
 const { createRequire } = require("node:module");
 
 async function run() {
+  // A valid but unsaved server is not an invalid URL: guide the user to connect first.
+  const renderer = fs.readFileSync(path.join(__dirname, "../renderer/app.js"), "utf8");
+  const begin = renderer.indexOf("  async function switchExecutionMode(mode) {");
+  const end = renderer.indexOf("  async function retryExecutionTransfer()", begin);
+  assert.ok(begin >= 0 && end > begin, "execution toggle handler is present");
+  const messages = [];
+  const switchMode = vm.runInNewContext(`(${renderer.slice(begin, end).trim()})`, {
+    executionState: () => ({ mode: "local", configured: false }), state: { executionBusy: false },
+    showExecutionMessage: (message, isError) => messages.push([message, isError]), t: (key) => key,
+  });
+  await switchMode("server");
+  assert.deepEqual(messages, [["executionConnectFirst", true]]);
+  const lang = { window: {} };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, "../renderer/i18n.js"), "utf8"), lang);
+  for (const locale of ["en", "ru"]) assert.ok(lang.window.VSP_I18N[locale].executionConnectFirst);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vespera-setup-dialogs-"));
   const handlers = new Map();
   const calls = [];
