@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Telegram speaks Russian when the interface does.** With the interface language set to Russian the bot's notifications, replies and buttons are in Russian: trade reports, status, the desktop going offline, confirmations. English stays as it was.
+- **Telegram says when trading goes on again.** After «stopped» or «paused» the bot was silent about the next Start or the resume after a settlement, so the last message looked as if the bot had died. It now reports «running» once trading continues. The message about a closed desktop says plainly that the server keeps working.
 - **Auto no longer stays stopped after every real-money trade.** When a round closed, the session paused to wait for the final Polymarket result and then stayed stopped until someone pressed Start — so after each trade the bot silently stopped trading. It now starts again by itself once the final result is applied, through the ordinary Start with all of its checks. It does not start again after an explicit Stop, a series halt, another pause or a failed settlement. The server keeps its restart intent through this wait, so a restart in the middle resumes too.
 - **The desktop no longer looks disconnected during a long command.** The heartbeat waited in the same queue as commands; a slow Start made the server report the desktop as lost.
 

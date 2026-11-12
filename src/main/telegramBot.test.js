@@ -225,6 +225,79 @@ async function run() {
   await menuBot.processUpdate(callback(5, "111", "revoke:222"));
   assert.deepEqual(menuStore.read().users, [], "admin revokes access through the button");
 
+  // After «stopped» the bot says when trading goes on again; nothing is said when it never reported a stop.
+  const statusStore = createStore();
+  statusStore.write({ ...statusStore.read(), token: TOKEN, enabled: true, admins: ["111"] });
+  const statusBot = bot(statusStore);
+  const texts = (s) => s.read().outbox.map((row) => row.text);
+  statusBot.enqueueEvent({ type: "status", payload: "watching" });
+  assert.deepEqual(texts(statusStore), [], "a start that follows no reported stop is not announced");
+  statusBot.enqueueEvent({ type: "status", payload: "stopped" });
+  statusBot.enqueueEvent({ type: "status", payload: "warming_up" });
+  statusBot.enqueueEvent({ type: "status", payload: "watching" });
+  statusBot.enqueueEvent({ type: "status", payload: "watching" });
+  assert.deepEqual(texts(statusStore), ["Execution status: stopped", "Execution status: running"]);
+  statusBot.enqueueEvent({ type: "status", payload: { status: "paused", pauseReason: "final_settlement_pending:abc" } });
+  statusBot.enqueueEvent({ type: "status", payload: "watching" });
+  assert.deepEqual(texts(statusStore).slice(2), ["Execution status: paused · final_settlement_pending:abc", "Execution status: running"]);
+
+  // The executor's interface language is Russian: the bot speaks Russian, buttons included.
+  const ruStore = createStore();
+  ruStore.write({ ...ruStore.read(), token: TOKEN, enabled: true, admins: ["111"] });
+  const ruHost = fakeHost();
+  ruHost.engine = { settings: { locale: "ru" } };
+  const ruBot = bot(ruStore, ruHost);
+  ruBot.enqueueEvent({ type: "status", payload: "stopped" });
+  ruBot.enqueueEvent({ type: "status", payload: "watching" });
+  ruBot.enqueueEvent({ type: "status", payload: { status: "paused", pauseReason: "final_settlement_pending:abc" } });
+  ruBot.enqueueEvent({ type: "order", payload: { side: "DOWN", sizeUsd: "5.000000", status: "matched", price: 0.48515, feeUsd: "0.18020" } });
+  ruBot.enqueueEvent({ type: "settled", payload: { side: "DOWN", status: "loss", pnl: "-5.18", feeUsd: "0.180200", setup: { name: "2 ема", version: 2, modified: true, fingerprint: "d529afb29d84ffff" } } });
+  ruBot.enqueueEvent({ type: "signal", payload: { signal: "DOWN", size: "5.00" } });
+  ruBot.enqueueEvent({ type: "halt", payload: {} });
+  ruBot.notifyDesktop(true);
+  ruBot.notifyDesktop(false);
+  assert.deepEqual(texts(ruStore), [
+    "Торговля: остановлена", "Торговля: работает", "Торговля: на паузе · ждём окончательный результат раунда",
+    "Ордер: DOWN · $5.000000 · исполнен по 0.48515 · комиссия $0.18020",
+    "Расчёт: DOWN · минус · итог $-5.18 · комиссия $0.180200\nСетап: 2 ема · v2 · изменён · d529afb29d84",
+    "Сигнал на вход: DOWN · $5.00",
+    "Остановка защитой: торговля остановлена. Проверьте состояние в приложении: из Telegram защиту не снять.",
+    "Приложение на ПК снова на связи. Торгует по-прежнему сервер.",
+    "Приложение на ПК отключилось. На сервер это не влияет: он работает как работал. Управление — здесь, в Telegram.",
+  ]);
+  const seen = texts(ruStore).length;
+  await ruBot.processUpdate(privateMessage(1, "111", "/status"));
+  await ruBot.processUpdate(privateMessage(2, "111", "/balance"));
+  await ruBot.processUpdate(privateMessage(3, "111", "/start"));
+  await ruBot.processUpdate(privateMessage(4, "111", "/stop"));
+  await ruBot.processUpdate(privateMessage(5, "111", "/new"));
+  await ruBot.processUpdate(privateMessage(6, "111", "/mode auto"));
+  await ruBot.processUpdate(privateMessage(7, "111", "/strategy"));
+  await ruBot.processUpdate(privateMessage(8, "111", "/settings"));
+  await ruBot.processUpdate(privateMessage(9, "111", "/menu"));
+  await ruBot.processUpdate(privateMessage(10, "111", "/nonsense"));
+  await ruBot.processUpdate(privateMessage(11, "222", "/status"));
+  const replies = ruStore.read().outbox.slice(seen);
+  assert.equal(replies[0].text, "Исполнитель: сервер · остановлена · торговля остановлена\nРежим: Авто\nСтратегия: SMA 200/20\n"
+    + "Баланс: $47.25\nСерия: шаг 2 из 6 · убыток $4\nПозиция: нет\nПауза: нет");
+  assert.equal(replies[1].text, "Баланс: $47.25 · Авто");
+  assert.equal(replies[2].text, "Старт на реальные деньги: SMA 200/20 · базовая ставка $5.00 · предел ставки не задан. Подтвердите за 60 секунд.");
+  assert.equal(replies[2].keyboard[0][0].text, "Подтвердить старт на реальные деньги");
+  assert.match(replies[2].keyboard[0][0].callback_data, /^confirm:[a-f0-9]{24}$/, "the button still carries its action");
+  assert.equal(replies[3].text, "Остановлено. Состояние: остановлена.");
+  assert.equal(replies[5].text, "Режим: Авто. Торговля не запускалась.");
+  assert.equal(replies[6].text, "Стратегия: sma200_20\nДоступны: sma200_20");
+  for (const row of replies) {
+    const prose = row.text.replace(/\/[a-z]+/g, "");                 // the commands themselves stay as typed
+    assert.ok(/[А-Яа-я]/.test(prose) && !/\b(?:the|is|not|refused|Use|Choose|status|Trading)\b/.test(prose), `left in English: ${row.text}`);
+    for (const key of (row.keyboard || []).flat()) {
+      if (!key.callback_data.startsWith("strategy:")) assert.ok(/[А-Яа-я]/.test(key.text), `button left in English: ${key.text}`);
+    }
+  }
+  const sentTest = [];
+  await TelegramBot.testMessage(TOKEN, "111", async (method, payload) => { sentTest.push(payload.text); return { id: 1, username: "b" }; }, true);
+  assert.equal(sentTest.at(-1), "Vespera: проверка Telegram — сообщения доходят.");
+
   for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
   console.log("telegram bot tests ok");
 }

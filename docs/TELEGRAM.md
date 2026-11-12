@@ -42,6 +42,10 @@ The server remains the executor in Zero Mode when the desktop is closed.
 Disconnection never authorizes local takeover. Telegram cannot activate an absent
 desktop or create another engine. Switching execution remains a desktop operation.
 
+The bot speaks the interface language of the executor: with Russian selected, notifications, replies and buttons
+are in Russian (`src/main/telegramRu.js`). After a reported stop or pause it also reports when trading goes on
+again — a Start, or the resume after the final settlement — so the last message always tells the present state.
+
 ## Delivery and limits
 
 Updates are durably marked before handling commands. Replayed updates never

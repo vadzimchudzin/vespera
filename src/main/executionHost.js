@@ -484,7 +484,8 @@ class ExecutionHost {
         if (!config.enabled || !config.token) return { ok: false, reason: "telegram_not_enabled" };
         if (!config.admins[0]) return { ok: false, reason: "telegram_admin_not_paired" };
         try {
-          const identity = await TelegramBot.testMessage(config.token, config.admins[0], this.engineOptions.telegramTransport || null);
+          const identity = await TelegramBot.testMessage(config.token, config.admins[0], this.engineOptions.telegramTransport || null,
+            (this.engine?.settings?.locale || this.store?.value?.locale) === "ru");
           return { ok: true, botName: identity.username };
         } catch (error) { return { ok: false, reason: error.code || "telegram_unavailable" }; }
       }

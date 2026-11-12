@@ -1,6 +1,7 @@
 "use strict";
 
 const https = require("https");
+const { toRussian, keyboardToRussian } = require("./telegramRu");
 const crypto = require("crypto");
 
 const REQUEST_TIMEOUT_MS = 12_000;
@@ -143,10 +144,10 @@ class TelegramBot {
     return { id: String(result.id), username: result.username };
   }
 
-  static async testMessage(token, chatId, transport = null) {
+  static async testMessage(token, chatId, transport = null, russian = false) {
     if (!validateToken(token)) throw new TelegramError("telegram_token_invalid", { permanent: true });
     const identity = await TelegramBot.testToken(token, transport);
-    await telegramApi(token, "sendMessage", { chat_id: chatId, text: "Vespera Telegram test message: delivery is working." }, REQUEST_TIMEOUT_MS, transport);
+    await telegramApi(token, "sendMessage", { chat_id: chatId, text: russian ? toRussian("Vespera Telegram test message: delivery is working.") : "Vespera Telegram test message: delivery is working." }, REQUEST_TIMEOUT_MS, transport);
     return identity;
   }
 
@@ -268,8 +269,18 @@ class TelegramBot {
     try { this.store.update((config) => { config.lastError = code; }); } catch { /* Telegram errors cannot stop execution */ }
   }
 
+  // The interface language of the executor: the bot speaks it too.
+  _russian() {
+    return (this.host?.engine?.settings?.locale || this.host?.store?.value?.locale || "en") === "ru";
+  }
+
+  _say(text) {
+    return this._russian() ? toRussian(text) : text;
+  }
+
   async _reply(chatId, text, keyboard) {
-    return addOutbox(this.store, chatId, this._safeText(text), keyboard);
+    const russian = this._russian();
+    return addOutbox(this.store, chatId, this._safeText(russian ? toRussian(text) : text), russian ? keyboardToRussian(keyboard) : keyboard);
   }
 
   _safeText(value) {
@@ -640,8 +651,16 @@ class TelegramBot {
     if (event.type === "order") text = `Order update: ${payload.side || "?"} · $${payload.sizeUsd || "?"} · ${payload.status || payload.orderStatus || "unknown status"}${payload.price ? ` @ ${payload.price}` : ""}${payload.feeUsd ? ` · fee $${payload.feeUsd}` : ""}`;
     if (event.type === "settled") text = `Settlement: ${payload.side || "?"} · ${payload.status || "unknown"} · net P&L $${payload.pnl ?? payload.netPnl ?? "?"} · fee $${payload.feeUsd ?? "?"}`;
     if (event.type === "halt") text = `Risk halt: ${payload.reason || "execution halted"}. Review the desktop/server state; Telegram cannot clear safety locks.`;
-    if (event.type === "status" && ["paused", "halt", "daily_limit", "stopped"].includes(typeof event.payload === "string" ? event.payload : payload.status)) {
-      text = `Execution status: ${typeof event.payload === "string" ? event.payload : payload.status || "changed"}${payload.pauseReason ? ` · ${payload.pauseReason}` : ""}`;
+    if (event.type === "status") {
+      const status = typeof event.payload === "string" ? event.payload : payload.status;
+      if (["paused", "halt", "daily_limit", "stopped"].includes(status)) {
+        text = `Execution status: ${status || "changed"}${payload.pauseReason ? ` · ${payload.pauseReason}` : ""}`;
+        this._stopAnnounced = true;
+      } else if (this._stopAnnounced && ["watching", "order_sent", "waiting_settlement"].includes(status)) {
+        // The last word must not be «stopped» when trading went on: a Start, or the resume after a settlement.
+        text = "Execution status: running";
+        this._stopAnnounced = false;
+      }
     }
     if (text && payload.setup && ["order", "settled"].includes(event.type)) {
       const setup = payload.setup;
@@ -660,7 +679,7 @@ class TelegramBot {
       });
       if (changed) {
         const root = this._root(this._config());
-        if (root) addOutbox(this.store, root, connected ? "Desktop heartbeat restored. Server remains the execution owner." : "Desktop heartbeat lost. Server execution remains unchanged; Telegram will not take over the desktop.");
+        if (root) addOutbox(this.store, root, this._say(connected ? "Desktop heartbeat restored. Server remains the execution owner." : "Desktop heartbeat lost. Server execution remains unchanged; Telegram will not take over the desktop."));
       }
     } catch { /* Telegram storage failure must not affect heartbeat ownership */ }
   }
