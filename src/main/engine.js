@@ -73,6 +73,9 @@ class Engine {
     if (restored.halted) this.risk.lotConfirmed = false;
     this.paper = createVenue("paper", { startingBalance: this.settings.paperBalance || "1000.00" });
     this.finalPending = null;
+    // The session was trading when it stopped to wait for the final Polymarket result: it goes on by itself once
+    // the result is in. An explicit Stop, a halt or a failed settlement drops it.
+    this._resumeAfterFinal = false;
     this._restorePaper();
     this._appliedSettlementIds = new Set(this.journal.restoreEntries
       .filter((entry) => entry.type === "settled" && entry.clientOrderId)
@@ -751,6 +754,9 @@ class Engine {
       this.running = false;
       this.status = "paused";
       this.pauseReason = "final_settlement_pending: waiting for Polymarket resolution";
+      // Start asked while the result is awaited (a restart of the server, the operator): trading goes on after it.
+      // Real money still needs the explicit confirmation of this Start.
+      if (!this.finalPending.failed && (opts.confirmLive || !this.isLiveMoney())) this._resumeAfterFinal = true;
       this.emit("status", this.status);
       return { ok: false, reason: "final_settlement_pending" };
     }
@@ -925,6 +931,7 @@ class Engine {
 
   stop() {
     this._executionGeneration += 1;
+    this._resumeAfterFinal = false;
     this._stopHealth();
     if (!this.journal.pendingOrder() && !this.finalPending) this.pauseReason = null;
     this.running = false;
@@ -1397,6 +1404,7 @@ class Engine {
         return null;
       }
       this.finalPending = pending;
+      this._resumeAfterFinal = this.running;
       this.running = false;
       this._stopHealth();
       this.status = "paused";
@@ -1502,6 +1510,7 @@ class Engine {
             reason: this.finalPending.failureReason,
           });
         } catch { /* retain the in-memory lock if persistence is unavailable */ }
+        this._resumeAfterFinal = false;
         this.running = false;
         this.status = "paused";
         this.pauseReason = `final_settlement_failed: ${this.finalPending.failureReason}`;
@@ -1595,9 +1604,14 @@ class Engine {
     this.finalPending = null;
     if (this._finalReconcileTimer) clearTimeout(this._finalReconcileTimer);
     this._finalReconcileTimer = null;
+    // go on only if nothing but the wait for this result stopped the session
+    const resume = this._resumeAfterFinal && !this.running && !this.risk.halted &&
+      String(this.pauseReason || "").startsWith("final_settlement_pending");
+    this._resumeAfterFinal = false;
     this.pauseReason = null;
     this._markResult(settled);
-    this.status = this.risk.halted ? "halt" : this.running ? "watching" : "stopped";
+    // about to start again: «stopped» is not announced in between (the server would take it for a wish to stop)
+    this.status = this.risk.halted ? "halt" : this.running ? "watching" : resume ? "warming_up" : "stopped";
     if (!this._emittedSettlementIds.has(settled.clientOrderId)) {
       this._emittedSettlementIds.add(settled.clientOrderId);
       this.emit("settled", settled);
@@ -1610,7 +1624,34 @@ class Engine {
     }
     this.refreshLiveBalance().catch(() => {});
     this.emit("status", this.status);
+    if (resume) this._resumeAfterSettlement();
     return { ok: true, settled };
+  }
+
+  /** The final result is in and the session was trading before the wait: start again, with every check of Start. */
+  _resumeAfterSettlement() {
+    Promise.resolve()
+      .then(() => this.start({ confirmLive: true }))
+      .then((result) => {
+        if (result && result.ok) {
+          this.emit("log", { level: "info", message: "auto_resumed: trading goes on after the final settlement" });
+          return;
+        }
+        const reason = (result && result.reason) || "start_refused";
+        this._resumeNotStarted();
+        this.emit("log", { level: "warn", message: `auto_resume_refused: ${reason}` });
+        this.notify("halt", "Auto not resumed", String(reason));
+      })
+      .catch((err) => {
+        this._resumeNotStarted();
+        this.emit("log", { level: "error", message: `auto_resume_error: ${String(err.message || err)}` });
+      });
+  }
+
+  _resumeNotStarted() {
+    if (this.running || this.status !== "warming_up") return;
+    this.status = "stopped";
+    this.emit("status", this.status);
   }
 
   _settleIfOpen(bar) {

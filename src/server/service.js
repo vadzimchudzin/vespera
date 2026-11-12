@@ -256,6 +256,8 @@ function createService({ userDataDir, token, resetCode = "", host, hostFactory, 
   // warm-up and auto-resume emit "stopped" snapshots before start() runs.
   let engineSeenRunning = false;
   let telegramBot = null;
+  // Start answered «the final result of a trade is awaited»: the engine goes on by itself after it
+  const awaitingFinal = (result) => /^final_settlement_pending/.test(String((result && result.reason) || ""));
   const serialize = (work) => {
     const result = queue.then(work, work);
     queue = result.catch(() => {});
@@ -279,7 +281,8 @@ function createService({ userDataDir, token, resetCode = "", host, hostFactory, 
       if (activeHost?.telegramBot !== telegramBot) telegramBot?.enqueueEvent(event);
     } catch { /* Telegram delivery is isolated from Engine events */ }
     const status = typeof event.payload === "string" ? event.payload : state && state.status;
-    const venueDown = status === "venue_down" || (status === "paused" && state && /^venue_down:/.test(state.pauseReason || ""));
+    // a pause that ends by itself keeps the wish to run: the venue is down, or the final result of a trade is awaited
+    const venueDown = status === "venue_down" || (status === "paused" && state && /^(venue_down|final_settlement_pending):/.test(state.pauseReason || ""));
     const explicitStatus = event.type === "status" && typeof event.payload === "string";
     if (!closing && status && ["stopped", "halt", "paused", "daily_limit"].includes(status) && !venueDown && owner.desiredRunning &&
         (explicitStatus || engineSeenRunning)) {
@@ -549,7 +552,7 @@ function createService({ userDataDir, token, resetCode = "", host, hostFactory, 
           }
           refreshRedactions();
           if (body.method === "start") {
-            owner.desiredRunning = Boolean(result && result.ok);
+            owner.desiredRunning = Boolean(result && (result.ok || awaitingFinal(result)));
             saveOwner();
           } else if (body.method === "stop") {
             owner.desiredRunning = false;
@@ -716,7 +719,7 @@ function createService({ userDataDir, token, resetCode = "", host, hostFactory, 
       try {
         const result = await activeHost.call("start", [{ confirmLive: true }]);
         // Same rule as an explicit Start: a resumed run stays resumable after the next restart.
-        owner.desiredRunning = Boolean(result && result.ok);
+        owner.desiredRunning = Boolean(result && (result.ok || awaitingFinal(result)));
       } catch { owner.desiredRunning = false; }
       saveOwner();
     });

@@ -198,6 +198,74 @@ async function run() {
     assert.strictEqual(engine.journal.restoreEntries.filter((row) => row.type === "settled").length, 0);
     fs.rmSync(dir, { recursive: true, force: true });
   }
+
+  // The session was trading when the round closed: it goes on by itself once the final result is in.
+  {
+    const dir = tempDir();
+    const engine = engineAt(dir, liveWith(() => ({ resolved: true, outcome: "UP" })));
+    engine.risk.lotConfirmed = true;
+    const statuses = [];
+    engine.on((event) => { if (event.type === "status") statuses.push(event.payload); });
+    const started = await engine.start({ confirmLive: true });
+    assert.strictEqual(started.ok, true, JSON.stringify(started));
+    engine.liveBet = bet({ clientOrderId: "resume-1" });
+    engine._settleLive({ close: 101, closeTs: 2 });
+    clearTimer(engine);
+    assert.strictEqual(engine.running, false, "no new entry while the result is awaited");
+    assert.strictEqual(engine.status, "paused");
+    statuses.length = 0;
+    assert.strictEqual((await engine.reconcileFinalSettlement({ attempts: 1, delayMs: 0 })).ok, true);
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(engine.running, true, "trading goes on after the final settlement");
+    assert.ok(!statuses.includes("stopped"), `no stop is announced in between: ${statuses}`);
+    assert.strictEqual(engine.journal.restoreEntries.filter((row) => row.type === "settled").length, 1);
+    engine.stop();
+    engine.dispose();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+
+  // Stop pressed while the result is awaited: the result is still applied, trading does not start again.
+  {
+    const dir = tempDir();
+    const engine = engineAt(dir, liveWith(() => ({ resolved: true, outcome: "DOWN" })));
+    engine.risk.lotConfirmed = true;
+    assert.strictEqual((await engine.start({ confirmLive: true })).ok, true);
+    engine.liveBet = bet({ clientOrderId: "resume-stopped" });
+    engine._settleLive({ close: 101, closeTs: 2 });
+    clearTimer(engine);
+    engine.stop();
+    assert.strictEqual((await engine.reconcileFinalSettlement({ attempts: 1, delayMs: 0 })).ok, true);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(engine.running, false);
+    assert.strictEqual(engine.status, "stopped");
+    engine.dispose();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+
+  // Start asked while the result is awaited (the server after a restart): refused now, trading starts after it.
+  // A failed settlement never starts trading.
+  {
+    const dir = tempDir();
+    let answer = { resolved: false };
+    const engine = engineAt(dir, liveWith(() => answer));
+    engine.risk.lotConfirmed = true;
+    engine.liveBet = bet({ clientOrderId: "resume-restart" });
+    engine._settleLive({ close: 101, closeTs: 2 });
+    clearTimer(engine);
+    assert.strictEqual((await engine.start()).reason, "final_settlement_pending");
+    assert.strictEqual(engine._resumeAfterFinal, false, "real money is not started without its confirmation");
+    assert.strictEqual((await engine.start({ confirmLive: true })).reason, "final_settlement_pending");
+    assert.strictEqual(engine._resumeAfterFinal, true);
+    assert.strictEqual((await engine.reconcileFinalSettlement({ attempts: 1, delayMs: 0 })).ok, false);
+    assert.strictEqual(engine._resumeAfterFinal, false, "a failed settlement drops the wish to go on");
+    answer = { resolved: true, outcome: "UP" };
+    assert.strictEqual((await engine.reconcileFinalSettlement({ attempts: 1, delayMs: 0 })).ok, true);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(engine.running, false);
+    engine.dispose();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 run().then(() => console.log("Final settlement tests passed")).catch((err) => {

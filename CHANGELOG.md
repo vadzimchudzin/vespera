@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **Auto no longer stays stopped after every real-money trade.** When a round closed, the session paused to wait for the final Polymarket result and then stayed stopped until someone pressed Start — so after each trade the bot silently stopped trading. It now starts again by itself once the final result is applied, through the ordinary Start with all of its checks. It does not start again after an explicit Stop, a series halt, another pause or a failed settlement. The server keeps its restart intent through this wait, so a restart in the middle resumes too.
+- **The desktop no longer looks disconnected during a long command.** The heartbeat waited in the same queue as commands; a slow Start made the server report the desktop as lost.
+
 ## 0.26.1 — 2026-11-09
 
 - **Zero Mode device reset:** Settings → Execution now has an explicit recovery-code action. It stops execution, revokes the shared server token, and shows a new token for signing in again. The authoritative book, settings and history are preserved on the server for the first new device; the new device does not overwrite them with its local book.

@@ -298,6 +298,13 @@ test("venue-down pauses preserve restart intent; permanent stops clear it", asyn
   await request(ctx.root, "/v1/command", { method: "POST", body: { deviceId: DEVICE, requestId: "start-events", method: "start", args: [] } });
   ctx.hosts[0].emit({ type: "status", payload: "paused", state: { status: "paused", pauseReason: "venue_down: temporary outage" } });
   assert.equal(ctx.service.owner.desiredRunning, true);
+  // waiting for the final result of a trade ends by itself too: the engine goes on after it
+  ctx.hosts[0].emit({ type: "status", payload: "paused", state: { status: "paused", pauseReason: "final_settlement_pending: waiting for Polymarket resolution" } });
+  assert.equal(ctx.service.owner.desiredRunning, true);
+  ctx.hosts[0].emit({ type: "status", payload: "paused", state: { status: "paused", pauseReason: "final_settlement_failed: polymarket_outcome_unavailable" } });
+  assert.equal(ctx.service.owner.desiredRunning, false);
+  await request(ctx.root, "/v1/command", { method: "POST", body: { deviceId: DEVICE, requestId: "start-events-2", method: "start", args: [] } });
+  assert.equal(ctx.service.owner.desiredRunning, true);
   ctx.hosts[0].emit({ type: "status", payload: "paused", state: { status: "paused", pauseReason: "geoblocked" } });
   assert.equal(ctx.service.owner.desiredRunning, false);
 });
