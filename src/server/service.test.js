@@ -519,3 +519,34 @@ test("start() binds to configured address and constructs a real ExecutionHost fr
   assert.equal(snapshot.state.mode, "paper");
   assert.equal(snapshot.execution.owner, "server");
 });
+
+test("heartbeat is answered while a slow command is still running", async (t) => {
+  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "vespera-service-"));
+  tempDirs.push(userDataDir);
+  let host;
+  const service = createService({
+    userDataDir, token: TOKEN,
+    hostFactory: ({ onEvent }) => {
+      host = fakeHost();
+      host.listener = onEvent;
+      const call = host.call.bind(host);
+      host.call = async (method, args) => {
+        if (method === "start") await new Promise((resolve) => setTimeout(resolve, 1500));
+        return call(method, args);
+      };
+      return host;
+    },
+  });
+  service.server.listen(0, "127.0.0.1");
+  await new Promise((resolve, reject) => { service.server.once("listening", resolve); service.server.once("error", reject); });
+  const root = `http://127.0.0.1:${service.server.address().port}`;
+  t.after(() => service.close());
+  await activate(root);
+  const running = request(root, "/v1/command", { method: "POST", body: { deviceId: DEVICE, requestId: "slow-start", method: "start", args: [] } });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const began = Date.now();
+  const heartbeat = await request(root, "/v1/heartbeat", { method: "POST", body: { deviceId: DEVICE } });
+  assert.equal(heartbeat.body.connected, true);
+  assert.ok(Date.now() - began < 1000, `heartbeat waited ${Date.now() - began} ms behind the start command`);
+  assert.equal((await running).status, 200);
+});

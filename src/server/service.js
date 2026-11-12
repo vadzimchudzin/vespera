@@ -468,9 +468,12 @@ function createService({ userDataDir, token, resetCode = "", host, hostFactory, 
       if (req.method !== "POST") throw new ServiceError("not_found", 404);
       const max = ["/v1/activate", "/v1/reset", "/v1/reset/local-ready"].includes(url.pathname) ? MAX_BUNDLE + 128 * 1024 : MAX_BODY;
       const body = await readBody(req, max);
-      if (url.pathname === "/v1/heartbeat") return send(res, 200, await authorizedSerial(req, async () => {
+      if (url.pathname === "/v1/heartbeat") {
+        // Not queued behind commands: a long command (start, chart warm-up, research) must not make the desktop look
+        // disconnected. The check and the update below run without an await, so they see one consistent owner.
+        authorize(req);
         const id = deviceId(body);
-        if (!owner.deviceId || owner.deviceId !== id) return { ok: true, connected: false };
+        if (!owner.deviceId || owner.deviceId !== id) return send(res, 200, { ok: true, connected: false });
         const wasConnected = owner.owner === "server" && owner.lastSeenAt != null && now() - owner.lastSeenAt <= 30_000;
         owner.lastSeenAt = now();
         saveOwner();
@@ -478,8 +481,8 @@ function createService({ userDataDir, token, resetCode = "", host, hostFactory, 
           desktopWasConnected = true;
           telegramBot?.notifyDesktop(true);
         }
-        return { ok: true, connected: owner.owner === "server" };
-      }));
+        return send(res, 200, { ok: true, connected: owner.owner === "server" });
+      }
       if (url.pathname === "/v1/device-enroll") return send(res, 200, await authorizedSerial(req, async () => {
         const device = deviceId(body), proof = body.deviceProof;
         if (owner.owner !== "local" || owner.deviceId !== device || owner.resetPending) throw new ServiceError("owner_device_mismatch", 409);
