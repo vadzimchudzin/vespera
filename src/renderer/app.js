@@ -514,23 +514,30 @@
     });
   }
 
+  // The footer balance. What it means is decided by VesperaBalance (shared with the Telegram bot): Paper shows the
+  // virtual book, Auto shows the Polymarket wallet. A figure that is not known is a dash, never a made-up number.
   function paintBalance(snap) {
     const el = $("bal");
-    el.classList.remove("pulse", "bad");
-    if (snap.mode === "auto") {
-      const live = snap.liveBalance || {};
-      if (!live.ok) {
-        el.textContent = "$0.00";
-        el.classList.add("pulse", "bad");
-        el.title = live.reason === "checking" ? t("checkingBalance") : t("noBalance");
-        return;
+    el.classList.remove("pulse", "bad", "stale");
+    const view = window.VesperaBalance.view(snap);
+    if (view.value != null) {
+      el.textContent = `$${money(view.value)}`;
+      if (view.state === "stale") {
+        el.classList.add("stale");
+        el.title = `${t("staleBalance")}${view.reason ? ` (${view.reason})` : ""}`;
+      } else {
+        el.title = view.virtual != null ? `${t("dryBalanceHint")} $${money(view.virtual)}` : "";
       }
-      el.textContent = `$${money(live.value)}`;
-      el.title = "";
       return;
     }
-    el.textContent = `$${money(snap.paper.balance)}`;
-    el.title = "";
+    el.textContent = "—";
+    if (view.state === "checking") {
+      el.classList.add("pulse");
+      el.title = t("checkingBalance");
+    } else {
+      el.classList.add("pulse", "bad");
+      el.title = `${t("noBalance")}${view.reason ? ` (${view.reason})` : ""}`;
+    }
   }
 
   function renderSnap(snap) {
@@ -3463,7 +3470,8 @@
       const snap = state.snapshot || {};
       const s = snap.settings || {};
       const plan = snap.plan || { steps: [], totalAtRisk: 0, price: 0.5 };
-      const bal = snap.liveBalance && snap.liveBalance.source === "live" && snap.liveBalance.ok ? `$${snap.liveBalance.value}` : "\u2014";
+      const walletBalance = window.VesperaBalance.view(snap);
+      const bal = walletBalance.source === "live" && walletBalance.value != null ? `$${walletBalance.value}` : "\u2014";
       const wallet = s.walletAddress ? `${s.walletAddress.slice(0, 6)}\u2026${s.walletAddress.slice(-4)}` : "\u2014";
       const row = (k, v) => `<div class="stat-row"><span>${k}</span><b>${v}</b></div>`;
       body.innerHTML = `

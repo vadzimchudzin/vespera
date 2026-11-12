@@ -36,6 +36,12 @@ const VENUE_FAILURE_LIMIT = 3;
 const REJECT_LIMIT = 2;
 const FINAL_RECONCILE_ATTEMPTS = 120;
 const FINAL_RECONCILE_DELAY_MS = 30_000;
+// The wallet balance shown to a person who is looking at the state: how long a reading counts as current, and how long
+// to wait before asking again after a failed one.
+const LIVE_BALANCE_FRESH_MS = 30_000;
+const LIVE_BALANCE_RETRY_MS = 10_000;
+// A change of any of these is a different account: the balance read for the old one must not be shown for the new one.
+const ACCOUNT_FIELDS = ["privateKey", "walletAddress", "walletType", "apiKey", "apiSecret", "apiPassphrase"];
 
 /** Highest ask to enter at; 1 means no filter. */
 function maxEntryPriceOf(value) {
@@ -108,12 +114,13 @@ class Engine {
     this.pingResult = null;
     this.liveBet = this.liveBet || null;
     this.lastQuote = null;
-    this.liveBalance = {
-      ok: true,
-      value: this.paper.balance.toFixed(2),
-      source: "paper",
-      pulsing: false,
-    };
+    // Auto shows the wallet, not the virtual book: until the wallet has been read (a restart, a handoff) the balance
+    // is "checking", never the paper number. touchLiveBalance() reads it as soon as somebody looks at the state.
+    this.liveBalance = this.mode === "auto" ? this._unreadLiveBalance("checking") : this._paperBalance();
+    this._liveBalanceAt = 0;
+    this._liveBalanceTriedAt = 0;
+    this._liveBalanceBusy = null;
+    this._liveBalanceGeneration = 0;
     this.lastHandledOpenTs = null;
     this.pauseReason = null;
     this.venueFailures = 0;
@@ -643,6 +650,7 @@ class Engine {
       next.baseUsd = Decimal(patch.baseUsd).toFixed(2);
       this.risk.baseUsd = Decimal(next.baseUsd);
     }
+    if (ACCOUNT_FIELDS.some((key) => changed.includes(key))) this._forgetLiveBalance();
     this.settings = next;
     if (typeof this.live.configure === "function") {
       this.live.configure({
@@ -957,6 +965,8 @@ class Engine {
       return this.snapshot();
     }
     this.mode = mode;
+    // Auto never shows the figure of the book it came from: from here on the wallet is "checking" until it has been read.
+    this._forgetLiveBalance();
     this._executionGeneration += 1;
     this.risk.reset();
     if (this.running) {
@@ -978,12 +988,8 @@ class Engine {
       await this.refreshLiveBalance();
       await this._loadLiveMarkets();
     } else {
-      this.liveBalance = {
-        ok: true,
-        value: this.paper.balance.toFixed(2),
-        source: "paper",
-        pulsing: false,
-      };
+      this._forgetLiveBalance();
+      this.liveBalance = this._paperBalance();
     }
     this.emit("mode", mode);
     return this.snapshot();
@@ -1278,54 +1284,91 @@ class Engine {
     return res;
   }
 
-  async refreshLiveBalance() {
+  /** The virtual book as a balance reading: what Paper shows. */
+  _paperBalance() {
+    return { ok: true, value: this.paper.balance.toFixed(2), source: "paper", pulsing: false };
+  }
+
+  /** The wallet could not be read (yet): zeros for the old consumers, `pulsing` so nobody takes them for a balance. */
+  _unreadLiveBalance(reason) {
+    return { ok: false, value: "0.00", source: "live", pulsing: true, reason };
+  }
+
+  /** The wallet figure no longer applies (another account, another mode): drop it and any read still in flight. */
+  _forgetLiveBalance() {
+    this._liveBalanceGeneration += 1;
+    this._liveBalanceAt = 0;
+    this._liveBalanceTriedAt = 0;
+    this._liveBalanceBusy = null;
+    if (this.mode === "auto") this.liveBalance = this._unreadLiveBalance("checking");
+  }
+
+  /**
+   * Read the wallet balance from Polymarket. `light` asks only for the balance (one request); otherwise the venue is
+   * pinged first, which also refreshes the connection state and names the reason when the venue is unreachable.
+   * A reading already in flight is joined, not repeated. A failed reading never wipes a figure read earlier: that one
+   * stays, marked `stale`, until the wallet answers again.
+   */
+  refreshLiveBalance({ light = false } = {}) {
     if (this.mode !== "auto") {
-      this.liveBalance = {
-        ok: true,
-        value: this.paper.balance.toFixed(2),
-        source: "paper",
-        pulsing: false,
-      };
-      return this.liveBalance;
+      this.liveBalance = this._paperBalance();
+      return Promise.resolve(this.liveBalance);
     }
-    this.liveBalance = { ok: false, value: "0.00", source: "live", pulsing: true, reason: "checking" };
-    this.emit("balance", this.liveBalance);
+    if (this._liveBalanceBusy) return this._liveBalanceBusy;
+    const read = this._readLiveBalance(light).finally(() => {
+      if (this._liveBalanceBusy === read) this._liveBalanceBusy = null;
+    });
+    this._liveBalanceBusy = read;
+    return read;
+  }
+
+  async _readLiveBalance(light) {
+    const generation = this._liveBalanceGeneration;
+    const known = this.liveBalance.source === "live" && this.liveBalance.ok && this._liveBalanceAt > 0 ? this.liveBalance : null;
+    if (!known) {
+      this.liveBalance = this._unreadLiveBalance("checking");
+      this.emit("balance", this.liveBalance);
+    }
+    this._liveBalanceTriedAt = Date.now();
+    let value = null;
+    let reason = null;
     try {
-      const live = await this.live.ping();
-      this.pingResult = { ...(this.pingResult || {}), live, at: Date.now() };
-      if (!live.ok) {
-        this.liveBalance = {
-          ok: false,
-          value: "0.00",
-          source: "live",
-          pulsing: true,
-          reason: live.message || "unreachable",
-        };
-      } else {
+      if (!light) {
+        const live = await this.live.ping();
+        this.pingResult = { ...(this.pingResult || {}), live, at: Date.now() };
+        if (!live.ok) reason = live.message || "unreachable";
+      }
+      if (!reason) {
         const bal = typeof this.live.getBalance === "function" ? await this.live.getBalance() : null;
-        if (bal == null || bal === "") {
-          this.liveBalance = {
-            ok: false,
-            value: "0.00",
-            source: "live",
-            pulsing: true,
-            reason: "no_balance",
-          };
-        } else {
-          this.liveBalance = { ok: true, value: String(bal), source: "live", pulsing: false };
-        }
+        if (bal == null || bal === "") reason = "no_balance";
+        else value = String(bal);
       }
     } catch (err) {
-      this.liveBalance = {
-        ok: false,
-        value: "0.00",
-        source: "live",
-        pulsing: true,
-        reason: String(err.message || err),
-      };
+      reason = String(err.message || err);
+    }
+    // the mode, the account or the whole engine changed while the venue was answering: this reading is not for them
+    if (generation !== this._liveBalanceGeneration || this.mode !== "auto" || this._disposed) return this.liveBalance;
+    if (value != null) {
+      this._liveBalanceAt = Date.now();
+      this.liveBalance = { ok: true, value, source: "live", pulsing: false, at: this._liveBalanceAt };
+    } else if (known) {
+      this.liveBalance = { ...known, stale: true, reason };
+    } else {
+      this.liveBalance = this._unreadLiveBalance(reason);
     }
     this.emit("balance", this.liveBalance);
     return this.liveBalance;
+  }
+
+  /**
+   * Keep the wallet balance current for whoever is looking at the state: called when a snapshot is asked for. Does
+   * nothing in Paper, while a reading is in flight, or while the last one is still fresh; never waits for the venue.
+   */
+  touchLiveBalance() {
+    if (this.mode !== "auto" || this._disposed || this._liveBalanceBusy) return;
+    const wait = this.liveBalance.ok && !this.liveBalance.stale ? LIVE_BALANCE_FRESH_MS : LIVE_BALANCE_RETRY_MS;
+    if (this._liveBalanceTriedAt && Date.now() - this._liveBalanceTriedAt < wait) return;
+    this.refreshLiveBalance({ light: true }).catch(() => {});
   }
 
   _fastPeriod() {
@@ -1545,6 +1588,7 @@ class Engine {
     if (this._disposed) return;
     this._disposed = true;
     this._executionGeneration += 1;
+    this._liveBalanceGeneration += 1;
     this._stopHealth();
     if (this._finalReconcileTimer) clearTimeout(this._finalReconcileTimer);
     this._finalReconcileTimer = null;

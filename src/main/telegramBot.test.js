@@ -17,15 +17,17 @@ function createStore() {
   return new TelegramConfigStore(dir);
 }
 
-function fakeHost() {
+function fakeHost(snapshot = {}) {
   return {
     calls: [],
     async call(method, args = []) {
       this.calls.push({ method, args });
       if (method === "snapshot") return {
-        mode: "auto", running: false, status: "stopped", strategyId: "sma200_20", strategyName: "SMA 200/20",
+        mode: "auto", book: "live", running: false, status: "stopped", strategyId: "sma200_20", strategyName: "SMA 200/20",
         settings: { dryRun: false, baseUsd: "5.00" }, risk: { step: 2, maxSteps: 6, seriesLossUsd: 4 },
-        paper: { balance: "1000.00", openBet: null }, liveBalance: { value: "47.25" }, strategies: [{ id: "sma200_20" }],
+        paper: { balance: "1000.00", openBet: null }, liveBalance: { ok: true, value: "47.25", source: "live", pulsing: false },
+        strategies: [{ id: "sma200_20" }],
+        ...snapshot,
       };
       if (method === "start") return { ok: true };
       if (method === "stop") return { status: "stopped" };
@@ -88,7 +90,8 @@ async function run() {
   assert.ok(store.read().users.includes("222"), "root admin can approve a private access request");
   await service.processUpdate(privateMessage(7, "222", "/status"));
   assert.ok(host.calls.some((call) => call.method === "snapshot"));
-  assert.match(store.read().outbox.at(-1).text, /Balance: \$47\.25/);
+  assert.match(store.read().outbox.at(-1).text, /Balance: \$47\.25 · wallet/);
+  assert.ok(!/1000\.00/.test(store.read().outbox.at(-1).text), "the virtual book is not the wallet");
   await service.processUpdate(callback(8, "222", "action:admin"));
   assert.match(store.read().outbox.at(-1).text, /Only the root administrator/);
 
@@ -279,8 +282,8 @@ async function run() {
   await ruBot.processUpdate(privateMessage(11, "222", "/status"));
   const replies = ruStore.read().outbox.slice(seen);
   assert.equal(replies[0].text, "Исполнитель: сервер · остановлена · торговля остановлена\nРежим: Авто\nСтратегия: SMA 200/20\n"
-    + "Баланс: $47.25\nСерия: шаг 2 из 6 · убыток $4\nПозиция: нет\nПауза: нет");
-  assert.equal(replies[1].text, "Баланс: $47.25 · Авто");
+    + "Баланс: $47.25 · кошелёк Polymarket\nСерия: шаг 2 из 6 · убыток $4\nПозиция: нет\nПауза: нет");
+  assert.equal(replies[1].text, "Баланс: $47.25 · кошелёк Polymarket");
   assert.equal(replies[2].text, "Старт на реальные деньги: SMA 200/20 · базовая ставка $5.00 · предел ставки не задан. Подтвердите за 60 секунд.");
   assert.equal(replies[2].keyboard[0][0].text, "Подтвердить старт на реальные деньги");
   assert.match(replies[2].keyboard[0][0].callback_data, /^confirm:[a-f0-9]{24}$/, "the button still carries its action");
@@ -297,6 +300,42 @@ async function run() {
   const sentTest = [];
   await TelegramBot.testMessage(TOKEN, "111", async (method, payload) => { sentTest.push(payload.text); return { id: 1, username: "b" }; }, true);
   assert.equal(sentTest.at(-1), "Vespera: проверка Telegram — сообщения доходят.");
+
+  // The balance line. Paper is the virtual book; Auto is the Polymarket wallet; a virtual number is never given out as the
+  // wallet's. (The customer asked /status after the server restarted and got the demo $1005.13 for his real wallet.)
+  async function ask(snapshot, { ru = false, command = "/status" } = {}) {
+    const askStore = createStore();
+    askStore.write({ ...askStore.read(), token: TOKEN, enabled: true, admins: ["111"] });
+    const askHost = fakeHost(snapshot);
+    if (ru) askHost.engine = { settings: { locale: "ru" } };
+    await bot(askStore, askHost).processUpdate(privateMessage(1, "111", command));
+    return askStore.read().outbox.at(-1).text;
+  }
+  const demo = { paper: { balance: "1005.13", openBet: null } };
+  const paperBook = { ok: true, value: "1005.13", source: "paper", pulsing: false };
+
+  assert.match(await ask({ ...demo, mode: "paper", book: "paper", liveBalance: paperBook }), /\nBalance: \$1005\.13 · paper\n/, "Paper shows its virtual book, labelled");
+  const restarted = await ask({ ...demo, liveBalance: paperBook });          // an engine that has not read the wallet yet
+  assert.match(restarted, /\nBalance: checking\n/);
+  assert.ok(!restarted.includes("1005.13"), "a restarted Auto session does not report the paper book as the wallet");
+  assert.equal(await ask({ ...demo, liveBalance: paperBook }, { command: "/balance" }), "Balance: checking");
+  assert.equal(await ask({ ...demo, liveBalance: { ok: false, value: "0.00", source: "live", pulsing: true, reason: "checking" } }, { command: "/balance" }), "Balance: checking");
+  const unreadable = await ask({ ...demo, liveBalance: { ok: false, value: "0.00", source: "live", pulsing: true, reason: "no_balance" } });
+  assert.match(unreadable, /\nBalance: unavailable \(no_balance\)\n/, "an unreadable wallet is not shown as $0.00");
+  assert.ok(!unreadable.includes("0.00"));
+  assert.equal(await ask({ liveBalance: { ok: true, value: "47.25", source: "live", pulsing: false, stale: true, reason: "no_balance", at: 1 } }, { command: "/balance" }),
+    "Balance: $47.25 · wallet · last known");
+  const dry = await ask({ ...demo, book: "dry", settings: { dryRun: true, baseUsd: "5.00" } });
+  assert.match(dry, /\nMode: auto \(dry run\)\nStrategy: SMA 200\/20\nBalance: \$47\.25 · wallet\nDry-run account: \$1005\.13\nSeries:/, "a dry run shows the wallet and, apart, its virtual account");
+  assert.equal(await ask({ ...demo, book: "dry", settings: { dryRun: true, baseUsd: "5.00" } }, { command: "/balance" }), "Balance: $47.25 · wallet\nDry-run account: $1005.13");
+
+  assert.match(await ask({ ...demo, liveBalance: paperBook }, { ru: true }), /\nБаланс: проверяю…\n/);
+  assert.equal(await ask({ ...demo, liveBalance: { ok: false, value: "0.00", source: "live", pulsing: true, reason: "no_balance" } }, { ru: true, command: "/balance" }), "Баланс: недоступен (no_balance)");
+  assert.equal(await ask({ ...demo, book: "dry", settings: { dryRun: true, baseUsd: "5.00" } }, { ru: true, command: "/balance" }),
+    "Баланс: $47.25 · кошелёк Polymarket\nПробный счёт (виртуальный): $1005.13");
+  assert.equal(await ask({ ...demo, mode: "paper", book: "paper", liveBalance: paperBook }, { ru: true, command: "/balance" }), "Баланс: $1005.13 · виртуальный (Пейпер)");
+  assert.equal(await ask({ liveBalance: { ok: true, value: "47.25", source: "live", pulsing: false, stale: true, at: 1 } }, { ru: true, command: "/balance" }),
+    "Баланс: $47.25 · кошелёк Polymarket · последнее известное");
 
   for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
   console.log("telegram bot tests ok");

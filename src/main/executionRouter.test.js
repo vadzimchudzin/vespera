@@ -82,6 +82,27 @@ async function run() {
   assert.strictEqual((await afterCrash.switchMode("server")).ok, true, "same durable request resumes a lost handoff");
   assert.ok(!JSON.stringify(afterCrash.execution()).includes("test-"), "access token never enters renderer state");
   afterCrash.dispose();
+
+  // Zero Mode, the window opens and the server has not answered yet (nothing cached): the window may get the local
+  // engine's snapshot for its layout, but flagged — the local book is virtual or old, never the account on the server.
+  unavailable = true;                       // the constructor polls at once: the server must already be silent
+  const reopened = new ExecutionRouter({ userDataDir: root, host: host(), clientFactory, pollMs: 100000 });
+  assert.strictEqual(reopened.mode, "server");
+  const waiting = await reopened.call("snapshot");
+  assert.strictEqual(waiting.serverStateMissing, true, "no server state yet: the stand-in snapshot says so");
+  assert.strictEqual(waiting.execution.connected, false);
+  const events = [];
+  reopened.onEvent = (evt) => events.push(evt);
+  await reopened.poll();
+  assert.ok(events.at(-1).state.serverStateMissing, "the poll event carries the same flag");
+  unavailable = false;
+  const known = await reopened.call("snapshot");
+  assert.ok(!known.serverStateMissing && known.running === true, "the server's own state is never flagged");
+  reopened.dispose();
+  const plain = new ExecutionRouter({ userDataDir: dir(), host: host(), clientFactory, pollMs: 100000 });
+  assert.strictEqual(plain.mode, "local");
+  assert.ok(!plain._local().serverStateMissing, "the local core's snapshot is the account when it is the executor");
+  plain.dispose();
   console.log("execution router tests ok");
 }
 run().catch((err) => { console.error(err); process.exitCode = 1; }).finally(() => {

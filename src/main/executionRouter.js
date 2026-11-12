@@ -74,6 +74,13 @@ class ExecutionRouter {
   }
 
   _decorate(state) { return { ...state, execution: this.execution() }; }
+  // The window needs some snapshot before the executor has answered. In Zero Mode the book lives on the server, so the
+  // local engine's snapshot only stands in for the layout: its money is a different (virtual or old) book and is flagged
+  // so that no screen shows it as the account.
+  _local() {
+    const snapshot = this.host.engine.snapshot();
+    return this.mode === "server" ? { ...snapshot, serverStateMissing: true } : snapshot;
+  }
   _decorateEvent(evt) { return { ...evt, ...(evt.state ? { state: this._decorate(evt.state) } : {}) }; }
   _serial(fn) {
     const result = this.queue.catch(() => {}).then(fn);
@@ -282,7 +289,7 @@ class ExecutionRouter {
     } finally {
       this.polling = false;
       if (this.mode === "server" && this.remoteState) this.onEvent({ type: "state", state: this._decorate(this.remoteState) });
-      else this.onEvent({ type: "execution", payload: this.execution(), state: this._decorate(this.host.engine.snapshot()) });
+      else this.onEvent({ type: "execution", payload: this.execution(), state: this._decorate(this._local()) });
     }
   }
 
@@ -362,7 +369,7 @@ class ExecutionRouter {
       }
       if (["snapshot", "warmChart"].includes(method)) {
         await this.poll();
-        return this._decorate(this.remoteState || this.host.engine.snapshot());
+        return this._decorate(this.remoteState || this._local());
       }
       const result = await this.client().request("/v1/command", {
         method, args, deviceId: this.connection.value.deviceId, requestId: crypto.randomUUID(),

@@ -142,6 +142,41 @@ async function run() {
     ok: false, reason: "telegram_api_rejected",
   });
   assert.equal((await unauthorizedHost.call("telegramStatus")).hasToken, false, "unauthorized credentials are never persisted");
+  // Whoever asks for the state also gets the wallet balance read (Auto only): the server warms its chart as it comes up and
+  // the window and Telegram poll the snapshot, so a restarted server reports its wallet without waiting for a settlement.
+  {
+    const reads = { balance: 0 };
+    const walletOptions = () => ({
+      market: { bars: [], on() {}, start() {}, stop() {}, async loadHistory() {} },
+      live: { configure() {}, async ping() { return { ok: true }; }, async getBalance() { reads.balance += 1; return "85.56"; } },
+    });
+    const autoDir = dir();
+    fs.writeFileSync(path.join(autoDir, "journal.jsonl"), `${JSON.stringify({ type: "paper_reset", balance: "1005.13" })}\n`);
+    const seed = new ExecutionHost({ userDataDir: autoDir, engineOptions: walletOptions() });
+    await seed.call("saveSettings", [{ dryRun: false }]);
+    seed.engine.settings.mode = "auto";
+    seed.store.save({ mode: "auto", dryRun: false });
+    seed.dispose();
+    const wallet = new ExecutionHost({ userDataDir: autoDir, engineOptions: walletOptions() });
+    assert.strictEqual(wallet.engine.mode, "auto");
+    assert.strictEqual(reads.balance, 0, "opening the host reads nothing by itself");
+    await wallet.call("warmChart");
+    await wallet.engine._liveBalanceBusy;
+    assert.strictEqual(reads.balance, 1, "the warm-up that follows a server start reads the wallet");
+    assert.strictEqual(wallet.engine.liveBalance.value, "85.56");
+    const snap = await wallet.call("snapshot");
+    assert.strictEqual(snap.liveBalance.value, "85.56");
+    assert.strictEqual(snap.paper.balance, "1005.13", "the virtual book is reported apart");
+    assert.strictEqual(reads.balance, 1, "a fresh reading is not repeated by every snapshot");
+    wallet.dispose();
+
+    const paperHost = new ExecutionHost({ userDataDir: dir(), engineOptions: walletOptions() });
+    await paperHost.call("snapshot");
+    await paperHost.call("warmChart");
+    assert.strictEqual(reads.balance, 1, "Paper never reads the wallet");
+    paperHost.dispose();
+  }
+
   local.dispose();
   reopened.dispose();
   telegramHost.dispose();

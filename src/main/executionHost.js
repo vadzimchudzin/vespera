@@ -259,7 +259,10 @@ class ExecutionHost {
       return { ok: false, reason: "setup_activation_recovery_pending", state: e.snapshot() };
     }
     switch (method) {
-      case "snapshot": return e.snapshot();
+      case "snapshot":
+        // whoever asks for the state also gets the wallet balance kept current (Auto only, throttled, never waited for)
+        e.touchLiveBalance();
+        return e.snapshot();
       case "researchStatus": return this.research.researchStatus();
       case "runBacktest": return this.research.runBacktest(args[0] || {});
       case "startPaperRuns": return this.research.startPaperRuns(args[0] || {});
@@ -273,7 +276,10 @@ class ExecutionHost {
       case "aiCreateSetup": return this.aiAdvisor.createSetup(args[0] || {});
       case "aiBacktest": return this.aiAdvisor.backtest(args[0] || {});
       case "aiLocalPull": return this.aiAdvisor.localPull(args[0] || {}).catch((error) => ({ ok: false, reason: /^ai_[a-z0-9_]+$/.test(error?.code || "") ? error.code : "ai_provider_unavailable" }));
-      case "warmChart": return e.warmChart();
+      case "warmChart":
+        // the server warms its chart when it comes up: the first wallet reading goes out with it
+        e.touchLiveBalance();
+        return e.warmChart();
       case "start": return this._activationRecoveryPending
         ? { ok: false, reason: "setup_activation_recovery_pending", state: e.snapshot() }
         : e.start(args[0] || {});

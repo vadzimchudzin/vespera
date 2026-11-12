@@ -717,6 +717,128 @@ async function run() {
     assert(engine.settings.symbol === "ETHUSDT" && market.configured === 1, "unlocked after settlement");
   }
 
+  {
+    // The wallet balance of Auto is never the virtual one. After a restart the engine used to put the restored paper book
+    // into the wallet figure — the customer saw the demo $1005.13 while the wallet held less — and nothing read the wallet
+    // until the first settlement.
+    const dir = tmpDir();
+    const bars = makeTrendBars({ n: 220, close: 110, trend: 0.05 });
+    const earlier = new Engine({ userDataDir: dir, settings: { mode: "paper" }, live: stubLive(), market: fakeMarket(bars.slice(0, 219)) });
+    earlier.resetPaper("1005.13");
+    earlier.dispose();
+
+    const calls = { ping: 0, balance: 0 };
+    let wallet = "85.56";
+    let hold = null;
+    const live = {
+      ...stubLive(),
+      async ping() { calls.ping += 1; return { ok: true, message: "reachable" }; },
+      async getBalance() {
+        calls.balance += 1;
+        if (hold) await hold;
+        return wallet;
+      },
+    };
+    const engine = new Engine({ userDataDir: dir, settings: { mode: "auto", dryRun: false }, live, market: fakeMarket(bars.slice(0, 219)) });
+    assert(engine.snapshot().paper.balance === "1005.13", "the virtual book was restored");
+    assert(engine.mode === "auto" && engine.liveBalance.source === "live", "a restarted Auto engine does not start from the paper figure");
+    assert(engine.liveBalance.ok === false && engine.liveBalance.reason === "checking" && engine.liveBalance.value !== "1005.13",
+      "the wallet is 'checking' until it has been read");
+    assert(calls.balance === 0 && calls.ping === 0, "constructing the engine reads nothing");
+
+    const realNow = Date.now;
+    let now = realNow();
+    Date.now = () => now;
+    try {
+      engine.touchLiveBalance();
+      await engine._liveBalanceBusy;
+      assert(engine.liveBalance.ok && engine.liveBalance.value === "85.56" && engine.liveBalance.source === "live", "the first look reads the wallet");
+      assert(engine.liveBalance.at === now, "the reading is dated");
+      assert(calls.balance === 1 && calls.ping === 0, "a background reading asks for the balance only, no full ping");
+      assert(engine.snapshot().liveBalance.value === "85.56" && engine.snapshot().paper.balance === "1005.13", "both books stay apart in the snapshot");
+
+      engine.touchLiveBalance();
+      assert(!engine._liveBalanceBusy && calls.balance === 1, "a fresh reading is not asked for again");
+
+      now += 31_000;
+      wallet = "80.00";
+      engine.touchLiveBalance();
+      engine.touchLiveBalance();
+      await engine._liveBalanceBusy;
+      assert(calls.balance === 2 && engine.liveBalance.value === "80.00", "an old reading is renewed, once, however many people look");
+
+      now += 31_000;
+      wallet = null;
+      engine.touchLiveBalance();
+      await engine._liveBalanceBusy;
+      assert(engine.liveBalance.ok === true && engine.liveBalance.stale === true && engine.liveBalance.value === "80.00" && engine.liveBalance.reason === "no_balance",
+        "a failed reading keeps the last real figure, marked stale — it never turns into zeros or the paper book");
+      const failedAt = calls.balance;
+      now += 5_000;
+      engine.touchLiveBalance();
+      assert(calls.balance === failedAt, "no retry before the pause");
+      now += 6_000;
+      wallet = "79.90";
+      engine.touchLiveBalance();
+      await engine._liveBalanceBusy;
+      assert(calls.balance === failedAt + 1 && engine.liveBalance.value === "79.90" && engine.liveBalance.stale === undefined, "the next answer clears the stale mark");
+
+      // a reading that is still on its way when the account changes is not for the new account
+      now += 31_000;
+      let release;
+      hold = new Promise((resolve) => { release = resolve; });
+      wallet = "10.00";
+      engine.touchLiveBalance();
+      await engine.applySettings({ walletAddress: `0x${"ab".repeat(20)}` });
+      assert(engine.liveBalance.ok === false && engine.liveBalance.reason === "checking", "a new wallet starts again from 'checking'");
+      hold = null;
+      release();
+      await new Promise((resolve) => setImmediate(resolve));
+      assert(engine.liveBalance.ok === false, "the late answer for the old account is dropped");
+      wallet = "20.00";
+      engine.touchLiveBalance();
+      await engine._liveBalanceBusy;
+      assert(engine.liveBalance.value === "20.00", "the new account is read on the next look");
+
+      // a reading that is still on its way when Paper is chosen does not come back as the wallet
+      now += 31_000;
+      hold = new Promise((resolve) => { release = resolve; });
+      engine.touchLiveBalance();
+      await engine.setMode("paper");
+      assert(engine.liveBalance.source === "paper" && engine.liveBalance.value === "1005.13", "Paper shows the virtual book");
+      hold = null;
+      release();
+      await new Promise((resolve) => setImmediate(resolve));
+      assert(engine.liveBalance.source === "paper", "a late wallet answer does not replace the paper figure");
+      const before = calls.balance;
+      engine.touchLiveBalance();
+      assert(!engine._liveBalanceBusy && calls.balance === before, "Paper never reads the wallet");
+
+      // back in Auto: the explicit switch reads the wallet with a full ping, as before
+      wallet = "30.00";
+      await engine.setMode("auto");
+      assert(calls.ping === 1 && engine.liveBalance.value === "30.00" && engine.liveBalance.source === "live", "choosing Auto reads the wallet");
+    } finally {
+      Date.now = realNow;
+    }
+    engine.dispose();
+  }
+
+  {
+    // Choosing Auto while the wallet is still being read: no paper figure in between.
+    let unblock;
+    const slow = { ...stubLive(), async ping() { await new Promise((resolve) => { unblock = resolve; }); return { ok: true }; }, async getBalance() { return "12.34"; } };
+    const engine = new Engine({ userDataDir: tmpDir(), settings: { mode: "paper", paperBalance: "1005.13" }, live: slow, market: fakeMarket([]) });
+    assert(engine.liveBalance.source === "paper" && engine.liveBalance.value === "1005.13", "Paper: the virtual book");
+    const switching = engine.setMode("auto");
+    assert(engine.liveBalance.source === "live" && engine.liveBalance.ok === false && engine.liveBalance.reason === "checking",
+      "while the wallet is read after the switch, Auto shows no paper figure");
+    unblock();
+    await switching;
+    assert(engine.liveBalance.ok && engine.liveBalance.value === "12.34", "…and then the wallet");
+    engine.dispose();
+  }
+
   console.log("paper engine tests ok");
 }
 

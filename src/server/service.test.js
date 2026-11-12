@@ -557,3 +557,59 @@ test("heartbeat is answered while a slow command is still running", async (t) =>
   assert.ok(Date.now() - began < 1000, `heartbeat waited ${Date.now() - began} ms behind the start command`);
   assert.equal((await running).status, 200);
 });
+
+test("a restarted server-owned Auto session reports its wallet, never the restored paper book", async (t) => {
+  // The customer tested in Paper (virtual $1005.13), then moved to Auto on the server. After every restart of the server the
+  // window and Telegram showed the demo $1005.13 as his balance until the first settlement; the wallet was only read then.
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "vespera-wallet-"));
+  tempDirs.push(rootDir);
+  const reads = { balance: 0 };
+  const wallet = () => ({
+    market: { bars: [], on() {}, start() {}, stop() {}, async loadHistory() {} },
+    live: { configure() {}, async ping() { return { ok: true }; }, async getBalance() { reads.balance += 1; return "85.56"; } },
+  });
+  const source = new ExecutionHost({ userDataDir: path.join(rootDir, "desktop"), engineOptions: wallet() });
+  source.engine.resetPaper("1005.13");
+  source.engine.settings.mode = "auto";
+  source.engine.settings.dryRun = false;
+  const bundle = source.exportBundle();
+  source.dispose();
+
+  const serverDir = path.join(rootDir, "server");
+  const open = async () => {
+    const host = new ExecutionHost({ userDataDir: serverDir, direct: true, engineOptions: wallet() });
+    const service = createService({ userDataDir: serverDir, token: TOKEN, host });
+    service.server.listen(0, "127.0.0.1");
+    await new Promise((resolve, reject) => { service.server.once("listening", resolve); service.server.once("error", reject); });
+    return { host, service, root: `http://127.0.0.1:${service.server.address().port}` };
+  };
+  const reported = async (root) => (await request(root, "/v1/snapshot")).body.state;
+  const settled = async (host) => {
+    for (let i = 0; i < 100 && !(host.engine.liveBalance.ok && host.engine.liveBalance.source === "live"); i += 1) await new Promise((resolve) => setTimeout(resolve, 20));
+  };
+
+  const first = await open();
+  t.after(() => first.service.close());
+  assert.equal((await request(first.root, "/v1/register", { method: "POST", body: { deviceId: DEVICE, requestId: "wallet-register" } })).status, 200);
+  assert.equal((await request(first.root, "/v1/activate", { method: "POST", body: { deviceId: DEVICE, requestId: "wallet-activate", bundle } })).status, 200);
+  let state = await reported(first.root);
+  assert.equal(state.mode, "auto");
+  assert.equal(state.paper.balance, "1005.13", "the virtual book came across with the handoff");
+  assert.equal(state.liveBalance.source, "live", "…and is not the wallet figure");
+  await settled(first.host);
+  state = await reported(first.root);
+  assert.deepEqual([state.liveBalance.ok, state.liveBalance.value, state.liveBalance.source], [true, "85.56", "live"], "the window asks, the wallet is read");
+  assert.equal(state.paper.balance, "1005.13");
+
+  // the server is restarted (an update): nobody has asked for anything yet, and the wallet is read as the chart warms up
+  await first.service.close();
+  const before = reads.balance;
+  const second = await open();
+  t.after(() => second.service.close());
+  assert.equal(second.service.owner.owner, "server");
+  assert.equal(second.host.engine.paper.balance.toFixed(2), "1005.13", "the paper book survived the restart");
+  await settled(second.host);
+  assert.ok(reads.balance > before, "the server reads the wallet by itself after a restart");
+  state = await reported(second.root);
+  assert.deepEqual([state.liveBalance.ok, state.liveBalance.value, state.liveBalance.source], [true, "85.56", "live"]);
+});

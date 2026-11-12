@@ -75,6 +75,8 @@ the existing engine and risk rules. See [Telegram onboarding and limitations](do
 
 **Connect** in the API panel checks the account; it does not place trades.
 
+**Balance.** Paper shows its virtual book. Auto shows what the Polymarket wallet holds — a dash while it is being read or when it cannot be, the last known figure marked as stale if Polymarket stops answering — and a dry run keeps its bets on a separate virtual account that is reported apart. The window and Telegram follow the same rule; the demo book is never shown as the wallet.
+
 **Safeguards.** Auto starts in **dry run**: everything but posting the order (price, stake, fee, balance check, real signature), booked apart from real money. Turning it off makes Start ask for confirmation with the stakes and total at risk. An optional daily loss limit stops trading until midnight. A watchdog pauses Auto when Polymarket is unreachable or an order error would repeat (no balance, lot under the minimum, repeated rejections).
 
 **Connection recovery.** Temporary venue outages keep health checks running and resume the previously started session once reachability and the trading-region check recover. Manual Stop, risk limits and unknown order outcomes never auto-resume. Critical trade state is checkpointed separately from rotating logs. See [stability and recovery](docs/STABILITY.md) for diagnostics and unresolved-order handling.

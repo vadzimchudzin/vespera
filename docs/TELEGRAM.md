@@ -38,6 +38,11 @@ automatic strategy execution; individual strategy bets need no approval.
 Real-money Start and New series require a short-lived, single-use confirmation.
 Stop is immediate. An unknown order or risk halt cannot be cleared through Telegram.
 
+`/status` and `/balance` name what the balance is: in Paper the virtual book, in Auto the Polymarket wallet, and during a dry run
+the wallet plus the virtual dry-run account on a line of its own (the same rule as the window, `src/shared/balance.js`). A wallet
+that has not been read yet is reported as *checking*, one that cannot be read as *unavailable*, one that was read earlier but not
+lately as *last known*; the virtual book is never given out as the wallet.
+
 The server remains the executor in Zero Mode when the desktop is closed.
 Disconnection never authorizes local takeover. Telegram cannot activate an absent
 desktop or create another engine. Switching execution remains a desktop operation.

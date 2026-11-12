@@ -2,6 +2,7 @@
 
 const https = require("https");
 const { toRussian, keyboardToRussian } = require("./telegramRu");
+const { view: balanceView } = require("../shared/balance");
 const crypto = require("crypto");
 
 const REQUEST_TIMEOUT_MS = 12_000;
@@ -13,6 +14,18 @@ const LIVE_SETTINGS = new Set([
   "dailyLossLimitUsd", "maxEntryPrice", "minOpeningAtr", "minCrossTicks", "confirmCount",
   "fastPeriod", "slowPeriod", "maType",
 ]);
+
+// The balance as the bot says it, from the same rules as the window (shared/balance.js): Paper is the virtual book, Auto
+// is the Polymarket wallet, and a dry run adds its virtual account on a line of its own. A number that was not read from
+// the wallet is never given out as the wallet's.
+function balanceLines(state) {
+  const balance = balanceView(state);
+  let head;
+  if (balance.value != null) head = `Balance: $${balance.value} · ${balance.source === "paper" ? "paper" : "wallet"}${balance.state === "stale" ? " · last known" : ""}`;
+  else if (balance.state === "checking") head = "Balance: checking";
+  else head = `Balance: unavailable${balance.reason ? ` (${balance.reason})` : ""}`;
+  return balance.virtual != null ? [head, `Dry-run account: $${balance.virtual}`] : [head];
+}
 
 class TelegramError extends Error {
   constructor(code, { status = 0, retryAfter = 0, permanent = false } = {}) {
@@ -519,20 +532,17 @@ class TelegramBot {
   async _status(chatId, balanceOnly = false) {
     if (!this._requireServer()) return this._serverOnly(chatId);
     const state = await this._call("snapshot");
-    const balance = state.mode === "paper" || state.settings?.dryRun
-      ? state.paper?.balance
-      : state.liveBalance?.value;
+    if (balanceOnly) return this._reply(chatId, balanceLines(state).join("\n"));
     const open = state.liveBet || state.paper?.openBet;
     const text = [
       `Execution: ${this._ownerSnapshot().owner === "local" ? "desktop" : "server"} · ${state.status || "unknown"} · ${state.running ? "running" : "stopped"}`,
       `Mode: ${state.mode}${state.settings?.dryRun && state.mode === "auto" ? " (dry run)" : ""}`,
       `Strategy: ${state.strategyName || state.strategyId || "unknown"}`,
-      `Balance: ${balance == null ? "unavailable" : `$${balance}`}`,
+      ...balanceLines(state),
       `Series: step ${state.risk?.step ?? "?"}/${state.risk?.maxSteps ?? "?"} · loss $${state.risk?.seriesLossUsd ?? "?"}`,
       `Position: ${open ? `${open.side || "?"} $${open.sizeUsd || "?"}` : "none"}`,
       `Pause: ${state.pauseReason || (state.risk?.halted ? "risk halt" : "none")}`,
     ].join("\n");
-    if (balanceOnly) return this._reply(chatId, `Balance: ${balance == null ? "unavailable" : `$${balance}`} · ${state.mode}${state.settings?.dryRun && state.mode === "auto" ? " (dry run)" : ""}`);
     return this._reply(chatId, text);
   }
 
