@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.27.0 — 2026-11-20
+## 0.29.0 — 2026-11-20
 
 - **Saved setups can be renamed and deleted.** The setup library used to be write-only: a name could only change by saving a new version from the live settings, and an unwanted setup stayed forever. Settings → Strategy now has **Rename** (a label change that never touches settings, fingerprints or version numbers, and is allowed while trading runs) and **Delete** (removes the setup and its history after an explicit confirmation, and clears the active reference). Deleting the setup that is currently trading is refused while a position, pending order or test round is open, so a live book is never left without its label. Booked trades keep the attribution captured at preparation, and the journal and CSV stay readable after a setup is gone. Both actions travel over the Zero Mode service protocol, and the store rejects unknown ids, empty names and corrupt files exactly as it did before.
 - **AI advice speaks the interface language.** The explanation came back in English even with the window in Russian, because the system prompt never said which language to answer in. Settings → Language now decides it: the window sends its locale with the request and the prompt asks for Russian prose while indicator names, numbers and the JSON contract stay in English. Only `en` and `ru` are recognised — any other value falls back to English, so a locale string can never smuggle instructions into the system prompt.
