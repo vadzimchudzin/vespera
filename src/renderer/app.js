@@ -1149,7 +1149,7 @@
       aiSetBusy(true);
       try {
         if (typeof window.vespera?.aiRecommend !== "function") throw new Error(t("aiUnavailable"));
-        const result = await window.vespera.aiRecommend({ id, version: Number(version) });
+        const result = await window.vespera.aiRecommend({ id, version: Number(version), locale: state.locale });
         if (!result || result.ok === false) { aiSetMessage(aiActionMessage(result), true); return; }
         aiSetMessage(t("aiRequest"));
         state.aiRecommendationsKey = "";

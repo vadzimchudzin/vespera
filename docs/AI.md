@@ -5,6 +5,15 @@ It has no signing keys, wallet credentials, order tools, execution-owner control
 or access to clearing unknown orders/halted series. Allowed recommendation fields
 are indicator/entry parameters only; sizing and money/risk limits remain pinned.
 
+## Language
+
+The explanation follows the interface language (Settings → Language): English or
+Russian. The locale is a hint from the window, not model input — an unknown value
+falls back to English, and only the two known codes ever reach the system prompt.
+Indicator field names, numbers and the JSON contract stay in English in both
+cases, so a stored recommendation parses and replays identically regardless of
+the interface language it was asked for.
+
 ## Configuration and consent
 
 AI is disabled until explicitly configured and enabled. OpenRouter uses its
