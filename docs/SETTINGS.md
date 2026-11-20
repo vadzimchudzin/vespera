@@ -39,6 +39,39 @@ out-of-range numerical values are clamped on load; new invalid saves are rejecte
 - **Max entry price:** a limit between 0.05 and 1.00; 1.00 disables it. Lower
   values skip expensive outcomes. This does not change Fixed stake amounts.
 
+## The venue minimum lot
+
+Polymarket refuses an order below its minimum lot (`min_order_size`, 5 shares for
+the crypto Up/Down rounds). At an ask of 0.70 that lot costs $3.50, so a $1 stake
+cannot be placed there at all — and the old build answered that with
+`below_min_size` and paused the whole session, so a small lot silently stopped
+trading until someone pressed Start.
+
+Now the entry is priced and sized before it is signed:
+
+- **Raise to the lot.** A stake under `minOrderSize × ask` is raised to the lot
+  when the max-stake cap and the remaining series/daily budget allow it. The
+  journal records `stake_raised_to_lot` and the log says what it did.
+- **Skip, do not stop.** When the cap or the budget forbids the lot, the round is
+  skipped (`skip reason: below_min_stake`) with the exact minimum in the journal;
+  the series does not advance and trading continues on the next signal.
+- **Wait for the round's own book.** A quote with no asks at the round open is not
+  the new round's price. The entry re-reads the book up to three times, 700 ms
+  apart, instead of sizing and pricing the bet from the previous round.
+- **Spend the wallet, never overdraw it.** When the wallet cannot cover the planned
+  stake and fee but can cover the lot, the order goes out at the stake the balance
+  supports (`order_sized_to_balance`). Below the lot there is no valid order at any
+  size, and `insufficient_balance` skips that round.
+- **Bounded patience.** One or two funding skips do not stop Auto; three in a row
+  pause it with the venue's own message, so an empty wallet still surfaces instead
+  of quietly skipping every round.
+
+A marketable order is a limit order at the round's ask plus slippage, capped by
+max entry price and the market tick; the sweep price is not bypassed. A resting
+limit order (GTC) is not implemented: the CLOB client has no cancel path yet, and
+an order that can outlive its round would have to be tracked and cancelled before
+it could be offered.
+
 The plan shows a fresh series at the last available quote, or an explicit
 0.50 estimate when no quote is available. It includes fees and stops at the
 series budget. Actual future prices, fees and partial fills can differ. It is

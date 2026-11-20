@@ -465,6 +465,15 @@
     } else if (type === "paper_below_live_min") {
       title = t("logBelowMin");
       detail = `${row.shares} < ${row.minOrderSize} \u00b7 $${row.minUsd}`;
+    } else if (type === "stake_raised_to_lot") {
+      title = t("logStakeToLot");
+      detail = `$${row.plannedUsd} \u2192 $${row.sizeUsd} \u00b7 ${row.minOrderSize} ${t("sharesShort")}`;
+    } else if (type === "funding_skip") {
+      title = t("logFundingSkip");
+      detail = `${row.consecutive}/3 \u00b7 ${row.message || reasonText(row.code)}`;
+    } else if (type === "order_sized_to_balance") {
+      title = t("logSizedToBalance");
+      detail = `$${row.sizeUsd} / $${row.requested}${row.balanceUsd ? ` \u00b7 $${row.balanceUsd}` : ""}`;
     } else if (type === "partial_fill") {
       title = t("logPartialFill");
       detail = `$${row.filled} / $${row.requested}`;

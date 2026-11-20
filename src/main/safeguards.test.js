@@ -226,8 +226,17 @@ const bar = (openTs) => ({ openTs, closeTs: openTs + 899_999, open: 100, high: 1
     const mk = () => new Engine({ userDataDir: dir(), settings: { mode: "auto" }, live: stubLive(), market: fakeMarket() });
     let e = mk();
     await e.start();
+    // A short wallet is a condition of one round: skip it and keep the session, and pause
+    // only when it repeats — pausing at once stopped trading until someone pressed Start.
     e._onOrderError({ code: "insufficient_balance" }, "insufficient_balance: $1 < $10");
-    assert.strictEqual(e.status, "paused", "no money: pause immediately");
+    assert.strictEqual(e.running, true, "no money: one skip keeps the session");
+    assert.strictEqual(e.fundingSkips, 1);
+    e._onOrderError({ code: "below_min_size" }, "below_min_size: 1.4 shares < 5");
+    assert.strictEqual(e.running, true, "a stake under the lot is also a per-round condition");
+    e._onOrderError({ code: "insufficient_balance" }, "insufficient_balance: $1 < $10");
+    assert.strictEqual(e.status, "paused", "three funding skips in a row pause");
+    assert.ok(String(e.pauseReason).includes("insufficient_balance"), e.pauseReason);
+    assert.strictEqual(e.journal.entries.filter((x) => x.type === "funding_skip").length, 3, "every skip is journaled");
 
     e = mk();
     await e.start();

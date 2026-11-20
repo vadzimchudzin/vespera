@@ -523,12 +523,26 @@ class PolymarketAdapter {
       err.code = "missing_tokenId";
       throw err;
     }
-    if (quote && this.hasL2()) {
+    if (quote && this.hasL2() && !params.balanceRetried) {
       // V2 charges the taker fee in USDC on top of the stake: the wallet must hold both.
       const balance = await this.getBalance();
       const need = Number(quote.sizeUsd) + Number(quote.feeUsd || 0);
       if (balance != null && Number.isFinite(Number(balance)) && Number(balance) < need) {
-        const err = new Error(`insufficient_balance: $${Number(balance).toFixed(2)} < $${need.toFixed(2)} (stake + fee)`);
+        // Spend what the wallet holds instead of losing the round: the fee is charged on
+        // top of the stake, so the affordable stake is the balance minus the fee at this
+        // price. Below the venue's minimum lot there is no valid order, and the caller
+        // gets insufficient_balance to skip the round rather than a partial one.
+        const feePerUsd = Number(quote.sizeUsd) > 0 ? Number(quote.feeUsd || 0) / Number(quote.sizeUsd) : 0;
+        const affordable = Math.floor((Number(balance) / (1 + feePerUsd)) * 100) / 100;
+        const minOrderSize = Number(quote.minOrderSize) > 0 ? Number(quote.minOrderSize) : DEFAULT_MIN_SHARES;
+        const minStakeUsd = Math.ceil(minOrderSize * Number(quote.price) * 100 - 1e-9) / 100;
+        if (affordable >= minStakeUsd && affordable >= 0.01) {
+          const resized = await this.marketBuy({ ...params, sizeUsd: affordable, balanceRetried: true });
+          return { ...resized, sizedToBalance: true, balanceUsd: Number(balance).toFixed(2) };
+        }
+        const err = new Error(
+          `insufficient_balance: $${Number(balance).toFixed(2)} < $${need.toFixed(2)} (stake + fee); the minimum lot is ${minOrderSize} shares ≈ $${minStakeUsd.toFixed(2)}`
+        );
         err.code = "insufficient_balance";
         throw err;
       }

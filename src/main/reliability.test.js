@@ -86,7 +86,69 @@ async function run() {
     e.running = true;
     await e._openFromSignal(signal, bar);
     assert.strictEqual(e.journal.pendingOrder(), null, "definite preflight refusal clears intent");
-    assert.strictEqual(e.status, "paused");
+    assert.strictEqual(e.status, "watching", "a short wallet skips the round instead of stopping the session");
+    assert.strictEqual(e.running, true);
+  }
+
+  // A stake under the venue's minimum lot is raised to the lot instead of pausing the session.
+  {
+    const orders = [];
+    const e = new Engine({
+      userDataDir: dir(),
+      settings: { mode: "auto", dryRun: false, baseUsd: "1.00", maxSteps: 6 },
+      market: { bars: [], on() {}, start() {}, stop() {} },
+      live: {
+        hasPrivateKey() { return true; },
+        async getQuote() { return { ok: true, price: 0.7, minOrderSize: 5, feeRate: 0.07, feeExponent: 1, asks: [{ price: "0.7", size: "100" }] }; },
+        async marketBuy(p) { orders.push(p.sizeUsd); return { ...p, price: 0.7, shares: 5, sizeUsd: p.sizeUsd, orderId: "lot" }; },
+      },
+    });
+    e.running = true;
+    await e._openFromSignal(signal, bar);
+    assert.deepStrictEqual(orders, ["3.50"], "a $1 lot is raised to the five-share minimum at 0.70");
+    assert.strictEqual(e.running, true, "the session keeps trading");
+    assert.strictEqual(e.status, "waiting_settlement");
+    assert.ok(e.journal.entries.some((x) => x.type === "stake_raised_to_lot" && x.sizeUsd === "3.50"));
+  }
+
+  // When even the minimum lot does not fit the stake cap, the round is skipped — not paused.
+  {
+    const orders = [];
+    const e = new Engine({
+      userDataDir: dir(),
+      settings: { mode: "auto", dryRun: false, baseUsd: "1.00", maxStakeUsd: 2, maxSteps: 6 },
+      market: { bars: [], on() {}, start() {}, stop() {} },
+      live: {
+        hasPrivateKey() { return true; },
+        async getQuote() { return { ok: true, price: 0.7, minOrderSize: 5, feeRate: 0.07, feeExponent: 1, asks: [{ price: "0.7", size: "100" }] }; },
+        async marketBuy(p) { orders.push(p.sizeUsd); return { ...p, price: 0.7, shares: 5, sizeUsd: p.sizeUsd }; },
+      },
+    });
+    e.running = true;
+    await e._openFromSignal(signal, bar);
+    assert.deepStrictEqual(orders, [], "no order is sent when the cap forbids the lot");
+    assert.strictEqual(e.running, true, "the session keeps running");
+    assert.strictEqual(e.status, "watching");
+    assert.strictEqual(e.risk.step, 1, "a skipped round does not touch the series");
+    assert.ok(e.journal.entries.some((x) => x.type === "skip" && x.reason === "below_min_stake" && x.minStakeUsd === 3.5));
+  }
+
+  // An empty book at the round open is re-read instead of pricing the bet from the previous round.
+  {
+    let reads = 0;
+    const orders = [];
+    const e = engine({
+      async getQuote() {
+        reads += 1;
+        if (reads === 1) return { ok: true, price: 0.42, minOrderSize: 5, feeRate: 0.07, asks: [] };
+        return { ok: true, price: 0.58, minOrderSize: 5, feeRate: 0.07, asks: [{ price: "0.58", size: "50" }] };
+      },
+      async marketBuy(p) { orders.push(p.sizeUsd); return { ...p, price: 0.58, shares: 6, sizeUsd: p.sizeUsd, orderId: "book" }; },
+    });
+    e.running = true;
+    await e._openFromSignal(signal, bar);
+    assert.strictEqual(reads, 2, "the entry waits for the round's own book");
+    assert.deepStrictEqual(orders, ["5.00"], "the stake is sized on the new book, not the stale price");
   }
 
   // If recording an accepted bet fails, the durable intent remains locked.

@@ -34,6 +34,14 @@ const HEALTH_INTERVAL_MS = 60_000;
 const VENUE_FAILURE_LIMIT = 3;
 // Consecutive order rejections from the CLOB before Auto pauses.
 const REJECT_LIMIT = 2;
+// Consecutive rounds that a short wallet or the venue's minimum lot made impossible.
+// One such round is a per-round condition; a run of them means the account or the lot
+// is wrong and a person has to look, so Auto pauses with the real reason.
+const FUNDING_SKIP_LIMIT = 3;
+// A new round's book can be empty for a second or two after it opens. Re-read it a few
+// times instead of pricing the entry (and the minimum lot) from the previous round.
+const QUOTE_ATTEMPTS = 3;
+const QUOTE_RETRY_MS = 700;
 const FINAL_RECONCILE_ATTEMPTS = 120;
 const FINAL_RECONCILE_DELAY_MS = 30_000;
 // The wallet balance shown to a person who is looking at the state: how long a reading counts as current, and how long
@@ -125,6 +133,7 @@ class Engine {
     this.pauseReason = null;
     this.venueFailures = 0;
     this.orderRejects = 0;
+    this.fundingSkips = 0;
     this._healthTimer = null;
     this._healthBusy = false;
     this._opening = false;
@@ -342,22 +351,31 @@ class Engine {
    */
   async _quoteFor(side, round) {
     if (typeof this.live.getQuote !== "function") return null;
-    try {
-      const quote = await this.live.getQuote({
-        side,
-        tsMs: round && round.openTs ? round.openTs : Date.now(),
-      });
+    const tsMs = round && round.openTs ? round.openTs : Date.now();
+    let quote = null;
+    // At the round's first seconds the book can still be empty, and a quote without
+    // asks is the previous round's price: sizing and the limit price would then be
+    // guesses. Wait for the new book instead of sending an order into nothing.
+    for (let attempt = 1; attempt <= QUOTE_ATTEMPTS; attempt += 1) {
+      try {
+        quote = await this.live.getQuote({ side, tsMs });
+      } catch (err) {
+        this.emit("log", { level: "warn", message: `quote_error: ${String(err.message || err)}` });
+        quote = null;
+      }
       if (!quote || !quote.ok) {
         this.emit("log", { level: "warn", message: `quote_unavailable: ${(quote && quote.reason) || "unknown"}` });
         return null;
       }
-      const { asks, ...light } = quote;
-      this.lastQuote = light;
-      return quote;
-    } catch (err) {
-      this.emit("log", { level: "warn", message: `quote_error: ${String(err.message || err)}` });
-      return null;
+      // Only wait when the venue says the book is empty; an unknown depth is priced as before.
+      const hasBook = !Array.isArray(quote.asks) || quote.asks.length > 0;
+      if (hasBook || attempt === QUOTE_ATTEMPTS) break;
+      if (attempt === 1) this.emit("log", { level: "info", message: "quote_wait: the new round has no asks yet, waiting for its book" });
+      await new Promise((resolve) => setTimeout(resolve, QUOTE_RETRY_MS));
     }
+    const { asks, ...light } = quote;
+    this.lastQuote = light;
+    return quote;
   }
 
   on(fn) {
@@ -2060,8 +2078,38 @@ class Engine {
       return null;
     }
     const entryPrice = quote ? quote.price : undefined;
-    const size = this.risk.size(entryPrice, schedule).toFixed(2);
+    const planned = this.risk.size(entryPrice, schedule).toFixed(2);
     const maxTotalCostUsd = this._entryBudget();
+    // The venue refuses an order below its minimum lot (5 shares by default). Sizing
+    // below it used to raise below_min_size at submission and pause Auto, so a stake
+    // that merely needed the lot floor stopped trading for the rest of the session.
+    // Paper books any size and only warns about the live lot; the floor is a live rule.
+    const lot = this.mode === "auto"
+      ? this._lotFloor(quote, entryPrice, planned, maxTotalCostUsd)
+      : { ok: true, size: planned, raised: false };
+    if (!lot.ok) {
+      this.risk.onSkip();
+      this.status = "watching";
+      this.journal.write({
+        type: "skip", reason: "below_min_stake", signal: ev.signal, openTs: bar.openTs,
+        plannedUsd: planned, minStakeUsd: lot.minStakeUsd, minOrderSize: lot.minOrderSize,
+        price: entryPrice ?? null,
+      });
+      this.emit("log", {
+        level: "warn",
+        message: `skip_lot: stake $${planned} is under the $${lot.minStakeUsd} minimum lot (${lot.minOrderSize} shares at ${entryPrice ?? "?"})`,
+      });
+      this.emit("skip", { ...ev, reason: "below_min_stake", bar });
+      return null;
+    }
+    const size = lot.size;
+    if (lot.raised) {
+      this.journal.write({ type: "stake_raised_to_lot", plannedUsd: planned, sizeUsd: size, minOrderSize: lot.minOrderSize, price: entryPrice ?? null });
+      this.emit("log", {
+        level: "info",
+        message: `stake_to_lot: $${planned} raised to $${size} for the ${lot.minOrderSize}-share minimum at ${entryPrice ?? "?"}`,
+      });
+    }
     const lossCost = Math.ceil(Number(size) * perDollar(entryPrice, schedule).loss * 100 - 1e-9) / 100;
     if (lossCost > maxTotalCostUsd + 1e-9) {
       this.pause("budget_exceeded: stake and fee exceed the remaining series or daily budget");
@@ -2136,7 +2184,14 @@ class Engine {
         });
         accepted = true;
         this.orderRejects = 0;
+        this.fundingSkips = 0;
         if (order.fokRetried) this.emit("log", { level: "warn", message: "order_retried: first order was not filled, placed again on a fresh book" });
+        if (order.sizedToBalance) {
+          // The wallet could not cover the planned stake, so the order went out at what it
+          // held — a smaller position in the same round instead of a skipped one.
+          this.journal.write({ type: "order_sized_to_balance", requested: size, sizeUsd: order.sizeUsd, balanceUsd: order.balanceUsd ?? null });
+          this.emit("log", { level: "warn", message: `order_sized_to_balance: $${order.sizeUsd} of $${size} — the wallet held $${order.balanceUsd ?? "?"}` });
+        }
         if (order.partial) {
           this.journal.write({ type: "partial_fill", requested: size, filled: order.sizeUsd, shares: order.shares });
           this.emit("log", { level: "warn", message: `partial_fill: $${order.sizeUsd} of $${size} filled, booked as filled` });
@@ -2238,8 +2293,24 @@ class Engine {
   _onOrderError(err, message) {
     const code = err && err.code;
     const status = err && err.response ? Number(err.response.status) : null;
-    if (code === "insufficient_balance" || code === "below_min_size" || code === "auto_not_wired" || code === "geoblocked") {
+    if (code === "auto_not_wired" || code === "geoblocked") {
       this.pause(`${code}: ${message}`);
+      return;
+    }
+    // A short wallet or a stake the venue's minimum lot cannot buy is a condition of
+    // this round, not a broken session: skip it, count it, and pause only when it keeps
+    // repeating — pausing here stopped trading until a person pressed Start again.
+    if (code === "insufficient_balance" || code === "below_min_size") {
+      this.fundingSkips += 1;
+      this.journal.write({ type: "funding_skip", code, message, consecutive: this.fundingSkips });
+      this.emit("log", {
+        level: "warn",
+        message: `funding_skip ${this.fundingSkips}/${FUNDING_SKIP_LIMIT}: ${message}`,
+      });
+      if (this.fundingSkips >= FUNDING_SKIP_LIMIT) {
+        this.fundingSkips = 0;
+        this.pause(`${code}: ${message}`);
+      }
       return;
     }
     // wrong proxy address, login or scheme: the next order fails identically
@@ -2267,6 +2338,32 @@ class Engine {
     const daily = this.dailyLossLimit() > 0
       ? Math.max(0, this.dailyLossLimit() + this.todayPnl()) : Infinity;
     return Math.min(series, daily);
+  }
+
+  /**
+   * The venue's minimum lot is a property of the round, not of the strategy: at an
+   * ask of 0.70 five shares cost $3.50, so a $1 lot cannot be placed there at all.
+   * Raise the stake to the lot when the caps and the budget allow it, otherwise
+   * skip the round — never send an order the venue is certain to refuse.
+   */
+  _lotFloor(quote, price, plannedUsd, budgetUsd) {
+    const size = Number(plannedUsd);
+    const minOrderSize = Number(quote && quote.minOrderSize);
+    if (!(minOrderSize > 0) || !(Number(price) > 0 && Number(price) < 1)) {
+      return { ok: true, size: plannedUsd, raised: false };
+    }
+    // A marketable buy is priced at the ask plus slippage, so the lot costs at least this.
+    const minStakeUsd = Math.ceil(minOrderSize * Number(price) * 100 - 1e-9) / 100;
+    if (size >= minStakeUsd - 1e-9) return { ok: true, size: plannedUsd, raised: false };
+    if (Number(this.risk.maxStakeUsd) > 0 && minStakeUsd > Number(this.risk.maxStakeUsd) + 1e-9) {
+      return { ok: false, reason: "below_min_stake", minStakeUsd, minOrderSize };
+    }
+    const schedule = quote ? { rate: quote.feeRate, exponent: quote.feeExponent } : undefined;
+    const lotCost = Math.ceil(minStakeUsd * perDollar(Number(price), schedule).loss * 100 - 1e-9) / 100;
+    if (Number.isFinite(budgetUsd) && lotCost > Number(budgetUsd) + 1e-9) {
+      return { ok: false, reason: "below_min_stake", minStakeUsd, minOrderSize };
+    }
+    return { ok: true, size: minStakeUsd.toFixed(2), raised: true, minStakeUsd, minOrderSize };
   }
 
   snapshot() {

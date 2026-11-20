@@ -222,7 +222,7 @@ async function payoutCase({ payout, side, settleClose, expectPnl, label }) {
   assert.strictEqual(odd.takerAmount, "12950000");
   assert.strictEqual(odd.quote.feeUsd, (12.95 * 0.07 * Math.pow(0.6 * 0.4, 2)).toFixed(5));
 
-  // Live order: balance must cover stake + fee; the booked fill is what the CLOB reports.
+  // Live order: the wallet is spent, never overdrawn; the booked fill is what the CLOB reports.
   {
     const fills = [];
     const venue = new PolymarketAdapter({
@@ -239,18 +239,33 @@ async function payoutCase({ payout, side, settleClose, expectPnl, label }) {
         },
         async postOrder(signed) {
           fills.push(signed);
-          return { ok: true, status: 200, json: { success: true, status: "matched", orderID: "0xabc", makingAmount: "10", takingAmount: "20.408163" } };
+          const spent = Number(signed.order.makerAmount) / 1e6;
+          // fills a hair better than the 0.50 limit, like a real resting ask
+          const shares = spent / 0.49;
+          return { ok: true, status: 200, json: { success: true, status: "matched", orderID: "0xabc",
+            makingAmount: String(Math.round(spent * 1e6)), takingAmount: String(Math.round(shares * 1e6)) } };
         },
       },
     });
     venue.getQuote = async () => ({ ...quote, price: 0.5, tickSize: 0.01, feeRate: 0.07, asks: [] });
-    fills.balance = "10100000"; // $10.10 < $10 + $0.35
+
+    // A wallet that cannot cover the planned stake trades what it holds instead.
+    fills.balance = "10100000"; // $10.10 against a $10 stake + $0.35 fee
+    const sized = await venue.marketBuy({ side: "UP", sizeUsd: "10.00", round: { openTs: 1 } });
+    assert.strictEqual(sized.sizedToBalance, true, "the wallet is spent, not overdrawn");
+    assert.ok(Number(sized.sizeUsd) < 10 && Number(sized.sizeUsd) > 9, `stake shrinks to the balance (${sized.sizeUsd})`);
+    assert.strictEqual(fills.length, 1);
+
+    // Below the venue's minimum lot there is no valid order at any size.
+    fills.balance = "1000000"; // $1.00
+    const posted = fills.length;
     await assert.rejects(
       () => venue.marketBuy({ side: "UP", sizeUsd: "10.00", round: { openTs: 1 } }),
-      (err) => err.code === "insufficient_balance",
-      "stake + fee must be covered before signing"
+      (err) => err.code === "insufficient_balance" && /minimum lot/.test(err.message),
+      "a wallet under the minimum lot is refused before signing"
     );
-    assert.strictEqual(fills.length, 0);
+    assert.strictEqual(fills.length, posted, "nothing is signed when the lot cannot be covered");
+
     fills.balance = "50000000";
     const filled = await venue.marketBuy({ side: "UP", sizeUsd: "10.00", round: { openTs: 1 } });
     assert.strictEqual(filled.filled, true);
