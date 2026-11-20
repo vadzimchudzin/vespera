@@ -822,6 +822,7 @@ class Engine {
     this.pauseReason = null;
     this.venueFailures = 0;
     this.orderRejects = 0;
+    this.fundingSkips = 0;
     this.running = true;
     this.status = "warming_up";
     this.emit("status", this.status);
