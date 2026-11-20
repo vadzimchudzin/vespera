@@ -17,6 +17,9 @@ const SETUP_FIELD_SET = new Set(SETUP_FIELDS);
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_IMPORT_BYTES = 256 * 1024;
 const MAX_SETUPS = 100;
+// Deleting has to travel with the library: a handoff merges setups as a union, so a
+// removal without a marker would simply come back from the other device.
+const MAX_TOMBSTONES = 200;
 const MAX_VERSIONS = 100;
 
 function fail(code) {
@@ -93,6 +96,15 @@ function validateLibrary(value) {
       !(value.activeSetup === null || (value.activeSetup && typeof value.activeSetup === "object" &&
         Object.keys(value.activeSetup).sort().join(",") === "id,version" && typeof value.activeSetup.id === "string" &&
         Number.isInteger(value.activeSetup.version) && value.activeSetup.version > 0))) throw fail("setup_store_corrupt");
+  const deleted = value.deleted == null ? [] : value.deleted;
+  if (!Array.isArray(deleted) || deleted.length > MAX_TOMBSTONES) throw fail("setup_store_corrupt");
+  const tombstones = deleted.map((row) => {
+    if (!row || typeof row !== "object" || Array.isArray(row) ||
+        Object.keys(row).sort().join(",") !== "at,id" ||
+        typeof row.id !== "string" || !/^[a-f0-9-]{36}$/.test(row.id) ||
+        !Number.isFinite(Number(row.at)) || Number(row.at) <= 0) throw fail("setup_store_corrupt");
+    return { id: row.id, at: Number(row.at) };
+  });
   const ids = new Set();
   const setups = value.setups.map((setup) => {
     if (!setup || typeof setup !== "object" || Array.isArray(setup) ||
@@ -113,10 +125,15 @@ function validateLibrary(value) {
   if (value.activeSetup && !setups.some((setup) => setup.id === value.activeSetup.id && setup.versions.some((v) => v.version === value.activeSetup.version))) {
     throw fail("setup_store_corrupt");
   }
-  return { version: 1, setups, activeSetup: value.activeSetup ? { ...value.activeSetup } : null };
+  return {
+    version: 1,
+    setups,
+    activeSetup: value.activeSetup ? { ...value.activeSetup } : null,
+    deleted: tombstones,
+  };
 }
 
-function emptyLibrary() { return { version: 1, setups: [], activeSetup: null }; }
+function emptyLibrary() { return { version: 1, setups: [], activeSetup: null, deleted: [] }; }
 
 class SetupStore {
   constructor(dir) {
@@ -208,11 +225,13 @@ class SetupStore {
     if (signalTf !== marketTf || signalTf !== canonical.timeframe) throw fail("timeframe_mismatch");
     if (id != null && (typeof id !== "string" || !/^[a-f0-9-]{36}$/.test(id))) throw fail("invalid_setup_id");
     const existing = id ? this.value.setups.find((row) => row.id === id) : null;
-    if (id && !existing) throw fail("setup_not_found");
+    // Re-saving a deleted id is allowed and lifts its tombstone; anything else is unknown.
+    const trashed = id && !existing ? (this.value.deleted || []).find((row) => row.id === id) : null;
+    if (id && !existing && !trashed) throw fail("setup_not_found");
     if (!existing && this.value.setups.length >= MAX_SETUPS) throw fail("setup_limit");
     if (existing && existing.versions.length >= MAX_VERSIONS) throw fail("setup_version_limit");
     const version = {
-      id: existing?.id || crypto.randomUUID(),
+      id: existing?.id || (trashed ? id : crypto.randomUUID()),
       version: (existing?.versions.length || 0) + 1,
       name: cleanName,
       createdAt: new Date().toISOString(),
@@ -225,7 +244,14 @@ class SetupStore {
       ? { id: existing.id, name: cleanName, versions: [...existing.versions, version] }
       : { id: version.id, name: cleanName, versions: [version] };
     const setups = existing ? this.value.setups.map((row) => row.id === id ? setup : row) : [...this.value.setups, setup];
-    this._write({ ...this.value, setups, activeSetup: activate ? { id: version.id, version: version.version } : this.value.activeSetup });
+    // Saving over a deleted id is an explicit decision to keep it: drop its tombstone.
+    const deleted = (this.value.deleted || []).filter((row) => row.id !== version.id);
+    this._write({
+      ...this.value,
+      setups,
+      deleted,
+      activeSetup: activate ? { id: version.id, version: version.version } : this.value.activeSetup,
+    });
     return structuredClone(version);
   }
 
@@ -257,10 +283,15 @@ class SetupStore {
     const existing = this.value.setups.find((row) => row.id === id);
     if (!existing) throw fail("setup_not_found");
     const clearedActive = this.value.activeSetup?.id === id;
+    // A union merge cannot see a removal, so the id is remembered and travels with
+    // the library: the other device drops the setup on the next handoff.
+    const deleted = [...(this.value.deleted || []).filter((row) => row.id !== id), { id, at: Date.now() }]
+      .slice(-MAX_TOMBSTONES);
     this._write({
       ...this.value,
       setups: this.value.setups.filter((row) => row.id !== id),
       activeSetup: clearedActive ? null : this.value.activeSetup,
+      deleted,
     });
     return { id, name: existing.name, versions: existing.versions.length, clearedActive };
   }
@@ -291,8 +322,17 @@ class SetupStore {
     const incoming = validateLibrary(value);
     if (!incoming.setups.length && incoming.activeSetup === null) return this._write({ ...this.value, activeSetup: null });
     const currentById = new Map(this.value.setups.map((row) => [row.id, row]));
-    const merged = this.value.setups.map((row) => structuredClone(row));
+    const deletedIds = new Set([
+      ...(this.value.deleted || []).map((row) => row.id),
+      ...(incoming.deleted || []).map((row) => row.id),
+    ]);
+    const tombstones = [...(this.value.deleted || []), ...(incoming.deleted || [])]
+      .filter((row, index, all) => all.findIndex((other) => other.id === row.id) === index)
+      .slice(-MAX_TOMBSTONES);
+    // A remotely deleted setup must not come back through the union.
+    const merged = this.value.setups.filter((row) => !deletedIds.has(row.id)).map((row) => structuredClone(row));
     for (const setup of incoming.setups) {
+      if (deletedIds.has(setup.id)) continue;
       const current = currentById.get(setup.id);
       if (!current) {
         merged.push(structuredClone(setup));
@@ -310,9 +350,9 @@ class SetupStore {
       merged[merged.findIndex((row) => row.id === setup.id)] = combined;
     }
     if (merged.length > MAX_SETUPS) throw fail("setup_limit");
-    const ref = incoming.activeSetup;
+    const ref = incoming.activeSetup && !deletedIds.has(incoming.activeSetup.id) ? incoming.activeSetup : null;
     if (ref && !merged.some((row) => row.id === ref.id && row.versions.some((version) => version.version === ref.version))) throw fail("setup_store_corrupt");
-    return this._write({ version: 1, setups: merged, activeSetup: ref ? { ...ref } : null });
+    return this._write({ version: 1, setups: merged, activeSetup: ref ? { ...ref } : null, deleted: tombstones });
   }
 }
 

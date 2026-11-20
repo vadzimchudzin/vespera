@@ -50,6 +50,14 @@ a position, pending order or test round is open; stop and resolve it first. A
 booked trade keeps its captured attribution, so the journal and CSV stay readable
 after the setup is gone.
 
+A deletion leaves a tombstone (`deleted: [{ id, at }]`, capped at the last 200) in
+the library file. The handoff merge is a union, so without the marker a removed
+setup would simply come back from the other device; with it the merge drops the
+setup on both sides and clears an active reference that pointed at it. A library
+written by an older build has no `deleted` key and still validates — it just
+cannot express a removal. Saving a new version over a deleted id is an explicit
+decision to keep the setup and lifts its tombstone.
+
 ## Timeframes and live markets
 
 Signal timeframe and market expiration are separate fields in the definition.

@@ -95,4 +95,33 @@ assert.throws(() => editable.deleteSetup({ id: kept.id }), /setup_not_found/);
 assert.equal(new SetupStore(editable.dir).listSetups().length, 1, "the removal is durable");
 assert.equal(editable.deleteSetup({ id: other.id }).clearedActive, false, "removing a setup that is not active keeps the reference");
 assert.equal(new SetupStore(editable.dir).value.activeSetup, null);
+
+// A deletion travels with the library: a handoff cannot resurrect it.
+{
+  const desktop = new SetupStore(dir());
+  const server = new SetupStore(dir());
+  const kept = desktop.saveSetup({ name: "Desk", settings });
+  const doomed = desktop.saveSetup({ name: "Doomed", settings });
+  desktop.setActive({ id: doomed.id, version: 1 });
+  // the other device gets the same library through a handoff
+  server.importLibrary(structuredClone(desktop.value));
+  assert.equal(server.listSetups().length, 2);
+
+  desktop.deleteSetup({ id: doomed.id });
+  assert.equal(desktop.value.deleted.length, 1, "the removal leaves a marker");
+  server.importLibrary(structuredClone(desktop.value));
+  assert.equal(server.listSetups().length, 1, "the merge drops what was deleted");
+  assert.equal(server.listSetups()[0].id, kept.id);
+  assert.equal(server.value.activeSetup, null, "an active reference to a deleted setup is cleared");
+
+  // the deletion survives the other way round too
+  desktop.importLibrary(structuredClone(server.value));
+  assert.equal(desktop.listSetups().length, 1, "re-importing does not bring it back");
+
+  // an explicit save over a deleted id is a decision to keep it
+  const again = desktop.saveSetup({ id: doomed.id, name: "Doomed", settings });
+  assert.equal(again.id, doomed.id);
+  assert.equal(desktop.value.deleted.length, 0, "saving clears the marker");
+  assert.equal(desktop.listSetups().length, 2);
+}
 console.log("setup store tests ok");
