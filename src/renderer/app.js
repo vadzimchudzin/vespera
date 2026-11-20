@@ -1701,6 +1701,127 @@
     meta.textContent = details.join(" · ");
   }
 
+  function closeSetupEditor() {
+    state.setupDraft = null;
+    const editor = $("setupEditor");
+    if (editor) editor.hidden = true;
+    const button = $("setupEditButton");
+    if (button) button.classList.remove("on");
+  }
+
+  /**
+   * Opens the selected version as a draft. Nothing is applied to the engine: this
+   * exists so a variant can be prepared while the session keeps trading.
+   */
+  function openSetupEditor() {
+    // Fields the library editor exposes: the numbers that decide trades. Everything else
+    // in a version (fixedStakes, notifications, dryRun) is carried over untouched.
+    const SETUP_EDIT_FIELDS = [
+    { key: "baseUsd", label: "base", kind: "number" },
+    { key: "maxSteps", label: "maxSteps", kind: "number" },
+    { key: "sizingMode", label: "sizing", kind: "select", options: [["double", "sizingDouble"], ["fixed", "sizingFixed"], ["recover", "sizingRecover"]] },
+    { key: "fastPeriod", label: "fastPeriod", kind: "number" },
+    { key: "slowPeriod", label: "slowPeriod", kind: "number" },
+    { key: "maType", label: "maType", kind: "select", options: [["SMA", "SMA"], ["EMA", "EMA"]] },
+    { key: "confirmCount", label: "confirmCount", kind: "number" },
+    { key: "minCrossTicks", label: "minCross", kind: "number" },
+    { key: "minOpeningAtr", label: "minOpening", kind: "number" },
+    { key: "maxEntryPrice", label: "maxEntryPrice", kind: "number" },
+    { key: "maxStakeUsd", label: "maxStake", kind: "number" },
+    { key: "maxSeriesLossUsd", label: "maxSeriesLoss", kind: "number" },
+    { key: "dailyLossLimitUsd", label: "dailyLimit", kind: "number" },
+    { key: "entryStyle", label: "entryStyle", kind: "select", options: [["market", "entryStyleMarket"], ["limit", "entryStyleLimit"]] },
+    { key: "holdSeconds", label: "holdSeconds", kind: "number" },
+    { key: "timeframe", label: "timeframe", kind: "select", options: null },
+  ];
+    const selected = setupSelectedVersion();
+    if (!selected) return;
+    const draft = structuredClone(selected.version.settings || {});
+    const timeframes = Array.isArray(state.snapshot?.timeframes) && state.snapshot.timeframes.length
+      ? state.snapshot.timeframes
+      : ["1m", "5m", "15m", "1h", "4h", "1d"];
+    const host = $("setupEditorFields");
+    host.replaceChildren();
+    SETUP_EDIT_FIELDS.forEach((field) => {
+      const limits = (window.VesperaSettings?.LIMITS || {})[field.key];
+      const wrap = document.createElement("label");
+      wrap.className = "field";
+      const caption = document.createElement("span");
+      caption.className = "field-label";
+      caption.textContent = t(field.label);
+      wrap.appendChild(caption);
+      let input;
+      if (field.kind === "select") {
+        input = document.createElement("select");
+        const options = field.options || timeframes.map((tf) => [tf, tf]);
+        options.forEach(([value, label]) => {
+          const option = document.createElement("option");
+          option.value = value;
+          option.textContent = label === value ? value : t(label);
+          input.appendChild(option);
+        });
+        input.value = String(draft[field.key] ?? options[0][0]);
+      } else {
+        input = document.createElement("input");
+        input.type = "number";
+        if (limits) {
+          input.min = String(limits.min);
+          input.max = String(limits.max);
+          input.step = String(limits.step);
+        }
+        input.value = String(draft[field.key] ?? (limits ? limits.default : ""));
+      }
+      input.dataset.setupField = field.key;
+      const sync = () => {
+        draft[field.key] = field.kind === "number" ? Number(input.value) : input.value;
+      };
+      input.oninput = sync;
+      input.onchange = sync;
+      wrap.appendChild(input);
+      host.appendChild(wrap);
+    });
+    state.setupDraft = draft;
+    $("setupEditor").hidden = false;
+    $("setupEditButton").classList.add("on");
+    host.querySelector("input, select")?.focus();
+  }
+
+  async function saveSetupDraft() {
+    const selected = setupSelectedVersion();
+    if (!selected || !state.setupDraft) return;
+    const nameInput = $("setupNameInput");
+    const name = String(nameInput?.value || selected.version.name || selected.setup.name || "").trim();
+    state.setupBusy = true;
+    setSetupStatus("");
+    try {
+      // activate: false — a draft is a saved variant, not a switch of the live setup.
+      const result = await window.vespera.saveSetup({
+        id: selected.setup.id,
+        name,
+        settings: state.setupDraft,
+        activate: false,
+      });
+      if (!result || result.ok === false) throw { code: result?.reason || "setup_save_failed", message: result?.message };
+      const saved = result.setup;
+      state.setupBusy = false;
+      closeSetupEditor();
+      const library = await window.vespera.listSetups();
+      if (library && library.ok !== false) state.setupLibrary = library;
+      if (saved) {
+        state.selectedSetupId = String(saved.id);
+        state.selectedSetupVersionId = String(saved.version);
+      }
+      renderSetupLibrary();
+      setSetupStatus(t("setupEditSaved").replace("{version}", String(saved?.version ?? "")));
+    } catch (error) {
+      const code = error?.code || error?.reason;
+      setSetupStatus(code === "invalid_settings" ? t("setupEditInvalid") : setupReasonText(code, "setupSaveFailed"), true);
+    } finally {
+      state.setupBusy = false;
+      updateSetupSafety();
+    }
+  }
+
   function setupApplyBlocked() {
     if (!state.snapshot) return true;
     const snap = state.snapshot;
@@ -1769,7 +1890,7 @@
   function bodySetupControlsDisabled(disabled) {
     document.querySelectorAll("#settingsSetupCard [data-setup-control], #settingsSetupCard [data-setup-action]").forEach((el) => {
       if (el.dataset.setupAction === "apply") return;
-      const needsSelection = ["copy", "export", "rename", "delete"].includes(el.dataset.setupAction);
+      const needsSelection = ["copy", "export", "rename", "delete", "edit"].includes(el.dataset.setupAction);
       el.disabled = disabled || (needsSelection && !setupSelectedVersion());
     });
     updateSetupSafety();
@@ -2855,8 +2976,17 @@
             <button type="button" class="ghost" id="setupCopyButton" data-setup-action="copy">${t("setupCopy")}</button>
             <button type="button" class="ghost" id="setupImportButton" data-setup-action="import">${t("setupImport")}</button>
             <button type="button" class="ghost" id="setupExportButton" data-setup-action="export">${t("setupExport")}</button>
+            <button type="button" class="ghost" id="setupEditButton" data-setup-action="edit">${t("setupEdit")}</button>
             <button type="button" class="ghost" id="setupRenameButton" data-setup-action="rename">${t("setupRename")}</button>
             <button type="button" class="ghost danger" id="setupDeleteButton" data-setup-action="delete">${t("setupDelete")}</button>
+          </div>
+          <div class="settings-setup-editor" id="setupEditor" hidden>
+            <div class="settings-setup-heading"><div><strong id="setupEditorTitle">${t("setupEditTitle")}</strong><p class="hint">${t("setupEditHint")}</p></div></div>
+            <div class="settings-setup-editor-grid" id="setupEditorFields"></div>
+            <div class="settings-button-row">
+              <button type="button" class="ghost" id="setupEditSave">${t("setupEditSave")}</button>
+              <button type="button" class="ghost" id="setupEditCancel">${t("setupEditCancel")}</button>
+            </div>
           </div>
         </section>
         <div class="field">
@@ -2980,6 +3110,7 @@
         const [setupId, versionId] = String(event.target.value).split("\u0000");
         state.selectedSetupId = setupId || "";
         state.selectedSetupVersionId = versionId || "";
+        closeSetupEditor();
         renderSetupLibrary();
       };
       $("setupSaveButton").onclick = () => runSetupAction("save");
@@ -2989,6 +3120,9 @@
       $("setupImportButton").onclick = () => runSetupAction("import");
       $("setupExportButton").onclick = () => runSetupAction("export");
       $("setupRenameButton").onclick = () => runSetupAction("rename");
+      $("setupEditButton").onclick = () => ($("setupEditor").hidden ? openSetupEditor() : closeSetupEditor());
+      $("setupEditCancel").onclick = () => closeSetupEditor();
+      $("setupEditSave").onclick = () => saveSetupDraft();
       $("setupDeleteButton").onclick = () => runSetupAction("delete");
       refreshSetupLibrary();
       $("settingsOpenPolymarket").onclick = () => openPanel("api");

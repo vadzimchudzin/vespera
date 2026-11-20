@@ -318,8 +318,19 @@ class ExecutionHost {
       case "listSetups": return { ok: true, setups: this.setupStore.listSetups(), activeSetup: e.activeSetupSnapshot() };
       case "saveSetup": {
         const input = args[0] || {};
-        const version = this.setupStore.saveSetup({ name: input.name, id: input.id, settings: settingsFromEngine(e),
-          signalTimeframe: e.settings.timeframe, marketTimeframe: e.settings.timeframe, activate: true });
+        // The library editor saves a variant without loading it into the engine, so
+        // explicit settings are accepted here; the store validates them like any other.
+        const explicit = input.settings && typeof input.settings === "object" ? input.settings : null;
+        const settings = explicit ? explicit : settingsFromEngine(e);
+        const version = this.setupStore.saveSetup({
+          name: input.name,
+          id: input.id,
+          settings,
+          signalTimeframe: input.signalTimeframe || settings.timeframe,
+          marketTimeframe: input.marketTimeframe || settings.timeframe,
+          // A draft must not silently become the setup the live session is attributed to.
+          activate: input.activate === undefined ? !explicit : Boolean(input.activate),
+        });
         return { ok: true, setup: version, activeSetup: e.activeSetupSnapshot() };
       }
       case "copySetup": return { ok: true, setup: this.setupStore.copySetup(args[0] || {}) };

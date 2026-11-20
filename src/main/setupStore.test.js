@@ -1,10 +1,11 @@
 "use strict";
 
 const assert = require("assert");
+const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { SetupStore, SETUP_FIELDS, settingsFromEngine } = require("./setupStore");
+const { SetupStore, SETUP_FIELDS, settingsFromEngine, fingerprint } = require("./setupStore");
 const { Engine } = require("./engine");
 
 function dir() { return fs.mkdtempSync(path.join(os.tmpdir(), "vespera-setups-")); }
@@ -15,6 +16,12 @@ function engineSettings() {
 
 const settings = engineSettings();
 assert.deepStrictEqual(Object.keys(settings).sort(), SETUP_FIELDS.slice().sort());
+// Every saved field needs a default in the settings store, otherwise the engine has no
+// value for it and saving a setup fails on a fresh install.
+{
+  const { DEFAULTS: STORED } = require("./settingsStore");
+  for (const key of SETUP_FIELDS) assert.ok(Object.hasOwn(STORED, key), `settings store default for ${key}`);
+}
 assert.equal(settings.timeframe, "4h", "paper setups retain a listed 4h timeframe");
 
 const root = dir();
@@ -124,4 +131,29 @@ assert.equal(new SetupStore(editable.dir).value.activeSetup, null);
   assert.equal(desktop.value.deleted.length, 0, "saving clears the marker");
   assert.equal(desktop.listSetups().length, 2);
 }
+// A library written before entryStyle/holdSeconds existed still loads, and is
+// upgraded on disk so its fingerprints cover the new fields from then on.
+{
+  const legacyRoot = dir();
+  const legacySettings = { ...settings };
+  delete legacySettings.entryStyle;
+  delete legacySettings.holdSeconds;
+  const id = crypto.randomUUID();
+  const legacyRow = {
+    id, version: 1, name: "Legacy", createdAt: new Date().toISOString(),
+    fingerprint: fingerprint(legacySettings, "4h", "4h"),
+    settings: legacySettings, signalTimeframe: "4h", marketTimeframe: "4h",
+  };
+  const file = path.join(legacyRoot, "setups.json");
+  fs.writeFileSync(file, JSON.stringify({ version: 1, setups: [{ id, name: "Legacy", versions: [legacyRow] }], activeSetup: null }), { mode: 0o600 });
+  const upgraded = new SetupStore(legacyRoot);
+  const row = upgraded.listSetups()[0].versions[0];
+  assert.equal(row.settings.entryStyle, "market", "the missing field takes its default");
+  assert.equal(row.settings.holdSeconds, 45);
+  assert.notEqual(row.fingerprint, legacyRow.fingerprint, "the fingerprint covers the new field");
+  const onDisk = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.equal(onDisk.setups[0].versions[0].settings.holdSeconds, 45, "the upgrade is written back once");
+  assert.equal(new SetupStore(legacyRoot).listSetups()[0].versions[0].settings.entryStyle, "market", "and reloads cleanly");
+}
+
 console.log("setup store tests ok");

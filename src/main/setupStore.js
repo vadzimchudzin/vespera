@@ -12,7 +12,11 @@ const SETUP_FIELDS = Object.freeze([
   "strategyId", "symbol", "timeframe", "maType", "fastPeriod", "slowPeriod", "minOpeningAtr",
   "minCrossTicks", "confirmCount", "fullBodyOnS", "sizingMode", "fixedStakes", "baseUsd",
   "maxSteps", "maxStakeUsd", "maxSeriesLossUsd", "dailyLossLimitUsd", "maxEntryPrice",
+  "entryStyle", "holdSeconds",
 ]);
+// Versions saved before a field existed must keep loading, so every field added to
+// SETUP_FIELDS names its default here and old rows are upgraded on read.
+const SETUP_FIELD_FALLBACKS = Object.freeze({ entryStyle: "market", holdSeconds: 45 });
 const SETUP_FIELD_SET = new Set(SETUP_FIELDS);
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_IMPORT_BYTES = 256 * 1024;
@@ -72,6 +76,23 @@ function validateName(value) {
   return name;
 }
 
+/**
+ * Fills fields that did not exist when the version was written and recomputes the
+ * fingerprint, which now covers them. A version without these keys would otherwise
+ * fail validation and take the whole library with it.
+ */
+function upgradeVersion(row) {
+  if (!row || typeof row !== "object" || Array.isArray(row) || !row.settings ||
+      typeof row.settings !== "object" || Array.isArray(row.settings)) return row;
+  const missing = Object.keys(SETUP_FIELD_FALLBACKS).filter((key) => !Object.hasOwn(row.settings, key));
+  if (!missing.length) return row;
+  const settings = { ...row.settings };
+  for (const key of missing) settings[key] = SETUP_FIELD_FALLBACKS[key];
+  const upgraded = { ...row, settings };
+  try { upgraded.fingerprint = fingerprint(settings, row.signalTimeframe, row.marketTimeframe); } catch { /* validateVersion reports it */ }
+  return upgraded;
+}
+
 function validateVersion(row) {
   if (!row || typeof row !== "object" || Array.isArray(row) ||
       Object.keys(row).sort().join(",") !== ["createdAt", "fingerprint", "id", "marketTimeframe", "name", "settings", "signalTimeframe", "version"].sort().join(",") ||
@@ -90,7 +111,7 @@ function validateVersion(row) {
   return { ...row, name, settings };
 }
 
-function validateLibrary(value) {
+function validateLibrary(value, report) {
   if (!value || typeof value !== "object" || Array.isArray(value) || value.version !== 1 ||
       !Array.isArray(value.setups) || value.setups.length > MAX_SETUPS ||
       !(value.activeSetup === null || (value.activeSetup && typeof value.activeSetup === "object" &&
@@ -114,7 +135,9 @@ function validateLibrary(value) {
     ids.add(setup.id);
     let expected = 1;
     const versions = setup.versions.map((row) => {
-      const version = validateVersion(row);
+      const upgraded = upgradeVersion(row);
+      if (upgraded !== row && report) report.migrated = true;
+      const version = validateVersion(upgraded);
       if (version.id !== setup.id || version.version !== expected++) throw fail("setup_store_corrupt");
       return version;
     });
@@ -152,7 +175,13 @@ class SetupStore {
     if (!stat.isFile() || stat.isSymbolicLink() || (process.platform !== "win32" && (stat.mode & 0o077)) || stat.size > MAX_FILE_BYTES) {
       throw fail("setup_store_permissions_invalid");
     }
-    try { return validateLibrary(JSON.parse(fs.readFileSync(this.file, "utf8"))); }
+    try {
+      const report = {};
+      const library = validateLibrary(JSON.parse(fs.readFileSync(this.file, "utf8")), report);
+      // Write the upgraded library back once: its fingerprints now cover the new fields.
+      if (report.migrated) return this._write(library);
+      return library;
+    }
     catch (error) { if (error.code?.startsWith("setup_") || error.code?.startsWith("invalid_setup")) throw error; throw fail("setup_store_corrupt"); }
   }
 

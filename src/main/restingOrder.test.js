@@ -52,6 +52,15 @@ function bets(e) {
 }
 
 async function run() {
+  // The snapshot is what the panel reads: a field missing here silently resets the UI
+  // to its default while the engine keeps the saved value.
+  {
+    const e = engine();
+    const { settings } = e.snapshot();
+    assert.strictEqual(settings.entryStyle, "limit");
+    assert.strictEqual(settings.holdSeconds, 5);
+  }
+
   // A resting entry that fills inside the window is booked, never cancelled.
   {
     let probes = 0;

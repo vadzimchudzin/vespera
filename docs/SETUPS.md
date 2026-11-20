@@ -50,6 +50,28 @@ a position, pending order or test round is open; stop and resolve it first. A
 booked trade keeps its captured attribution, so the journal and CSV stay readable
 after the setup is gone.
 
+## Editing a saved version
+
+Settings → Strategy → library → **Edit** opens the selected version as a draft. It
+lists the fields that decide trades (stake, ladder, sizing, the two averages, the
+confirmation filters, the risk caps, entry style and timeframe) filled from that
+version. Saving writes a **new version** of the same setup and does not apply it:
+the running session keeps its settings and its attribution, and you apply the new
+version when you want it. This exists because applying a setup is refused while a
+position or a series is open, so otherwise a variant could only be prepared by
+stopping the engine.
+
+Fields the editor does not show (`fixedStakes`, notifications, `dryRun`, wallet
+settings) are carried over from the version untouched. The store validates the
+result exactly like a saved live setup, so an out-of-range value is rejected with
+the field name instead of being written.
+
+Because the set of saved fields grows with the app, a version written by an older
+build is upgraded when the library is read: fields it did not have (for example
+`entryStyle` and `holdSeconds`, added in 0.30.0) take their defaults and the
+fingerprint that now covers them is recomputed and written back once. Without that
+step an old library would fail validation and take every setup with it.
+
 A deletion leaves a tombstone (`deleted: [{ id, at }]`, capped at the last 200) in
 the library file. The handoff merge is a union, so without the marker a removed
 setup would simply come back from the other device; with it the merge drops the

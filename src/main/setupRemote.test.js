@@ -58,6 +58,20 @@ async function run() {
     const removedRemote = await router.dispatch("deleteSetup", [{ id: imported.setup.id }]);
     assert.equal(removedRemote.ok, true);
     assert.equal((await router.dispatch("listSetups")).setups.length, 1, "delete travels over the service protocol");
+    // A draft saved from the library becomes a version without switching the live setup.
+    {
+      const draftHost = new ExecutionHost({ userDataDir: dir(), engineOptions: options() });
+      const a = await draftHost.call("saveSetup", [{ name: "Draft" }]);
+      const b = await draftHost.call("saveSetup", [{
+        id: a.setup.id, name: "Draft", settings: { ...a.setup.settings, baseUsd: "7.50" },
+      }]);
+      assert.equal(b.ok, true);
+      assert.equal(b.setup.version, 2);
+      assert.equal(b.setup.settings.baseUsd, "7.50");
+      assert.equal(b.activeSetup.version, 1, "a draft does not become the active setup");
+      assert.equal(draftHost.engine.settings.baseUsd, a.setup.settings.baseUsd, "the live engine is untouched");
+      draftHost.dispose();
+    }
     router.dispose();
     router = new ExecutionRouter({ userDataDir: desktopRoot, host: new ExecutionHost({ userDataDir: desktopRoot, engineOptions: options() }), pollMs: 100000 });
     library = await router.dispatch("listSetups");

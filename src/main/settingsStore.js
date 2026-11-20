@@ -54,6 +54,10 @@ const DEFAULTS = {
   clobUrl: "https://clob.polymarket.com",
   gammaUrl: "https://gamma-api.polymarket.com",
   maType: "SMA",
+  // Kept in step with SETUP_FIELDS: a field missing here leaves the engine without a
+  // default, which breaks saving a setup and loses the choice on restart.
+  entryStyle: "market",
+  holdSeconds: 45,
   strategyId: "sma200_20",
   minOpeningAtr: 0,
   minCrossTicks: 0,

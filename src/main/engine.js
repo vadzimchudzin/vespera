@@ -2559,6 +2559,8 @@ class Engine {
         slowPeriod: this._slowPeriod(),
         fullBodyOnS: fullBodyOnSOf(this.settings),
         maType: maTypeOf(this.settings),
+        entryStyle: this.settings.entryStyle === "limit" ? "limit" : "market",
+        holdSeconds: Math.max(5, Math.min(600, Number(this.settings.holdSeconds) || 45)),
         apiKey: this.settings.apiKey ? "set" : "",
         hasApiKey: Boolean(this.settings.apiKey),
         hasApiSecret: Boolean(this.settings.apiSecret),

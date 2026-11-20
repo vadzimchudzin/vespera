@@ -14,6 +14,7 @@ const settings = {
   fastPeriod: 20, slowPeriod: 200, minOpeningAtr: 0, minCrossTicks: 0,
   confirmCount: 0, fullBodyOnS: false, sizingMode: "double", fixedStakes: [1, 2, 4, 8, 16, 32],
   baseUsd: "1.00", maxSteps: 6, maxStakeUsd: 0, maxSeriesLossUsd: 0, dailyLossLimitUsd: 0, maxEntryPrice: 1,
+  entryStyle: "market", holdSeconds: 45,
 };
 const pricing = { data: [{ id: "vendor/model", pricing: { prompt: 0.0000001, completion: 0.0000002 }, context_length: 32768 }] };
 const answer = { choices: [{ message: { content: JSON.stringify({ explanation: "Consider a slightly shorter fast average.", patch: { fastPeriod: 24 } }) } }],
