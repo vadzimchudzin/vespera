@@ -494,6 +494,7 @@ class PolymarketAdapter {
   async marketBuy(params = {}) {
     // Dry run signs with the real key and checks the real balance, but never posts.
     const dryRun = Boolean(params.dryRun);
+    const orderType = params.orderType === "GTC" ? "GTC" : ORDER_TYPE;
     if (dryRun && !this.hasPrivateKey()) {
       const err = new Error("auto_not_wired: dry run needs the private key");
       err.code = "auto_not_wired";
@@ -610,7 +611,7 @@ class PolymarketAdapter {
       throw err;
     }
     try {
-      res = await this.client.postOrder({ ...signed, orderType: ORDER_TYPE });
+      res = await this.client.postOrder({ ...signed, orderType });
     } catch (cause) {
       const err = new Error(`order_outcome_unknown: ${String(cause.message || cause)}`);
       err.code = "order_outcome_unknown";
@@ -640,6 +641,45 @@ class PolymarketAdapter {
       err.networkCode = res.errorCode || null;
       err.response = res;
       throw err;
+    }
+    if (orderType === "GTC") {
+      // A resting order answers with a hash, not fill amounts: nothing has matched yet.
+      const hash = res.json && (res.json.orderID || res.json.orderId);
+      if (!/^0x[a-f0-9]{64}$/i.test(String(hash || ""))) {
+        const err = new Error("order_outcome_unknown: resting order came back without a hash");
+        err.code = "order_outcome_unknown";
+        err.ambiguous = true;
+        throw err;
+      }
+      return {
+        ok: true,
+        accepted: true,
+        live: true,
+        resting: true,
+        venue: "polymarket",
+        orderId: String(hash),
+        orderStatus: (res.json && res.json.status) || "live",
+        walletType,
+        tokenId,
+        clientOrderId: params.clientOrderId || null,
+        side: quote.side,
+        sizeUsd: quote.sizeUsd,
+        price: quote.price,
+        limitPrice: quote.limitPrice,
+        shares: quote.minShares,
+        payout: quote.payout,
+        feeUsd: quote.feeUsd,
+        filled: false,
+        partial: false,
+        orderType,
+        slug: quote.slug,
+        strike: params.round ? params.round.strike : null,
+        roundOpenTs: params.round ? params.round.openTs : null,
+        roundCloseTs: params.round ? params.round.closeTs : null,
+        order: signed.order,
+        signature: signed.signature,
+        response: res.json,
+      };
     }
     // Book what actually filled (price improvement gives more shares than asked).
     const spent = filledAmount(res.json && res.json.makingAmount, makerAmount);
@@ -691,6 +731,65 @@ class PolymarketAdapter {
       signature: signed.signature,
       response: res.json,
     };
+  }
+
+  /** State of a resting order: still live, partly matched, done. */
+  async probeOrder(orderId) {
+    if (typeof this.client.getOrder !== "function") return { ok: false, reason: "reconciliation_unsupported" };
+    const res = await this.client.getOrder(orderId);
+    if (!res || !res.ok || !res.json) {
+      return { ok: false, reason: res && res.status === 404 ? "order_not_found" : "order_lookup_unavailable" };
+    }
+    const json = res.json;
+    return {
+      ok: true,
+      status: String(json.status || "").toUpperCase().replace(/^ORDER_STATUS_/, ""),
+      matched: Number(json.size_matched) > 0 ? Number(json.size_matched) : 0,
+      size: Number(json.original_size) > 0 ? Number(json.original_size) : null,
+    };
+  }
+
+  /** Withdraw a resting order. Returns the raw outcome so the engine can fail closed. */
+  async cancelOrder(orderId) {
+    if (typeof this.client.cancelOrder !== "function") return { ok: false, reason: "cancel_unsupported" };
+    try {
+      const res = await this.client.cancelOrder(orderId);
+      if (!res || !res.ok) return { ok: false, reason: String((res && (res.raw || res.status)) || "cancel_failed") };
+      return { ok: true, raw: res.json };
+    } catch (err) {
+      return { ok: false, reason: String((err && err.message) || err) };
+    }
+  }
+
+  /**
+   * Turn a finished resting order into a booked fill. The amount is read from the
+   * confirmed trades on the venue, never from what was requested, so a partial
+   * fill is booked as the part that actually happened.
+   */
+  async settleResting({ orderId, side, quote, sizeUsd, tokenId, slug } = {}) {
+    // eslint-disable-next-line global-require
+    const { inspectOrder } = require("./orderEvidence");
+    const pending = {
+      side,
+      evidence: {
+        orderId,
+        maker: this.walletAddress,
+        tokenId,
+        slug,
+        sizeUsd: Number(sizeUsd || (quote && quote.sizeUsd) || 0),
+        limitPrice: quote && quote.limitPrice,
+        feeRate: quote && quote.feeRate,
+        feeExponent: quote && quote.feeExponent,
+      },
+    };
+    const result = await inspectOrder(this.client, pending, this.walletAddress);
+    if (!result.ok) {
+      const err = new Error(`order_outcome_unknown: ${result.reason}`);
+      err.code = "order_outcome_unknown";
+      err.ambiguous = true;
+      throw err;
+    }
+    return { ...result.order, live: true, resting: true, settled: true };
   }
 
   /**

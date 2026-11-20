@@ -66,11 +66,31 @@ Now the entry is priced and sized before it is signed:
   pause it with the venue's own message, so an empty wallet still surfaces instead
   of quietly skipping every round.
 
-A marketable order is a limit order at the round's ask plus slippage, capped by
-max entry price and the market tick; the sweep price is not bypassed. A resting
-limit order (GTC) is not implemented: the CLOB client has no cancel path yet, and
-an order that can outlive its round would have to be tracked and cancelled before
-it could be offered.
+## Entry order: marketable or resting limit
+
+Settings → Execution → **Entry order** picks how a signal reaches the book.
+
+- **Marketable** (default) signs a FAK limit at the ask plus slippage, capped by
+  max entry price and the tick. It pays what the book asks, takes whatever depth
+  is there in one go, and kills the rest. This is what the app has always done.
+- **Resting limit** signs a GTC order at the same limit price and leaves it on
+  the book for **Hold window** seconds (5–600, default 45), never past the round's
+  close minus ten seconds. If it has not filled by then it is withdrawn with
+  `DELETE /order`, and the round is skipped. A fill that arrives before the
+  deadline is booked from the venue's confirmed trades, so a partial fill is the
+  part that actually happened.
+
+Resting entries trade differently on purpose: they never pay more than the limit,
+and they can miss a move that runs away without them. They also hold the session
+in `order_live` while they wait — Stop cancels within one poll (2 s), and a cancel
+that fails pauses the session instead of trading on with an order nobody tracks.
+
+Because a resting order can outlive the process, its hash is written to the
+journal before the wait begins. On the next start the engine reads the last
+`order_live` without an `order_closed` and settles it first: nothing new is opened
+until that order is withdrawn. If it filled while the app was down, the engine
+stops with `resting_order_recovered` and asks for reconciliation rather than
+guessing what the position is.
 
 The plan shows a fresh series at the last available quote, or an explicit
 0.50 estimate when no quote is available. It includes fees and stops at the

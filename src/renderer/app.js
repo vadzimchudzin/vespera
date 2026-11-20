@@ -465,6 +465,12 @@
     } else if (type === "paper_below_live_min") {
       title = t("logBelowMin");
       detail = `${row.shares} < ${row.minOrderSize} \u00b7 $${row.minUsd}`;
+    } else if (type === "order_live") {
+      title = t("logOrderLive");
+      detail = `${row.shares ?? "?"} @ ${row.limitPrice ?? "?"} · ${Math.round(Number(row.holdMs || 0) / 1000)}s`;
+    } else if (type === "order_cancel") {
+      title = t("logOrderCancel");
+      detail = row.ok ? String(row.reason || "") : `✗ ${row.reason || ""}`;
     } else if (type === "stake_raised_to_lot") {
       title = t("logStakeToLot");
       detail = `$${row.plannedUsd} \u2192 $${row.sizeUsd} \u00b7 ${row.minOrderSize} ${t("sharesShort")}`;
@@ -2822,6 +2828,17 @@
             <span class="knob"></span>
           </button>
         </div>
+        <div class="field">
+          <span class="field-label">${t("entryStyle")}${helpBtn("entryStyleHint")}</span>
+          <div class="segmented" id="entryStyleRow">
+            <button type="button" data-entry-style="market" class="${s.entryStyle === "limit" ? "" : "on"}">${t("entryStyleMarket")}</button>
+            <button type="button" data-entry-style="limit" class="${s.entryStyle === "limit" ? "on" : ""}">${t("entryStyleLimit")}</button>
+          </div>
+        </div>
+        <div class="field" id="holdSecondsField" ${s.entryStyle === "limit" ? "" : "hidden"}>
+          <span class="field-label">${t("holdSeconds")}${helpBtn("holdSecondsHint")}</span>
+          <input id="holdSeconds" type="number" min="${limits.holdSeconds.min}" max="${limits.holdSeconds.max}" step="${limits.holdSeconds.step}" value="${esc(s.holdSeconds || 45)}" />
+        </div>
         </section>
         <section class="settings-group" id="settingsGroup-strategy" data-settings-group="strategy" role="tabpanel" aria-labelledby="settingsTab-strategy">
         <section class="settings-setup-card" id="settingsSetupCard" aria-labelledby="setupsTitle">
@@ -3270,6 +3287,15 @@
         planSave({ maxSteps: $("steps").value }, 400);
       };
       $("fixedStakes").oninput = () => planSave(fixedStakesPatch(), 400);
+      $("holdSeconds").value = String(Number(s.holdSeconds) > 0 ? Number(s.holdSeconds) : 45);
+      $("holdSeconds").oninput = () => planSave({ holdSeconds: Number($("holdSeconds").value) }, 400);
+      $("entryStyleRow").querySelectorAll("button").forEach((btn) => {
+        btn.onclick = () => {
+          $("entryStyleRow").querySelectorAll("button").forEach((b) => b.classList.toggle("on", b === btn));
+          $("holdSecondsField").hidden = btn.dataset.entryStyle !== "limit";
+          planSave({ entryStyle: btn.dataset.entryStyle }, 0);
+        };
+      });
       $("maxEntry").value = String(Math.round((Number(s.maxEntryPrice) > 0 && Number(s.maxEntryPrice) < 1 ? Number(s.maxEntryPrice) : 1) * 100));
       const paintMaxEntry = () => {
         const v = Number($("maxEntry").value);
@@ -3408,7 +3434,11 @@
             dailyLossLimitUsd: moneyOr($("dailyLimit"), 0),
             maxSeriesLossUsd: moneyOr($("maxSeriesLoss"), 0),
           },
-          execution: { dryRun: $("dryRunToggle").classList.contains("on") },
+          execution: {
+            dryRun: $("dryRunToggle").classList.contains("on"),
+            entryStyle: $("entryStyleRow").querySelector("button.on")?.dataset.entryStyle || s.entryStyle || "market",
+            holdSeconds: Number($("holdSeconds").value) || 45,
+          },
           interface: {
             refreshMs: Number($("refresh").value),
             notificationsEnabled: $("notifyToggle").classList.contains("on"),

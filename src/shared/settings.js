@@ -21,6 +21,8 @@
     refreshMs: 100,
     sizingMode: "double",
     maType: "SMA",
+    entryStyle: "market",
+    holdSeconds: 45,
     dryRun: true,
     fullBodyOnS: false,
     notificationsEnabled: true,
@@ -40,6 +42,7 @@
     fastPeriod: Object.freeze({ min: 2, max: 200, step: 1, default: 20 }),
     slowPeriod: Object.freeze({ min: 5, max: 500, step: 1, default: 200 }),
     refreshMs: Object.freeze({ min: 1, max: 2000, step: 1, default: 100 }),
+    holdSeconds: Object.freeze({ min: 5, max: 600, step: 1, default: 45 }),
     fixedStakes: Object.freeze({ minLength: 1, maxLength: 20, min: 0.01, max: 1000000, step: 0.01, default: DEFAULT_FIXED_STAKES }),
   });
   const RISK_FIELDS = Object.freeze([
@@ -53,9 +56,16 @@
   const NUMERIC_FIELDS = [
     "maxSteps", "maxStakeUsd", "maxSeriesLossUsd", "dailyLossLimitUsd", "maxEntryPrice",
     "minOpeningAtr", "minCrossTicks", "confirmCount", "fastPeriod", "slowPeriod", "refreshMs",
+    "holdSeconds",
   ];
   const BOOLEAN_FIELDS = ["dryRun", "fullBodyOnS", "notificationsEnabled"];
-  const ENUMS = { sizingMode: ["double", "fixed", "recover"], maType: ["SMA", "EMA"] };
+  const ENUMS = {
+    sizingMode: ["double", "fixed", "recover"],
+    maType: ["SMA", "EMA"],
+    // marketable = FAK at the ask plus slippage; limit = a resting GTC order held for
+    // holdSeconds inside the round, then cancelled if it has not filled.
+    entryStyle: ["market", "limit"],
+  };
 
   function invalid(field, message) {
     const error = new Error(message || `Invalid setting: ${field}`);

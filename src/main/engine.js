@@ -42,6 +42,9 @@ const FUNDING_SKIP_LIMIT = 3;
 // times instead of pricing the entry (and the minimum lot) from the previous round.
 const QUOTE_ATTEMPTS = 3;
 const QUOTE_RETRY_MS = 700;
+// A resting limit entry is polled this often and never held past the round's close.
+const HOLD_POLL_MS = 2000;
+const ROUND_CLOSE_MARGIN_MS = 10000;
 const FINAL_RECONCILE_ATTEMPTS = 120;
 const FINAL_RECONCILE_DELAY_MS = 30_000;
 // The wallet balance shown to a person who is looking at the state: how long a reading counts as current, and how long
@@ -59,7 +62,7 @@ function maxEntryPriceOf(value) {
 }
 
 class Engine {
-  constructor({ userDataDir, settings, market, live } = {}) {
+  constructor({ userDataDir, settings, market, live, holdPollMs } = {}) {
     this.userDataDir = userDataDir;
     this.settings = normalizeSettings({ ...DEFAULTS, ...(settings || {}) }, {}, { strict: false });
     this.running = false;
@@ -134,6 +137,8 @@ class Engine {
     this.venueFailures = 0;
     this.orderRejects = 0;
     this.fundingSkips = 0;
+    // Poll cadence for a resting entry; tests shrink it, the app uses HOLD_POLL_MS.
+    this.holdPollMs = Number(holdPollMs) > 0 ? Number(holdPollMs) : HOLD_POLL_MS;
     this._healthTimer = null;
     this._healthBusy = false;
     this._opening = false;
@@ -776,6 +781,13 @@ class Engine {
       this._pauseUnknownOrder();
       return { ok: false, reason: "order_outcome_unknown" };
     }
+    // A resting order can outlive the process: settle it before anything new is opened.
+    const recovered = await this._recoverResting();
+    if (recovered && /^resting_order_recovered/.test(String(this.pauseReason || ""))) {
+      this.running = false;
+      this.status = "paused";
+      return { ok: false, reason: "resting_order_recovered" };
+    }
     if (this.finalPending) {
       this.running = false;
       this.status = "paused";
@@ -937,6 +949,19 @@ class Engine {
     this._executionGeneration += 1;
     this.running = false;
     if (!reason.startsWith("venue_down:")) this._stopHealth();
+    this.pauseReason = reason;
+    this.status = "paused";
+    this.journal.write({ type: "auto_paused", reason });
+    this.emit("log", { level: "error", message: `auto_paused: ${reason}` });
+    this.notify("halt", "Auto paused", reason);
+    this.emit("status", this.status);
+  }
+
+  /** Halt used while starting, when pause() would be a no-op because nothing runs yet. */
+  _haltResting(reason) {
+    this._executionGeneration += 1;
+    this.running = false;
+    this._stopHealth();
     this.pauseReason = reason;
     this.status = "paused";
     this.journal.write({ type: "auto_paused", reason });
@@ -2170,7 +2195,7 @@ class Engine {
           setup,
           feeRate: quote && quote.feeRate, feeExponent: quote && quote.feeExponent,
         });
-        const order = await this.live.marketBuy({
+        const liveParams = {
           side: ev.signal,
           sizeUsd: size,
           clientOrderId,
@@ -2182,7 +2207,11 @@ class Engine {
           onPrepared: (evidence) => {
             if (!dryRun) this.journal.attachOrderEvidence(clientOrderId, evidence);
           },
-        });
+        };
+        // A resting entry is the same order, held on the book instead of killed at submit.
+        const order = this.settings.entryStyle === "limit"
+          ? await this._restingEntry({ params: liveParams, side: ev.signal, round, quote, size, clientOrderId })
+          : await this.live.marketBuy(liveParams);
         accepted = true;
         this.orderRejects = 0;
         this.fundingSkips = 0;
@@ -2319,13 +2348,124 @@ class Engine {
       this.pause(`${err.networkCode}: ${message}`);
       return;
     }
-    if (code === "round_closed") return;
+    if (code === "round_closed" || code === "resting_unfilled") return;
     if (code === "clob_order_rejected" && status !== 0 && !(status >= 500)) {
       this.orderRejects += 1;
       if (this.orderRejects >= REJECT_LIMIT) this.pause(`orders_rejected: ${message}`);
       return;
     }
     this._venueFailed(`order: ${message}`);
+  }
+
+  /**
+   * A resting order is written to the journal before the process can die, so a
+   * restart finds it. Nothing is opened until it is withdrawn: a fill that
+   * happened while Vespera was down is surfaced, never guessed.
+   */
+  async _recoverResting() {
+    const entries = Array.isArray(this.journal.entries) ? this.journal.entries : [];
+    const opened = entries.filter((e) => e && e.type === "order_live" && e.orderId);
+    if (!opened.length) return null;
+    const last = opened[opened.length - 1];
+    const closed = entries.some((e) => e && e.type === "order_closed" && e.orderId === last.orderId);
+    if (closed) return null;
+    if (typeof this.live.probeOrder !== "function") return null;
+    const probe = await this.live.probeOrder(last.orderId).catch(() => ({ ok: false }));
+    if (probe.ok && probe.matched > 0) {
+      this.journal.write({ type: "order_recovered_fill", orderId: last.orderId, matched: probe.matched });
+      this._haltResting(`resting_order_recovered: ${last.orderId} matched ${probe.matched} shares while Vespera was not running; reconcile before trading`);
+      return last.orderId;
+    }
+    if (probe.ok && /CANCEL|EXPIRED/.test(probe.status)) {
+      this.journal.write({ type: "order_closed", orderId: last.orderId, filled: false });
+      return last.orderId;
+    }
+    const cancelled = await this.live.cancelOrder(last.orderId)
+      .catch((err) => ({ ok: false, reason: String((err && err.message) || err) }));
+    this.journal.write({
+      type: "order_cancel", orderId: last.orderId, ok: Boolean(cancelled.ok),
+      reason: cancelled.ok ? "recovered_on_start" : cancelled.reason,
+    });
+    if (cancelled.ok) {
+      this.journal.write({ type: "order_closed", orderId: last.orderId, filled: false });
+      this.emit("log", { level: "warn", message: `resting_recovered: withdrew ${last.orderId} left over from the previous run` });
+    } else {
+      this._haltResting(`resting_order_recovered: ${last.orderId} could not be cancelled (${cancelled.reason})`);
+    }
+    return last.orderId;
+  }
+
+  /**
+   * Resting limit entry. The order is posted as GTC and held on the book for
+   * holdSeconds (never past the round's close), then cancelled if it has not
+   * filled. Nothing is booked until the venue's own trades prove the fill, and a
+   * cancel that fails keeps the order id in the journal and pauses rather than
+   * pretending the round is over.
+   */
+  async _restingEntry({ params, side, round, quote, size, clientOrderId }) {
+    const placed = await this.live.marketBuy({ ...params, orderType: "GTC" });
+    if (!placed.live) return placed; // dry run books the simulated fill straight away
+    const orderId = placed.orderId;
+    const closeTs = Number(round && round.closeTs) || 0;
+    const holdMs = Math.max(5, Number(this.settings.holdSeconds) || 45) * 1000;
+    const deadline = Math.min(Date.now() + holdMs, closeTs ? closeTs - ROUND_CLOSE_MARGIN_MS : Infinity);
+    this.journal.write({
+      type: "order_live", mode: "auto", orderId, clientOrderId, side,
+      sizeUsd: placed.sizeUsd, limitPrice: placed.limitPrice, shares: placed.shares,
+      tokenId: placed.tokenId, slug: placed.slug,
+      roundOpenTs: round && round.openTs, roundCloseTs: closeTs || null, holdMs,
+    });
+    this.emit("log", {
+      level: "info",
+      message: `order_live: resting ${placed.shares ?? "?"} shares at ${placed.limitPrice ?? "?"} for up to ${Math.round(holdMs / 1000)}s`,
+    });
+    this.status = "order_live";
+    this.emit("status", this.status);
+    let filled = false;
+    try {
+      for (;;) {
+        await new Promise((resolve) => setTimeout(resolve, this.holdPollMs));
+        const probe = await this.live.probeOrder(orderId).catch(() => ({ ok: false }));
+        if (probe.ok) {
+          if (probe.size && probe.matched >= probe.size - 1e-6) { filled = true; break; }
+          if (/CANCEL|EXPIRED/.test(probe.status)) break;
+        }
+        if (typeof params.isActive === "function" && !params.isActive()) break;
+        if (Date.now() >= deadline) break;
+      }
+      if (!filled) {
+        const cancelled = await this.live.cancelOrder(orderId);
+        this.journal.write({
+          type: "order_cancel", orderId, ok: Boolean(cancelled.ok),
+          reason: cancelled.ok ? "hold_window_closed" : cancelled.reason,
+        });
+        if (!cancelled.ok) {
+          // The order may still be on the book: say so and stop, rather than trade on
+          // with a position the journal does not know about.
+          this.emit("log", { level: "error", message: `resting_cancel_failed: ${cancelled.reason}` });
+          const err = new Error(`order_outcome_unknown: resting order ${orderId} may still be live`);
+          err.code = "order_outcome_unknown";
+          err.ambiguous = true;
+          throw err;
+        }
+      }
+      const probe = await this.live.probeOrder(orderId).catch(() => ({ ok: false }));
+      if (!probe.ok || !(probe.matched > 0)) {
+        this.journal.write({ type: "order_closed", orderId, filled: false });
+        this.emit("log", { level: "info", message: "resting_unfilled: nothing matched inside the hold window" });
+        const err = new Error("resting_unfilled");
+        err.code = "resting_unfilled";
+        throw err;
+      }
+      const settled = await this.live.settleResting({
+        orderId, side, quote, sizeUsd: size, tokenId: placed.tokenId, slug: placed.slug,
+      });
+      this.journal.write({ type: "order_closed", orderId, filled: Boolean(settled.filled), shares: settled.shares });
+      return settled;
+    } finally {
+      this.resting = null;
+      if (this.status === "order_live") this.status = "watching";
+    }
   }
 
   _markResult(settled) {

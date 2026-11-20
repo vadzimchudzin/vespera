@@ -498,6 +498,31 @@ class ClobClient {
     return this.authGet(`/balance-allowance?${qs}`);
   }
 
+  /**
+   * Cancel a resting order. The route is DELETE /order with the order hash in
+   * the body, signed like any other L2 call. A resting entry can only be
+   * offered because this exists: an order that outlives its round without a
+   * way to withdraw it would be a position nobody is tracking.
+   */
+  async cancelOrder(orderId) {
+    if (!/^0x[a-f0-9]{64}$/i.test(orderId || "")) throw new Error("invalid_order_hash");
+    if (!this.hasL2()) {
+      return { ok: false, status: 0, latencyMs: 0, json: null, raw: "missing_l2" };
+    }
+    const path = "/order";
+    const bodyObj = { orderID: String(orderId) };
+    const headers = l2Headers({
+      address: this.authAddress(),
+      apiKey: this.apiKey,
+      secret: this.apiSecret,
+      passphrase: this.apiPassphrase,
+      method: "DELETE",
+      path,
+      body: bodyObj,
+    });
+    return this.request(`${this.clobUrl}${path}`, { method: "DELETE", headers, body: bodyObj });
+  }
+
   async getOrder(orderId) {
     if (!/^0x[a-f0-9]{64}$/i.test(orderId || "")) throw new Error("invalid_order_hash");
     return this.authGet(`/data/order/${encodeURIComponent(orderId)}`);
