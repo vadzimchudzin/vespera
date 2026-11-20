@@ -1,8 +1,9 @@
 # Saved setup versions — 0.23.0 source
 
 Settings → Strategy contains the setup library. Save the accepted trading
-configuration under a name, add a new immutable version, copy a selected
-version, apply it while stopped, or import/export its JSON definition.
+configuration under a name, add a new immutable version, rename a setup, delete a
+setup you no longer need, copy a selected version, apply it while stopped, or
+import/export its JSON definition.
 
 A setup contains strategy, symbol, signal timeframe, market timeframe,
 indicator/entry parameters and sizing/risk limits. It never contains wallet
@@ -33,6 +34,21 @@ trade captures the actual allowed configuration and its named-version identity
 at preparation, so changing the selected setup never relabels an existing bet.
 CSV carries setup identity/version/fingerprint, and old untagged trades remain
 unattributed rather than guessed.
+
+## Renaming and deleting
+
+A setup can be renamed at any time, including while trading runs: only the label
+moves. The newest version carries the setup name, so it is the one that changes;
+older versions keep the label they were saved with, and no settings, fingerprint
+or version number is ever rewritten. Parameter changes are still a new version,
+never an in-place edit, so a booked trade can never point at different settings.
+
+Deleting removes the setup and its whole version history. The active reference is
+cleared with it, and the confirmation dialog says so before anything is removed.
+Deleting the setup that is currently trading is refused (`execution_busy`) while
+a position, pending order or test round is open; stop and resolve it first. A
+booked trade keeps its captured attribution, so the journal and CSV stay readable
+after the setup is gone.
 
 ## Timeframes and live markets
 

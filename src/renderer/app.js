@@ -1743,7 +1743,7 @@
     renderActiveSetupLabel();
     renderSetupTimeframeMeta();
     const hasSelection = Boolean(selected);
-    ["setupCopyButton", "setupExportButton"].forEach((id) => {
+    ["setupCopyButton", "setupExportButton", "setupRenameButton", "setupDeleteButton"].forEach((id) => {
       const button = $(id);
       if (button) button.disabled = state.setupBusy || !hasSelection;
     });
@@ -1754,7 +1754,7 @@
   function bodySetupControlsDisabled(disabled) {
     document.querySelectorAll("#settingsSetupCard [data-setup-control], #settingsSetupCard [data-setup-action]").forEach((el) => {
       if (el.dataset.setupAction === "apply") return;
-      const needsSelection = ["copy", "export"].includes(el.dataset.setupAction);
+      const needsSelection = ["copy", "export", "rename", "delete"].includes(el.dataset.setupAction);
       el.disabled = disabled || (needsSelection && !setupSelectedVersion());
     });
     updateSetupSafety();
@@ -1807,7 +1807,7 @@
     const panelIsCurrent = () => requestId === state.setupRequestId && !$("panel").hidden && Boolean($("settingsSetupCard"));
     const selected = setupSelectedVersion();
     const name = $("setupNameInput")?.value.trim() || "";
-    if (["save", "new", "copy"].includes(action) && !name) {
+    if (["save", "new", "copy", "rename"].includes(action) && !name) {
       setSetupStatus(t("setupNameRequired"), true);
       $("setupNameInput")?.focus();
       return;
@@ -1816,10 +1816,12 @@
       setSetupStatus(t("setupApplyLocked"), true);
       return;
     }
-    if (["apply", "copy", "export"].includes(action) && !selected) return;
+    if (["apply", "copy", "export", "rename", "delete"].includes(action) && !selected) return;
+    if (action === "delete" && !window.confirm(t("setupDeleteConfirm"))) return;
 
     const method = {
       save: "saveSetup", new: "saveSetup", apply: "applySetup", copy: "copySetup", import: "importSetup", export: "exportSetup",
+      rename: "renameSetup", delete: "deleteSetup",
     }[action];
     if (typeof window.vespera?.[method] !== "function") {
       setSetupStatus(t("setupUnavailable"), true);
@@ -1847,6 +1849,10 @@
         result = await window.vespera.copySetup({ id: selected.setup.id, version: selected.version.version, name });
       } else if (action === "import") {
         result = await window.vespera.importSetup();
+      } else if (action === "rename") {
+        result = await window.vespera.renameSetup({ id: selected.setup.id, name });
+      } else if (action === "delete") {
+        result = await window.vespera.deleteSetup({ id: selected.setup.id });
       } else {
         result = await window.vespera.exportSetup({ id: selected.setup.id, version: selected.version.version });
       }
@@ -1875,11 +1881,19 @@
         else if (action === "apply") setSetupStatus(t("setupApplied"));
         else if (action === "import") setSetupStatus(t("setupImported"));
         else if (action === "copy") setSetupStatus(t("setupCopied"));
+        else if (action === "rename") setSetupStatus(t("setupRenamed"));
+        else if (action === "delete") setSetupStatus(t("setupDeleted"));
         else setSetupStatus(t("setupDone"));
       }
 
       if (!["export", "apply"].includes(action) && panelIsCurrent()) {
         const previousIds = new Set((state.setupLibrary?.setups || []).map((setup) => String(setup.id)));
+        // A deleted setup cannot stay selected: drop the reference so the library
+        // falls back to the active or first remaining setup.
+        if (action === "delete") {
+          state.selectedSetupId = "";
+          state.selectedSetupVersionId = "";
+        }
         if (action === "save") preferredId = preferredId || selected?.setup.id;
         if (action === "apply") preferredId = selected.setup.id;
         await refreshSetupLibrary();
@@ -2815,6 +2829,8 @@
             <button type="button" class="ghost" id="setupCopyButton" data-setup-action="copy">${t("setupCopy")}</button>
             <button type="button" class="ghost" id="setupImportButton" data-setup-action="import">${t("setupImport")}</button>
             <button type="button" class="ghost" id="setupExportButton" data-setup-action="export">${t("setupExport")}</button>
+            <button type="button" class="ghost" id="setupRenameButton" data-setup-action="rename">${t("setupRename")}</button>
+            <button type="button" class="ghost danger" id="setupDeleteButton" data-setup-action="delete">${t("setupDelete")}</button>
           </div>
         </section>
         <div class="field">
@@ -2946,6 +2962,8 @@
       $("setupCopyButton").onclick = () => runSetupAction("copy");
       $("setupImportButton").onclick = () => runSetupAction("import");
       $("setupExportButton").onclick = () => runSetupAction("export");
+      $("setupRenameButton").onclick = () => runSetupAction("rename");
+      $("setupDeleteButton").onclick = () => runSetupAction("delete");
       refreshSetupLibrary();
       $("settingsOpenPolymarket").onclick = () => openPanel("api");
       const updateSettingsThemes = () => {

@@ -323,6 +323,23 @@ class ExecutionHost {
         return { ok: true, setup: version, activeSetup: e.activeSetupSnapshot() };
       }
       case "copySetup": return { ok: true, setup: this.setupStore.copySetup(args[0] || {}) };
+      case "renameSetup": {
+        // Labels only: renaming never touches settings, fingerprints or the live engine state.
+        const renamed = this.setupStore.renameSetup({ id: (args[0] || {}).id, name: (args[0] || {}).name });
+        return { ok: true, ...renamed, setups: this.setupStore.listSetups(), activeSetup: e.activeSetupSnapshot() };
+      }
+      case "deleteSetup": {
+        const input = args[0] || {};
+        const active = this.setupStore.value.activeSetup;
+        // A running series keeps its attribution, but deleting the setup it trades
+        // under while money is at stake would leave the operator without a label.
+        if (active && active.id === input.id &&
+            (e.running || e._opening || e.openBet() || e.paper.openBet || e.liveBet || e._testPositionActive())) {
+          return { ok: false, reason: "execution_busy", state: e.snapshot() };
+        }
+        const deleted = this.setupStore.deleteSetup({ id: input.id });
+        return { ok: true, ...deleted, setups: this.setupStore.listSetups(), activeSetup: e.activeSetupSnapshot() };
+      }
       case "exportSetup": return this.setupStore.exportSetup(args[0] || {});
       case "importSetup": return { ok: true, setup: this.setupStore.importSetup(args[0] || {}) };
       case "applySetup": {

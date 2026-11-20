@@ -71,4 +71,28 @@ assert.equal(fs.readFileSync(store.file, "utf8"), beforeTooLarge);
 const corruptRoot = dir();
 fs.writeFileSync(path.join(corruptRoot, "setups.json"), "{broken", { mode: 0o600 });
 assert.throws(() => new SetupStore(corruptRoot), /setup_store_corrupt/);
+
+// The library is editable: a setup can be renamed or removed, and its history still never changes.
+const editable = new SetupStore(dir());
+const kept = editable.saveSetup({ name: "Kept", settings });
+editable.saveSetup({ id: kept.id, name: "Kept", settings: changed });
+editable.setActive({ id: kept.id, version: 2 });
+const renamed = editable.renameSetup({ id: kept.id, name: "Renamed" });
+assert.deepStrictEqual([renamed.name, renamed.renamed], ["Renamed", true]);
+assert.equal(editable.listSetups()[0].name, "Renamed");
+assert.equal(editable.getVersion(kept.id, 2).name, "Renamed", "the newest version carries the setup name");
+assert.equal(editable.getVersion(kept.id, 1).name, "Kept", "older versions keep the label they were saved with");
+assert.equal(editable.getVersion(kept.id, 2).settings.fastPeriod, 30, "renaming never touches settings");
+assert.equal(editable.renameSetup({ id: kept.id, name: "Renamed" }).renamed, false, "the same label is a no-op");
+assert.throws(() => editable.renameSetup({ id: kept.id, name: "   " }), /invalid_setup_name/);
+assert.throws(() => editable.renameSetup({ id: require("crypto").randomUUID(), name: "Nope" }), /setup_not_found/);
+const other = editable.saveSetup({ name: "Other", settings });
+const removed = editable.deleteSetup({ id: kept.id });
+assert.deepStrictEqual([removed.name, removed.versions, removed.clearedActive], ["Renamed", 2, true]);
+assert.equal(editable.listSetups().length, 1);
+assert.equal(editable.value.activeSetup, null, "deleting the active setup clears the active reference");
+assert.throws(() => editable.deleteSetup({ id: kept.id }), /setup_not_found/);
+assert.equal(new SetupStore(editable.dir).listSetups().length, 1, "the removal is durable");
+assert.equal(editable.deleteSetup({ id: other.id }).clearedActive, false, "removing a setup that is not active keeps the reference");
+assert.equal(new SetupStore(editable.dir).value.activeSetup, null);
 console.log("setup store tests ok");

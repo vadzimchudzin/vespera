@@ -69,6 +69,7 @@ const ROUTES = {
   "research:start": "startPaperRuns", "research:stop": "stopPaperRun", "research:report": "researchReport",
   "setups:list": "listSetups", "setups:save": "saveSetup",
   "setups:apply": "applySetup", "setups:copy": "copySetup",
+  "setups:rename": "renameSetup", "setups:delete": "deleteSetup",
   "risk:inspectOrder": "inspectPendingOrder", "risk:resolveOrder": "resolvePendingOrder",
   "risk:finalSettlement": "reconcileFinalSettlement",
   "engine:snapshot": "snapshot", "engine:warmChart": "warmChart", "engine:start": "start",

@@ -20,6 +20,8 @@ contextBridge.exposeInMainWorld("vespera", {
   saveSetup: (input) => ipcRenderer.invoke("setups:save", input),
   applySetup: (input) => ipcRenderer.invoke("setups:apply", input),
   copySetup: (input) => ipcRenderer.invoke("setups:copy", input),
+  renameSetup: (input) => ipcRenderer.invoke("setups:rename", input),
+  deleteSetup: (input) => ipcRenderer.invoke("setups:delete", input),
   importSetup: () => ipcRenderer.invoke("setups:import"),
   exportSetup: (input) => ipcRenderer.invoke("setups:export", input),
   inspectPendingOrder: () => ipcRenderer.invoke("risk:inspectOrder"),

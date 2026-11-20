@@ -40,6 +40,11 @@ async function run() {
     const imported = await router.dispatch("importSetup", [{ json: exported.json }]);
     assert.equal(imported.ok, true);
     assert.notEqual(imported.setup.id, first.setup.id);
+    const renamedRemote = await router.dispatch("renameSetup", [{ id: imported.setup.id, name: "Imported BTC" }]);
+    assert.equal(renamedRemote.ok, true);
+    assert.equal(renamedRemote.name, "Imported BTC");
+    assert.equal((await router.dispatch("listSetups")).setups.some((setup) => setup.name === "Imported BTC"), true,
+      "rename travels over the service protocol");
     service.host.engine.running = true;
     const blocked = await router.dispatch("applySetup", [{ id: first.setup.id, version: 2 }]);
     assert.equal(blocked.ok, false);
@@ -50,11 +55,14 @@ async function run() {
     assert.equal(library.setups.find((setup) => setup.id === first.setup.id).versions.length, 3);
     assert.equal(library.activeSetup.version, 3);
     assert.equal(host.engine.running, false);
+    const removedRemote = await router.dispatch("deleteSetup", [{ id: imported.setup.id }]);
+    assert.equal(removedRemote.ok, true);
+    assert.equal((await router.dispatch("listSetups")).setups.length, 1, "delete travels over the service protocol");
     router.dispose();
     router = new ExecutionRouter({ userDataDir: desktopRoot, host: new ExecutionHost({ userDataDir: desktopRoot, engineOptions: options() }), pollMs: 100000 });
     library = await router.dispatch("listSetups");
     assert.equal(library.activeSetup.version, 3);
-    assert.equal(library.setups.length, 2);
+    assert.equal(library.setups.length, 1, "the remote deletion is durable");
     assert.equal((await router.dispatch("snapshot")).activeSetup.modified, false);
     console.log("Setup HTTP routing, handoff and restart tests ok");
   } finally {

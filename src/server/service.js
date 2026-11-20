@@ -16,6 +16,7 @@ const METHODS = new Set([
   "aiStatus", "aiConfigure", "aiModels", "aiRecommend", "aiCreateSetup", "aiBacktest", "aiLocalPull",
   "researchStatus", "runBacktest", "startPaperRuns", "stopPaperRun", "researchReport", "exportResearch",
   "listSetups", "saveSetup", "applySetup", "copySetup", "importSetup", "exportSetup",
+  "renameSetup", "deleteSetup",
   "inspectPendingOrder", "resolvePendingOrder", "reconcileFinalSettlement",
   "snapshot", "warmChart", "start", "stop", "setMode", "confirmLot", "ping", "connect", "testOrder",
   "deriveKeys", "setStrategy", "resetPaper", "getSettings", "saveSettings", "exportCsv", "depositAssets",
@@ -37,6 +38,7 @@ const DEFINITE_REFUSALS = new Set([
 const VIRTUAL_METHODS = new Set([
   "runBacktest", "startPaperRuns", "stopPaperRun", "researchStatus", "researchReport", "exportResearch",
   "listSetups", "saveSetup", "applySetup", "copySetup", "importSetup", "exportSetup",
+  "renameSetup", "deleteSetup",
 ]);
 function isDefiniteRefusal(method, error) {
   const code = error && error.code;

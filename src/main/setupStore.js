@@ -236,6 +236,35 @@ class SetupStore {
       signalTimeframe: source.signalTimeframe, marketTimeframe: source.marketTimeframe });
   }
 
+  /**
+   * Rename a saved setup. Only the label changes: the newest version carries the
+   * setup name, so its name is updated too while every version keeps its own
+   * settings, fingerprint and trade attribution.
+   */
+  renameSetup({ id, name } = {}) {
+    const cleanName = validateName(name);
+    const existing = this.value.setups.find((row) => row.id === id);
+    if (!existing) throw fail("setup_not_found");
+    const last = existing.versions.length - 1;
+    const versions = existing.versions.map((row, index) => (index === last ? { ...row, name: cleanName } : row));
+    const setup = { id: existing.id, name: cleanName, versions };
+    this._write({ ...this.value, setups: this.value.setups.map((row) => (row.id === id ? setup : row)) });
+    return { id, name: cleanName, renamed: existing.name !== cleanName };
+  }
+
+  /** Remove a saved setup and its history; the active reference is cleared with it. */
+  deleteSetup({ id } = {}) {
+    const existing = this.value.setups.find((row) => row.id === id);
+    if (!existing) throw fail("setup_not_found");
+    const clearedActive = this.value.activeSetup?.id === id;
+    this._write({
+      ...this.value,
+      setups: this.value.setups.filter((row) => row.id !== id),
+      activeSetup: clearedActive ? null : this.value.activeSetup,
+    });
+    return { id, name: existing.name, versions: existing.versions.length, clearedActive };
+  }
+
   exportSetup({ id, version } = {}) {
     const source = this.getVersion(id, version);
     if (!source) throw fail("setup_not_found");

@@ -1243,6 +1243,14 @@ body.mac .chrome {
   font-weight: 600;
   border: 1px solid var(--hair);
 }
+/* Destructive library action: reads as a warning without shouting next to the neutral buttons. */
+.ghost.danger {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+}
+.ghost.danger:not(:disabled):hover {
+  background: color-mix(in srgb, var(--warn) 14%, var(--fill-strong));
+}
 .btn-row {
   display: flex;
   gap: 10px;
